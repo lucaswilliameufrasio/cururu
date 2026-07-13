@@ -29,17 +29,27 @@ pub fn parse_unified_diff(diff: &str) -> Vec<ChangedFile> {
             .and_then(|caps| caps.get(2))
             .map(|v| v.as_str().to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        files.push(ChangedFile { path, patch: patch.to_string() });
+        files.push(ChangedFile {
+            path,
+            patch: patch.to_string(),
+        });
     }
 
     files
 }
 
 pub fn filter_ignored(files: Vec<ChangedFile>, ignore: &GlobSet) -> Vec<ChangedFile> {
-    files.into_iter().filter(|f| !ignore.is_match(&f.path)).collect()
+    files
+        .into_iter()
+        .filter(|f| !ignore.is_match(&f.path))
+        .collect()
 }
 
-pub fn chunk_files(files: &[ChangedFile], chunk_bytes: usize, max_diff_bytes: usize) -> Vec<DiffChunk> {
+pub fn chunk_files(
+    files: &[ChangedFile],
+    chunk_bytes: usize,
+    max_diff_bytes: usize,
+) -> Vec<DiffChunk> {
     let mut chunks = Vec::new();
     let mut current = String::new();
     let mut current_files = Vec::new();
@@ -57,7 +67,11 @@ pub fn chunk_files(files: &[ChangedFile], chunk_bytes: usize, max_diff_bytes: us
         }
 
         if !current.is_empty() && current.len() + patch.len() > chunk_bytes {
-            chunks.push(DiffChunk { index: chunks.len(), text: std::mem::take(&mut current), files: std::mem::take(&mut current_files) });
+            chunks.push(DiffChunk {
+                index: chunks.len(),
+                text: std::mem::take(&mut current),
+                files: std::mem::take(&mut current_files),
+            });
         }
 
         current.push_str(&patch);
@@ -67,17 +81,25 @@ pub fn chunk_files(files: &[ChangedFile], chunk_bytes: usize, max_diff_bytes: us
     }
 
     if !current.is_empty() {
-        chunks.push(DiffChunk { index: chunks.len(), text: current, files: current_files });
+        chunks.push(DiffChunk {
+            index: chunks.len(),
+            text: current,
+            files: current_files,
+        });
     }
 
     chunks
 }
 
 fn truncate_at_boundary(s: &str, max: usize) -> String {
-    if s.len() <= max { return s.to_string(); }
+    if s.len() <= max {
+        return s.to_string();
+    }
     let mut end = max;
-    while !s.is_char_boundary(end) { end -= 1; }
-    format!("{}\n\n[diff truncated by pullfrog-rs]\n", &s[..end])
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n\n[diff truncated by cururu]\n", &s[..end])
 }
 
 #[cfg(test)]
@@ -99,7 +121,10 @@ mod tests {
         let mut builder = GlobSetBuilder::new();
         builder.add(globset::Glob::new("**/Cargo.lock").unwrap());
         let set = builder.build().unwrap();
-        let files = vec![ChangedFile { path: "Cargo.lock".into(), patch: "x".into() }];
+        let files = vec![ChangedFile {
+            path: "Cargo.lock".into(),
+            patch: "x".into(),
+        }];
         assert!(filter_ignored(files, &set).is_empty());
     }
 }

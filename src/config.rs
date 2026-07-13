@@ -52,46 +52,57 @@ impl AppConfig {
         let (owner, repo) = repository
             .split_once('/')
             .context("GITHUB_REPOSITORY must be owner/repo")?;
+        let owner = owner.to_string();
+        let repo = repo.to_string();
 
         let pr_number = env::var("PR_NUMBER")
-            .or_else(|_| env::var("GITHUB_REF_NAME").map(|v| v.split('/').next().unwrap_or_default().to_string()))
+            .or_else(|_| {
+                env::var("GITHUB_REF_NAME")
+                    .map(|v| v.split('/').next().unwrap_or_default().to_string())
+            })
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .context("set PR_NUMBER, e.g. ${{ github.event.pull_request.number }}")?;
 
-        let ignore = build_globs(&env::var("PULLFROG_IGNORE").unwrap_or_else(|_| {
+        let ignore = build_globs(&env::var("CURURU_IGNORE").unwrap_or_else(|_| {
             "**/Cargo.lock,**/package-lock.json,**/pnpm-lock.yaml,**/yarn.lock,**/dist/**,**/build/**".to_string()
         }))?;
 
-        let provider = match env::var("PULLFROG_PROVIDER").unwrap_or_else(|_| "openai-compatible".to_string()).as_str() {
+        let provider = match env::var("CURURU_PROVIDER")
+            .unwrap_or_else(|_| "openai-compatible".to_string())
+            .as_str()
+        {
             "openai-compatible" | "openai" | "openrouter" | "groq" => LlmProvider::OpenAiCompatible,
             "rig" => LlmProvider::Rig,
-            other => bail!("unsupported PULLFROG_PROVIDER={other}"),
+            other => bail!("unsupported CURURU_PROVIDER={other}"),
         };
 
         Ok(Self {
             github: GitHubConfig {
                 token: env_required("GITHUB_TOKEN")?,
                 repository,
-                owner: owner.to_string(),
-                repo: repo.to_string(),
+                owner,
+                repo,
                 pr_number,
-                api_url: env::var("GITHUB_API_URL").unwrap_or_else(|_| "https://api.github.com".to_string()),
-                server_url: env::var("GITHUB_SERVER_URL").unwrap_or_else(|_| "https://github.com".to_string()),
+                api_url: env::var("GITHUB_API_URL")
+                    .unwrap_or_else(|_| "https://api.github.com".to_string()),
+                server_url: env::var("GITHUB_SERVER_URL")
+                    .unwrap_or_else(|_| "https://github.com".to_string()),
             },
             llm: LlmConfig {
                 provider,
-                base_url: env::var("LLM_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
+                base_url: env::var("LLM_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
                 api_key: env_required("LLM_API_KEY")?,
                 model: env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-5-mini".to_string()),
                 temperature: env_parse("LLM_TEMPERATURE", 0.1)?,
                 max_output_tokens: env_parse("LLM_MAX_OUTPUT_TOKENS", 4000)?,
             },
             review: ReviewConfig {
-                max_diff_bytes: env_parse("PULLFROG_MAX_DIFF_BYTES", 180_000)?,
-                chunk_bytes: env_parse("PULLFROG_CHUNK_BYTES", 45_000)?,
-                summary_only: env_bool("PULLFROG_SUMMARY_ONLY", true),
-                fail_on_findings: env_bool("PULLFROG_FAIL_ON_FINDINGS", false),
+                max_diff_bytes: env_parse("CURURU_MAX_DIFF_BYTES", 180_000)?,
+                chunk_bytes: env_parse("CURURU_CHUNK_BYTES", 45_000)?,
+                summary_only: env_bool("CURURU_SUMMARY_ONLY", true),
+                fail_on_findings: env_bool("CURURU_FAIL_ON_FINDINGS", false),
                 ignore,
             },
         })
@@ -108,7 +119,9 @@ where
     T::Err: std::fmt::Display,
 {
     match env::var(name) {
-        Ok(value) => value.parse::<T>().map_err(|err| anyhow::anyhow!("invalid {name}: {err}")),
+        Ok(value) => value
+            .parse::<T>()
+            .map_err(|err| anyhow::anyhow!("invalid {name}: {err}")),
         Err(_) => Ok(default),
     }
 }

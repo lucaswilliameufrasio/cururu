@@ -3,6 +3,7 @@ mod config;
 mod diff;
 mod github;
 mod output;
+mod retry;
 mod review;
 
 use anyhow::Context;
@@ -11,7 +12,7 @@ use config::AppConfig;
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Debug, Parser)]
-#[command(name = "pullfrog-rs", version, about = "Rust GitHub Actions PR review bot")]
+#[command(name = "cururu", version, about = "Rust GitHub Actions PR review bot")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -31,7 +32,9 @@ enum Command {
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let cli = Cli::parse();

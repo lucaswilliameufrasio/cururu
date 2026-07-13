@@ -1,5 +1,5 @@
 [package]
-name = "pullfrog-rs"
+name = "cururu"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
@@ -24,7 +24,7 @@ schemars = { version = "1.0", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-tokio = { version = "1.46", features = ["macros", "rt-multi-thread", "fs"] }
+tokio = { version = "1.46", features = ["macros", "rt-multi-thread", "fs", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 url = "2.5"

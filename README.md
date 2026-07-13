@@ -1,4 +1,4 @@
-# pullfrog-rs
+# Cururu
 
 A stateless Rust PR review bot for GitHub Actions, inspired by Pullfrog.
 
@@ -20,7 +20,7 @@ Add PostgreSQL later only for SaaS features like org settings, analytics, histor
 ```text
 pull_request event
   -> GitHub Actions
-  -> pullfrog-rs CLI
+  -> cururu CLI
   -> GitHub REST API diff
   -> diff parser/filter/chunker
   -> LLM review agent
@@ -75,11 +75,11 @@ export LLM_MODEL=openai/gpt-5-mini
 | `LLM_API_KEY` | yes | - | LLM API key |
 | `LLM_BASE_URL` | no | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
 | `LLM_MODEL` | no | `gpt-5-mini` | Model name |
-| `PULLFROG_PROVIDER` | no | `openai-compatible` | `openai-compatible` or `rig` |
-| `PULLFROG_SUMMARY_ONLY` | no | `true` | Summary comment mode |
-| `PULLFROG_MAX_DIFF_BYTES` | no | `180000` | Hard cap for reviewed diff size |
-| `PULLFROG_CHUNK_BYTES` | no | `45000` | Chunk size before LLM call |
-| `PULLFROG_IGNORE` | no | lockfiles/build outputs | Comma-separated glob patterns |
+| `CURURU_PROVIDER` | no | `openai-compatible` | `openai-compatible` or `rig` |
+| `CURURU_SUMMARY_ONLY` | no | `true` | Summary comment mode |
+| `CURURU_MAX_DIFF_BYTES` | no | `180000` | Hard cap for reviewed diff size |
+| `CURURU_CHUNK_BYTES` | no | `45000` | Chunk size before LLM call |
+| `CURURU_IGNORE` | no | lockfiles/build outputs | Comma-separated glob patterns |
 
 ## Security notes
 
@@ -97,9 +97,9 @@ This bot writes a PR timeline comment through the Issues comments API because ev
 ## Commands
 
 ```bash
-pullfrog-rs print-diff
-pullfrog-rs dry-run
-pullfrog-rs review
+cururu print-diff
+cururu dry-run
+cururu review
 ```
 
 ## Next improvements
@@ -107,6 +107,6 @@ pullfrog-rs review
 - Inline comments using `line`/`side`, not deprecated `position`
 - SARIF output for GitHub code scanning
 - provider-specific adapters
-- repo policy file, e.g. `.pullfrog.yml`
+- repo policy file, e.g. `.cururu.yml`
 - prompt/version hash in the comment
 - optional Check Run output

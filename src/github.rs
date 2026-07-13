@@ -1,7 +1,9 @@
 use crate::config::GitHubConfig;
 use crate::output;
+use crate::retry::retry_with_backoff;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct GitHubClient {
@@ -42,9 +44,12 @@ struct CreateIssueComment<'a> {
 impl GitHubClient {
     pub fn new(cfg: &GitHubConfig) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
-            .user_agent("pullfrog-rs/0.1")
+            .user_agent("cururu/0.1")
             .build()?;
-        Ok(Self { client, cfg: cfg.clone() })
+        Ok(Self {
+            client,
+            cfg: cfg.clone(),
+        })
     }
 
     pub async fn fetch_pr_diff(&self) -> anyhow::Result<String> {
@@ -52,17 +57,24 @@ impl GitHubClient {
             "{}/repos/{}/{}/pulls/{}",
             self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
         );
-        let text = self.client
-            .get(url)
-            .header("Accept", "application/vnd.github.v3.diff")
-            .header("X-GitHub-Api-Version", "2026-03-10")
-            .bearer_auth(&self.cfg.token)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
-        Ok(text)
+        retry_with_backoff(
+            || async {
+                self.client
+                    .get(&url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github.v3.diff")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .text()
+                    .await
+                    .context("failed to fetch PR diff")
+            },
+            3,
+        )
+        .await
     }
 
     pub async fn fetch_head_sha(&self) -> anyhow::Result<String> {
@@ -70,16 +82,24 @@ impl GitHubClient {
             "{}/repos/{}/{}/pulls/{}",
             self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
         );
-        let pr = self.client
-            .get(url)
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2026-03-10")
-            .bearer_auth(&self.cfg.token)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<PullRequest>()
-            .await?;
+        let pr = retry_with_backoff(
+            || async {
+                self.client
+                    .get(&url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<PullRequest>()
+                    .await
+                    .context("failed to fetch PR head SHA")
+            },
+            3,
+        )
+        .await?;
         Ok(pr.head.sha)
     }
 
@@ -96,21 +116,36 @@ impl GitHubClient {
             "{}/repos/{}/{}/issues/{}/comments?per_page=100",
             self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
         );
-        let comments = self.client
-            .get(url)
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2026-03-10")
-            .bearer_auth(&self.cfg.token)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Vec<IssueComment>>()
-            .await?;
+        let comments = retry_with_backoff(
+            || async {
+                self.client
+                    .get(&url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<Vec<IssueComment>>()
+                    .await
+                    .context("failed to list PR comments")
+            },
+            3,
+        )
+        .await?;
 
-        Ok(comments.into_iter().find(|c| {
-            let bot = c.user.as_ref().map(|u| u.kind == "Bot").unwrap_or(true);
-            bot && c.body.as_deref().unwrap_or_default().contains(output::marker())
-        }).map(|c| c.id))
+        Ok(comments
+            .into_iter()
+            .find(|c| {
+                let bot = c.user.as_ref().map(|u| u.kind == "Bot").unwrap_or(true);
+                bot && c
+                    .body
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains(output::marker())
+            })
+            .map(|c| c.id))
     }
 
     async fn create_issue_comment(&self, body: &str) -> anyhow::Result<()> {
@@ -118,35 +153,57 @@ impl GitHubClient {
             "{}/repos/{}/{}/issues/{}/comments",
             self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
         );
-        self.client
-            .post(url)
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2026-03-10")
-            .bearer_auth(&self.cfg.token)
-            .json(&CreateIssueComment { body })
-            .send()
-            .await?
-            .error_for_status()
-            .context("failed to create GitHub PR summary comment")?;
-        Ok(())
+        retry_with_backoff(
+            || async {
+                self.client
+                    .post(&url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .json(&CreateIssueComment { body })
+                    .send()
+                    .await
+                    .context("failed to send create comment request")?
+                    .error_for_status()
+                    .context("failed to create GitHub PR summary comment")?;
+                Ok(())
+            },
+            3,
+        )
+        .await
     }
 
     async fn update_issue_comment(&self, id: u64, body: &str) -> anyhow::Result<()> {
-        let url = format!("{}/repos/{}/{}/issues/comments/{id}", self.cfg.api_url, self.cfg.owner, self.cfg.repo);
-        self.client
-            .patch(url)
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2026-03-10")
-            .bearer_auth(&self.cfg.token)
-            .json(&CreateIssueComment { body })
-            .send()
-            .await?
-            .error_for_status()
-            .context("failed to update GitHub PR summary comment")?;
-        Ok(())
+        let url = format!(
+            "{}/repos/{}/{}/issues/comments/{id}",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo
+        );
+        retry_with_backoff(
+            || async {
+                self.client
+                    .patch(&url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .json(&CreateIssueComment { body })
+                    .send()
+                    .await
+                    .context("failed to send update comment request")?
+                    .error_for_status()
+                    .context("failed to update GitHub PR summary comment")?;
+                Ok(())
+            },
+            3,
+        )
+        .await
     }
 
     pub fn pr_url(&self) -> String {
-        format!("{}/{}/pull/{}", self.cfg.server_url, self.cfg.repository, self.cfg.pr_number)
+        format!(
+            "{}/{}/pull/{}",
+            self.cfg.server_url, self.cfg.repository, self.cfg.pr_number
+        )
     }
 }
