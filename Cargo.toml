@@ -19,7 +19,7 @@ dotenvy = "0.15"
 globset = "0.4"
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli", "zstd"] }
-rig-core = { version = "0.39", optional = true }
+rig-core = { version = "0.40", optional = true }
 schemars = { version = "1.0", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
