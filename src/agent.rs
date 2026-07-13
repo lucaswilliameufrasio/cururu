@@ -1,0 +1,158 @@
+use crate::config::{LlmConfig, LlmProvider};
+use crate::diff::DiffChunk;
+use anyhow::Context;
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewResult {
+    pub model: String,
+    pub files_reviewed: usize,
+    pub summary: String,
+    pub findings: Vec<ReviewFinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReviewFinding {
+    pub severity: String,
+    pub path: String,
+    pub line: Option<u32>,
+    pub title: String,
+    pub message: String,
+    pub suggestion: String,
+    pub confidence: f32,
+}
+
+#[async_trait]
+pub trait ReviewAgent: Send + Sync {
+    async fn review_chunk(&self, chunk: &DiffChunk) -> anyhow::Result<ReviewResult>;
+}
+
+pub fn build_agent(config: &LlmConfig, prompt: String) -> anyhow::Result<Box<dyn ReviewAgent>> {
+    match config.provider {
+        LlmProvider::OpenAiCompatible => Ok(Box::new(OpenAiCompatibleAgent::new(config.clone(), prompt)?)),
+        LlmProvider::Rig => {
+            #[cfg(feature = "rig")]
+            { Ok(Box::new(RigAgent::new(config.clone(), prompt)?)) }
+            #[cfg(not(feature = "rig"))]
+            { anyhow::bail!("PULLFROG_PROVIDER=rig requires building with --features rig") }
+        }
+    }
+}
+
+struct OpenAiCompatibleAgent {
+    client: reqwest::Client,
+    config: LlmConfig,
+    system_prompt: String,
+}
+
+impl OpenAiCompatibleAgent {
+    fn new(config: LlmConfig, system_prompt: String) -> anyhow::Result<Self> {
+        Ok(Self { client: reqwest::Client::builder().user_agent("pullfrog-rs/0.1").build()?, config, system_prompt })
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ChatRequest<'a> {
+    model: &'a str,
+    messages: Vec<ChatMessage<'a>>,
+    temperature: f32,
+    max_tokens: u32,
+    response_format: ResponseFormat,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatMessage<'a> { role: &'a str, content: String }
+
+#[derive(Debug, Serialize)]
+struct ResponseFormat { #[serde(rename = "type")] kind: &'static str }
+
+#[derive(Debug, Deserialize)]
+struct ChatResponse { choices: Vec<Choice> }
+#[derive(Debug, Deserialize)]
+struct Choice { message: AssistantMessage }
+#[derive(Debug, Deserialize)]
+struct AssistantMessage { content: String }
+
+#[async_trait]
+impl ReviewAgent for OpenAiCompatibleAgent {
+    async fn review_chunk(&self, chunk: &DiffChunk) -> anyhow::Result<ReviewResult> {
+        let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
+        let user = format!(
+            "Review this unified diff chunk. Return JSON only matching the schema.\n\nFiles: {:?}\n\n```diff\n{}\n```",
+            chunk.files, chunk.text
+        );
+        let req = ChatRequest {
+            model: &self.config.model,
+            messages: vec![
+                ChatMessage { role: "system", content: self.system_prompt.clone() },
+                ChatMessage { role: "user", content: user },
+            ],
+            temperature: self.config.temperature,
+            max_tokens: self.config.max_output_tokens,
+            response_format: ResponseFormat { kind: "json_object" },
+        };
+
+        let response = self.client
+            .post(url)
+            .bearer_auth(&self.config.api_key)
+            .json(&req)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ChatResponse>()
+            .await?;
+
+        let content = response.choices.first().context("LLM returned no choices")?.message.content.trim();
+        let mut result: ReviewResult = serde_json::from_str(content).with_context(|| format!("invalid LLM JSON: {content}"))?;
+        result.model = self.config.model.clone();
+        Ok(result)
+    }
+}
+
+#[cfg(feature = "rig")]
+struct RigAgent {
+    inner: OpenAiCompatibleAgent,
+}
+
+#[cfg(feature = "rig")]
+impl RigAgent {
+    fn new(config: LlmConfig, system_prompt: String) -> anyhow::Result<Self> {
+        // Adapter placeholder: Rig is enabled as a compile-time dependency, but this CLI keeps
+        // an OpenAI-compatible transport for providers like OpenRouter/Groq. Swap this type with
+        // rig-core's provider-specific Agent when you want pure Rig orchestration.
+        Ok(Self { inner: OpenAiCompatibleAgent::new(config, system_prompt)? })
+    }
+}
+
+#[cfg(feature = "rig")]
+#[async_trait]
+impl ReviewAgent for RigAgent {
+    async fn review_chunk(&self, chunk: &DiffChunk) -> anyhow::Result<ReviewResult> {
+        self.inner.review_chunk(chunk).await
+    }
+}
+
+pub fn merge_results(model: String, files_reviewed: usize, results: Vec<ReviewResult>) -> ReviewResult {
+    let mut findings = results.into_iter().flat_map(|r| r.findings).collect::<Vec<_>>();
+    findings.retain(|f| f.confidence >= 0.65);
+    findings.sort_by(|a, b| severity_rank(&a.severity).cmp(&severity_rank(&b.severity)).then(a.path.cmp(&b.path)).then(a.line.cmp(&b.line)));
+    findings.truncate(30);
+    ReviewResult {
+        model,
+        files_reviewed,
+        summary: format!("Found {} high-confidence review finding(s).", findings.len()),
+        findings,
+    }
+}
+
+fn severity_rank(severity: &str) -> u8 {
+    match severity.to_ascii_lowercase().as_str() {
+        "critical" => 0,
+        "high" => 1,
+        "medium" => 2,
+        "low" => 3,
+        _ => 4,
+    }
+}
