@@ -23,15 +23,14 @@ pub fn parse_unified_diff(diff: &str) -> Vec<ChangedFile> {
     for (idx, m) in matches.iter().enumerate() {
         let start = m.start();
         let end = matches.get(idx + 1).map_or(diff.len(), regex::Match::start);
-        let patch = &diff[start..end];
+        let raw = &diff[start..end];
         let path = header_re
             .captures(m.as_str())
             .and_then(|caps| caps.get(2))
-            .map(|v| v.as_str().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+            .map_or_else(|| "unknown".to_string(), |v| v.as_str().to_string());
         files.push(ChangedFile {
             path,
-            patch: patch.to_string(),
+            patch: raw.to_string(),
         });
     }
 

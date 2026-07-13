@@ -1,5 +1,6 @@
-use crate::config::{LlmConfig, LlmProvider};
+use crate::config::LlmConfig;
 use crate::diff::DiffChunk;
+use crate::provider::{ChatResponse, ProviderUsage};
 use crate::retry::retry_with_backoff;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -26,28 +27,22 @@ pub struct ReviewFinding {
     pub confidence: f32,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChunkResult {
+    pub review: ReviewResult,
+    pub usage: Option<ProviderUsage>,
+}
+
 #[async_trait]
 pub trait ReviewAgent: Send + Sync {
-    async fn review_chunk(&self, chunk: &DiffChunk) -> anyhow::Result<ReviewResult>;
+    async fn review_chunk(&self, chunk: &DiffChunk) -> anyhow::Result<ChunkResult>;
 }
 
 pub fn build_agent(config: &LlmConfig, prompt: String) -> anyhow::Result<Box<dyn ReviewAgent>> {
-    match config.provider {
-        LlmProvider::OpenAiCompatible => Ok(Box::new(OpenAiCompatibleAgent::new(
-            config.clone(),
-            prompt,
-        )?)),
-        LlmProvider::Rig => {
-            #[cfg(feature = "rig")]
-            {
-                Ok(Box::new(RigAgent::new(config.clone(), prompt)?))
-            }
-            #[cfg(not(feature = "rig"))]
-            {
-                anyhow::bail!("CURURU_PROVIDER=rig requires building with --features rig")
-            }
-        }
-    }
+    Ok(Box::new(OpenAiCompatibleAgent::new(
+        config.clone(),
+        prompt,
+    )?))
 }
 
 struct OpenAiCompatibleAgent {
@@ -89,30 +84,19 @@ struct ResponseFormat {
     kind: &'static str,
 }
 
-#[derive(Debug, Deserialize)]
-struct ChatResponse {
-    choices: Vec<Choice>,
-}
-#[derive(Debug, Deserialize)]
-struct Choice {
-    message: AssistantMessage,
-}
-#[derive(Debug, Deserialize)]
-struct AssistantMessage {
-    content: String,
-}
-
 #[async_trait]
 impl ReviewAgent for OpenAiCompatibleAgent {
-    async fn review_chunk(&self, chunk: &DiffChunk) -> anyhow::Result<ReviewResult> {
+    async fn review_chunk(&self, chunk: &DiffChunk) -> anyhow::Result<ChunkResult> {
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
+
         let user = format!(
             "Review this unified diff chunk. Return JSON only matching the schema.\n\nFiles: {:?}\n\n```diff\n{}\n```",
             chunk.files, chunk.text
         );
+
         let req = ChatRequest {
             model: &self.config.model,
             messages: vec![
@@ -136,7 +120,7 @@ impl ReviewAgent for OpenAiCompatibleAgent {
             || async {
                 self.client
                     .post(&url)
-                    .timeout(Duration::from_secs(120))
+                    .timeout(Duration::from_mins(2))
                     .bearer_auth(&self.config.api_key)
                     .json(&req)
                     .send()
@@ -158,48 +142,32 @@ impl ReviewAgent for OpenAiCompatibleAgent {
             .context("LLM returned no choices")?
             .message
             .content
-            .trim();
-        let mut result: ReviewResult = serde_json::from_str(content)
+            .trim()
+            .to_string();
+
+        let mut review: ReviewResult = serde_json::from_str(&content)
             .with_context(|| format!("invalid LLM JSON: {content}"))?;
-        result.model = self.config.model.clone();
-        Ok(result)
-    }
-}
+        review.model.clone_from(&self.config.model);
 
-#[cfg(feature = "rig")]
-struct RigAgent {
-    inner: OpenAiCompatibleAgent,
-}
+        let meta = response.extract_metadata();
 
-#[cfg(feature = "rig")]
-impl RigAgent {
-    fn new(config: LlmConfig, system_prompt: String) -> anyhow::Result<Self> {
-        // Adapter placeholder: Rig is enabled as a compile-time dependency, but this CLI keeps
-        // an OpenAI-compatible transport for providers like OpenRouter/Groq. Swap this type with
-        // rig-core's provider-specific Agent when you want pure Rig orchestration.
-        Ok(Self {
-            inner: OpenAiCompatibleAgent::new(config, system_prompt)?,
+        Ok(ChunkResult {
+            review,
+            usage: meta.usage,
         })
-    }
-}
-
-#[cfg(feature = "rig")]
-#[async_trait]
-impl ReviewAgent for RigAgent {
-    async fn review_chunk(&self, chunk: &DiffChunk) -> anyhow::Result<ReviewResult> {
-        self.inner.review_chunk(chunk).await
     }
 }
 
 pub fn merge_results(
     model: String,
     files_reviewed: usize,
-    results: Vec<ReviewResult>,
+    results: Vec<ChunkResult>,
 ) -> ReviewResult {
-    let mut findings = results
+    let mut findings: Vec<ReviewFinding> = results
         .into_iter()
-        .flat_map(|r| r.findings)
-        .collect::<Vec<_>>();
+        .flat_map(|r| r.review.findings)
+        .collect();
+
     findings.retain(|f| f.confidence >= 0.65);
     findings.sort_by(|a, b| {
         severity_rank(&a.severity)
@@ -208,6 +176,7 @@ pub fn merge_results(
             .then(a.line.cmp(&b.line))
     });
     findings.truncate(30);
+
     ReviewResult {
         model,
         files_reviewed,

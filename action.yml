@@ -1,0 +1,42 @@
+name: "Cururu PR Review"
+description: "Stateless LLM-powered PR review bot for GitHub Actions"
+author: "Lucas Eufrasio"
+
+branding:
+  icon: "check-circle"
+  color: "green"
+
+inputs:
+  github_token:
+    description: "GitHub token for API access"
+    required: false
+    default: ${{ github.token }}
+  llm_api_key:
+    description: "LLM provider API key"
+    required: true
+  llm_base_url:
+    description: "LLM API base URL (overrides provider default)"
+    required: false
+  llm_model:
+    description: "Model name (overrides provider default)"
+    required: false
+  cururu_provider:
+    description: "Provider name (openai, openrouter, groq)"
+    required: false
+  pr_number:
+    description: "Pull request number"
+    required: false
+    default: ${{ github.event.pull_request.number }}
+
+runs:
+  using: "docker"
+  image: "Dockerfile"
+  args:
+    - review
+  env:
+    GITHUB_TOKEN: ${{ inputs.github_token }}
+    LLM_API_KEY: ${{ inputs.llm_api_key }}
+    LLM_BASE_URL: ${{ inputs.llm_base_url }}
+    LLM_MODEL: ${{ inputs.llm_model }}
+    CURURU_PROVIDER: ${{ inputs.cururu_provider }}
+    PR_NUMBER: ${{ inputs.pr_number }}

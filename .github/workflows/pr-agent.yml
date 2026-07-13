@@ -19,18 +19,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR head
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master @ 2026-06-30
+        uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.96.1
           components: clippy,rustfmt
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Build
         run: cargo build --release
@@ -41,12 +38,9 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_BASE_URL: ${{ vars.LLM_BASE_URL || 'https://api.openai.com/v1' }}
-          LLM_MODEL: ${{ vars.LLM_MODEL || 'gpt-5-mini' }}
-          CURURU_PROVIDER: ${{ vars.CURURU_PROVIDER || 'openai-compatible' }}
-          CURURU_SUMMARY_ONLY: "true"
-          CURURU_MAX_DIFF_BYTES: "180000"
-          CURURU_CHUNK_BYTES: "45000"
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL || '' }}
+          LLM_MODEL: ${{ vars.LLM_MODEL || '' }}
+          CURURU_PROVIDER: ${{ vars.CURURU_PROVIDER || '' }}
           CURURU_IGNORE: "**/Cargo.lock,**/package-lock.json,**/pnpm-lock.yaml,**/yarn.lock,**/dist/**,**/build/**"
           RUST_LOG: info
         run: ./target/release/cururu review

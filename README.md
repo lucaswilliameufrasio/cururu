@@ -1,112 +1,143 @@
 # Cururu
 
-A stateless Rust PR review bot for GitHub Actions, inspired by Pullfrog.
-
-It runs as a CLI inside GitHub Actions, fetches the pull request diff, sends it to an LLM, and upserts one summary comment on the PR.
-
-## Why stateless?
-
-The GitHub PR is the state. This project does not need a database for the MVP:
-
-- PR metadata comes from GitHub events/API
-- the diff comes from the GitHub API
-- the review result is written back as a PR comment
-- duplicate bot comments are avoided with a hidden marker
-
-Add PostgreSQL later only for SaaS features like org settings, analytics, historical memory, feedback, or cost tracking.
-
-## Current design
+A stateless Rust PR review bot for GitHub Actions. Runs on any repository without
+installation — add one workflow file and configure it with `.cururu.toml`.
 
 ```text
 pull_request event
   -> GitHub Actions
-  -> cururu CLI
-  -> GitHub REST API diff
-  -> diff parser/filter/chunker
-  -> LLM review agent
-  -> PR summary comment
+  -> cururu action (Docker)
+  -> GitHub API diff
+  -> LLM review (OpenAI / OpenRouter / Groq)
+  -> PR summary comment with usage
 ```
 
-The default transport is OpenAI-compatible HTTP, so it works with OpenAI, OpenRouter, Groq-compatible endpoints, and similar APIs.
+## Quick start
 
-Rig support is prepared as a feature flag:
+Add `.github/workflows/cururu-review.yml` to any repository:
 
-```bash
-cargo build --features rig
+```yaml
+on: pull_request_target
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: lucaswilliameufrasio/cururu@v1
+        with:
+          llm_api_key: ${{ secrets.LLM_API_KEY }}
 ```
 
-The `RigAgent` adapter is intentionally thin for now. I would keep the first production version OpenAI-compatible and swap the internals later if you want Rig-native tools, structured output, embeddings, or multi-provider orchestration.
+Set `LLM_API_KEY` as a repository secret. That is it.
 
-## Requirements
+## Configuration
 
-- Rust `1.96.1`
-- GitHub Actions `GITHUB_TOKEN`
-- `LLM_API_KEY`
+Cururu reads `.cururu.toml` from the trusted base commit of the PR.
 
-## Local usage
+```toml
+version = 1
+
+[provider]
+name = "openrouter"
+model = "openai/gpt-5-mini"
+
+[review]
+max_diff_bytes = 180000
+chunk_bytes = 45000
+ignore = ["**/*.lock", "dist/**"]
+
+[context]
+conventions = ["AGENTS.md", "CONTRIBUTING.md"]
+specifications = ["docs/sdd/**/*.md", "docs/gdd/**/*.md"]
+skills = [".agents/skills/**/SKILL.md"]
+additional = ["docs/adr/**/*.md"]
+max_bytes = 100000
+
+[summary]
+show_cost = true
+show_usage = true
+```
+
+### Provider
+
+| `name` | Default model | Default base URL |
+|---|---|---|
+| `openai` | `gpt-5-mini` | `https://api.openai.com/v1` |
+| `openrouter` | `openai/gpt-5-mini` | `https://openrouter.ai/api/v1` |
+| `groq` | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` |
+
+`base_url` and `model` in TOML override the provider defaults. Environment
+variables `LLM_BASE_URL` and `LLM_MODEL` override all TOML values.
+
+### Context files
+
+Context documents (conventions, specifications, skills) are loaded from the PR
+base commit through the GitHub API and injected into the system prompt. The diff
+is kept separate as untrusted input.
+
+Set `max_bytes` to cap total context size. Files are loaded in order and
+truncated if the combined content exceeds the limit.
+
+### Cost
+
+- OpenRouter returns per-request cost in the API response. When `show_cost =
+  true` the total is shown in the summary.
+- OpenAI and Groq do not return monetary cost per request. The summary will
+  show token counts.
+
+### Summary
+
+| `show_cost` | Show provider-reported cost |
+| `show_usage` | Show token counts (prompt, completion, cached, reasoning) |
+
+## Environment variables
+
+Secrets are always passed through GitHub Actions secrets / environment, never
+through repository configuration.
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GITHUB_TOKEN` | yes | — | GitHub API token (automatic in Actions) |
+| `LLM_API_KEY` | yes | — | LLM provider API key |
+| `LLM_BASE_URL` | no | provider default | Override API base URL |
+| `LLM_MODEL` | no | provider default | Override model name |
+| `CURURU_PROVIDER` | no | `openai` | Override provider name |
+| `CURURU_IGNORE` | no | lockfiles, dist, build | Comma-separated globs to skip in diff |
+| `CURURU_MAX_DIFF_BYTES` | no | `180000` | Hard cap for reviewed diff size |
+| `CURURU_CHUNK_BYTES` | no | `45000` | Chunk size before each LLM call |
+
+## Fork safety
+
+The example workflow uses `pull_request_target` so the action runs in the
+repository context, not the fork. Cururu reads the diff and context files
+through the GitHub API and never executes code from the PR branch.
+
+## Local development
 
 ```bash
 export GITHUB_TOKEN=ghp_xxx
 export GITHUB_REPOSITORY=owner/repo
 export PR_NUMBER=123
 export LLM_API_KEY=sk_xxx
-export LLM_BASE_URL=https://api.openai.com/v1
-export LLM_MODEL=gpt-5-mini
 
 cargo run -- print-diff
 cargo run -- dry-run
 cargo run -- review
+cargo run -- print-config
 ```
-
-For OpenRouter-style usage:
-
-```bash
-export LLM_BASE_URL=https://openrouter.ai/api/v1
-export LLM_MODEL=openai/gpt-5-mini
-```
-
-## Environment variables
-
-| Variable | Required | Default | Description |
-|---|---:|---|---|
-| `GITHUB_TOKEN` | yes | - | Token used to read PRs and write comments |
-| `GITHUB_REPOSITORY` | yes | - | `owner/repo` |
-| `PR_NUMBER` | yes | - | Pull request number |
-| `LLM_API_KEY` | yes | - | LLM API key |
-| `LLM_BASE_URL` | no | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
-| `LLM_MODEL` | no | `gpt-5-mini` | Model name |
-| `CURURU_PROVIDER` | no | `openai-compatible` | `openai-compatible` or `rig` |
-| `CURURU_SUMMARY_ONLY` | no | `true` | Summary comment mode |
-| `CURURU_MAX_DIFF_BYTES` | no | `180000` | Hard cap for reviewed diff size |
-| `CURURU_CHUNK_BYTES` | no | `45000` | Chunk size before LLM call |
-| `CURURU_IGNORE` | no | lockfiles/build outputs | Comma-separated glob patterns |
-
-## Security notes
-
-Use `pull_request`, not `pull_request_target`, by default. Keep permissions small:
-
-```yaml
-permissions:
-  contents: read
-  pull-requests: read
-  issues: write
-```
-
-This bot writes a PR timeline comment through the Issues comments API because every PR is also an issue.
 
 ## Commands
 
-```bash
-cururu print-diff
-cururu dry-run
-cururu review
+```
+cururu print-diff     Print the PR diff
+cururu dry-run        Review and print JSON, do not post comment
+cururu review         Review and post summary comment
+cururu print-config   Print merged configuration
 ```
 
-## Next improvements
+## Security
 
-- Inline comments using `line`/`side`, not deprecated `position`
-- SARIF output for GitHub code scanning
-- provider-specific adapters
-- repo policy file, e.g. `.cururu.yml`
-- prompt/version hash in the comment
-- optional Check Run output
+See `SECURITY.md`.

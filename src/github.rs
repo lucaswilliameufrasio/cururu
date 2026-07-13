@@ -13,11 +13,13 @@ pub struct GitHubClient {
 
 #[derive(Debug, Deserialize)]
 struct PullRequest {
-    head: PullHead,
+    #[allow(dead_code)]
+    head: PullRef,
+    base: PullRef,
 }
 
 #[derive(Debug, Deserialize)]
-struct PullHead {
+struct PullRef {
     sha: String,
 }
 
@@ -77,12 +79,68 @@ impl GitHubClient {
         .await
     }
 
+    pub async fn fetch_base_sha(&self) -> anyhow::Result<String> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        let pr: PullRequest = retry_with_backoff(
+            || async {
+                self.client
+                    .get(&url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<PullRequest>()
+                    .await
+                    .context("failed to fetch PR info")
+            },
+            3,
+        )
+        .await?;
+        Ok(pr.base.sha)
+    }
+
+    pub async fn fetch_config_toml(&self, base_sha: &str) -> anyhow::Result<Option<String>> {
+        let url = format!(
+            "{}/repos/{}/{}/contents/.cururu.toml?ref={}",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, base_sha
+        );
+        let result = self
+            .client
+            .get(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github.raw")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .send()
+            .await?;
+
+        if result.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        Ok(Some(
+            result
+                .error_for_status()
+                .context("failed to fetch .cururu.toml")?
+                .text()
+                .await
+                .context("failed to read .cururu.toml")?,
+        ))
+    }
+
+    #[allow(dead_code)]
     pub async fn fetch_head_sha(&self) -> anyhow::Result<String> {
         let url = format!(
             "{}/repos/{}/{}/pulls/{}",
             self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
         );
-        let pr = retry_with_backoff(
+        let pr: PullRequest = retry_with_backoff(
             || async {
                 self.client
                     .get(&url)
@@ -138,7 +196,7 @@ impl GitHubClient {
         Ok(comments
             .into_iter()
             .find(|c| {
-                let bot = c.user.as_ref().map(|u| u.kind == "Bot").unwrap_or(true);
+                let bot = c.user.as_ref().is_none_or(|u| u.kind == "Bot");
                 bot && c
                     .body
                     .as_deref()

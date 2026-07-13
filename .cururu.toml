@@ -1,0 +1,35 @@
+version = 1
+
+[provider]
+name = "openai"
+model = "gpt-5-mini"
+
+[review]
+max_diff_bytes = 180000
+chunk_bytes = 45000
+ignore = [
+  "**/target/**",
+  "**/*.lock",
+  "**/dist/**",
+  "**/build/**",
+]
+
+[context]
+conventions = [
+  "CONTRIBUTING.md",
+  "AGENTS.md",
+]
+specifications = [
+  "docs/specs/**/*.md",
+  "docs/sdd/**/*.md",
+  "docs/gdd/**/*.md",
+]
+skills = []
+additional = [
+  "docs/adr/**/*.md",
+]
+max_bytes = 100000
+
+[summary]
+show_cost = false
+show_usage = true

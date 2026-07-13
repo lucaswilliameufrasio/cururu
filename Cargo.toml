@@ -6,11 +6,6 @@ rust-version = "1.96"
 license = "MIT OR Apache-2.0"
 description = "Stateless GitHub Actions PR review bot powered by Rust and LLMs"
 
-[features]
-default = ["openai-compatible"]
-openai-compatible = []
-rig = ["dep:rig-core"]
-
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
@@ -19,12 +14,13 @@ dotenvy = "0.15"
 globset = "0.4"
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli", "zstd"] }
-rig-core = { version = "0.39", optional = true }
 schemars = { version = "1.0", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_path_to_error = "0.1"
 thiserror = "2.0"
 tokio = { version = "1.46", features = ["macros", "rt-multi-thread", "fs", "time"] }
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 url = "2.5"
@@ -38,9 +34,9 @@ wiremock = "0.6"
 unsafe_code = "forbid"
 
 [lints.clippy]
-all = "warn"
-pedantic = "warn"
-nursery = "warn"
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
