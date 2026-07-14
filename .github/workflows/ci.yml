@@ -41,5 +41,6 @@ jobs:
 
       - name: Audit
         run: |
-          cargo install cargo-audit --locked || true
-          cargo audit --deny warnings || echo "cargo-audit not available or failed"
+          if cargo install cargo-audit --locked 2>/dev/null; then
+            cargo audit --deny warnings
+          fi
