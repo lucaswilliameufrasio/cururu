@@ -71,10 +71,6 @@ pub struct LlmConfig {
 pub struct ReviewConfig {
     pub max_diff_bytes: usize,
     pub chunk_bytes: usize,
-    #[allow(dead_code)]
-    pub summary_only: bool,
-    #[allow(dead_code)]
-    pub fail_on_findings: bool,
     pub ignore: GlobSet,
 }
 
@@ -160,8 +156,6 @@ impl AppConfig {
             review: ReviewConfig {
                 max_diff_bytes: env_parse("CURURU_MAX_DIFF_BYTES", 180_000)?,
                 chunk_bytes: env_parse("CURURU_CHUNK_BYTES", 45_000)?,
-                summary_only: env_bool("CURURU_SUMMARY_ONLY", true),
-                fail_on_findings: env_bool("CURURU_FAIL_ON_FINDINGS", false),
                 ignore: build_globs(&ignore_globs)?,
             },
             context: ContextConfig::default(),
@@ -328,12 +322,6 @@ where
                 .map_err(|err| anyhow::anyhow!("invalid {name}: {err}"))
         },
     )
-}
-
-fn env_bool(name: &str, default: bool) -> bool {
-    env_optional(name).map_or(default, |v| {
-        matches!(v.as_str(), "1" | "true" | "yes" | "on")
-    })
 }
 
 fn build_globs(csv: &str) -> anyhow::Result<GlobSet> {

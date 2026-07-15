@@ -1,13 +1,13 @@
 # Release process
 
-Cururu distributes a pre-built Docker image via GitHub Container Registry.
-The `action.yml` in each version tag references the corresponding GHCR image,
-so consumers never build from source.
+Cururu distributes a pre-built multi-platform Docker image via GitHub
+Container Registry. The `action.yml` in each version tag references the image
+by digest for supply-chain security.
 
 ## Prerequisites
 
-You need the `gh` CLI and a classic PAT with `write:packages` scope, or rely on
-the `GITHUB_TOKEN` which works under `packages: write` during the workflow.
+You need `gh` CLI authenticated with at least `repo` and `write:packages`
+scopes. The release workflow uses `GITHUB_TOKEN` with `packages: write`.
 
 ## Steps
 
@@ -15,34 +15,45 @@ the `GITHUB_TOKEN` which works under `packages: write` during the workflow.
    `cargo build --release`, and `cargo test` all pass.
 
 2. **Choose version** – follow [semver](https://semver.org/). Bump the version
-   in `Cargo.toml` (e.g. `1.0.2`).
+   in `Cargo.toml` (e.g. `1.0.5`).
 
-3. **Update action.yml** – change the `image:` field to match the new version:
+3. **Update action.yml** – change the `image:` field to match the new version
+   tag (the digest will be updated after the image is pushed):
 
    ```yaml
-   image: docker://ghcr.io/lucaswilliameufrasio/cururu:v1.0.2
+   image: docker://ghcr.io/lucaswilliameufrasio/cururu:v1.0.5
    ```
 
 4. **Commit and push** `main` with the version bump and action.yml update.
 
-5. **Tag the release** and push – this triggers the release workflow which
-   builds the image and pushes it to GHCR:
+5. **Tag the release** and push – this triggers the Release workflow which
+   builds amd64 and arm64 images in parallel on native runners and merges
+   them into a multi-arch manifest:
 
    ```bash
-   RELEASE_VERSION=v1.0.2
+   RELEASE_VERSION=v1.0.5
    git tag -a "$RELEASE_VERSION" -m "release $RELEASE_VERSION"
    git push origin "$RELEASE_VERSION"
    ```
 
-6. **Wait for the release workflow** to finish (check Actions tab). Once it
-   succeeds, the image is available at:
+6. **Wait for the release workflow** to finish (~5 min). Once it succeeds:
 
    ```
-   ghcr.io/lucaswilliameufrasio/cururu:v1.0.2
-   ghcr.io/lucaswilliameufrasio/cururu:v1   (major tag)
+   ghcr.io/lucaswilliameufrasio/cururu:v1.0.5   (version tag)
+   ghcr.io/lucaswilliameufrasio/cururu:v1        (major tag)
+   ghcr.io/lucaswilliameufrasio/cururu:latest
    ```
 
-7. **Update major git tag** so consumers pinned to `@v1` resolve to this
+7. **Capture the manifest digest** from the workflow summary and update
+   `action.yml` to pin by digest:
+
+   ```yaml
+   image: docker://ghcr.io/lucaswilliameufrasio/cururu@sha256:...
+   ```
+
+   Commit and push this to `main`.
+
+8. **Update major git tag** so consumers pinned to `@v1` resolve to this
    release:
 
    ```bash
@@ -51,24 +62,23 @@ the `GITHUB_TOKEN` which works under `packages: write` during the workflow.
    git push -f origin "$MAJOR"
    ```
 
-8. **Make the package public** (first release only):
+9. **Create a GitHub Release** with release notes:
 
    ```bash
-   gh api \
-     --method PATCH \
-     -H "Accept: application/vnd.github+json" \
-     /users/lucaswilliameufrasio/packages/container/cururu \
-     -f visibility=public
+   gh release create "$RELEASE_VERSION" --generate-notes
    ```
 
-   Or set visibility manually at:
-   `https://github.com/users/lucaswilliameufrasio/packages/container/cururu/settings`
-
-9. **Verify** the action works in a downstream test repo by opening a PR.
-   The Docker image is pulled from GHCR — no build step on the consumer side.
+10. **Verify** the action works in a downstream test repo by opening a PR.
 
 ## Branching
 
 - `main` is the active development branch.
 - All releases are tagged from `main`.
 - The `v1` major tag is a floating pointer to the latest `v1.x.y` release.
+
+## Architecture
+
+- **linux/amd64** built on `ubuntu-24.04`
+- **linux/arm64** built on `ubuntu-24.04-arm`
+- Both images are combined into a single OCI index (multi-arch manifest)
+- Build caching via `type=gha` with per-architecture scope

@@ -16,7 +16,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release --bin cururu
 
-FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
+FROM gcr.io/distroless/cc-debian13 AS runtime
 WORKDIR /app
 COPY --from=builder /app/target/release/cururu ./cururu
 ENTRYPOINT ["./cururu"]

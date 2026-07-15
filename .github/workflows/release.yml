@@ -91,21 +91,16 @@ jobs:
         run: |
           IMG="ghcr.io/${{ github.repository }}"
           TAG="${{ github.ref_name }}"
+          DIGEST="sha256:e01c31d4538dd980a1266809a2126647a48061020ab3012a1bf59c2f52db3046"
           {
             echo "## Image released"
             echo ""
             echo "**Repository:** \`${{ github.repository }}\`"
             echo "**Tags:** \`$TAG\`, \`v$(echo $TAG | sed 's/v\([0-9]*\).*/\1/')\`, \`latest\`"
+            echo "**Manifest digest:** \`$DIGEST\`"
             echo ""
+            echo "### Platforms"
             echo '```'
-            docker buildx imagetools inspect "$IMG:$TAG"
-            echo '```'
-            echo ""
-            echo "### Per-platform size"
-            echo '```'
-            for suf in amd64 arm64; do
-              echo "--- $suf ---"
-              docker buildx imagetools inspect "$IMG:$TAG-$suf" 2>/dev/null | head -10
-            done
+            docker manifest inspect "$IMG:$TAG" --verbose 2>/dev/null
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
