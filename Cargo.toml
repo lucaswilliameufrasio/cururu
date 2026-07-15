@@ -2,7 +2,7 @@
 name = "cururu"
 version = "1.0.1"
 edition = "2024"
-rust-version = "1.96"
+rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 description = "Stateless GitHub Actions PR review bot powered by Rust and LLMs"
 

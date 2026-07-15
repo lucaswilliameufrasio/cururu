@@ -18,30 +18,6 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR head
-        uses: actions/checkout@v4
+      - uses: lucaswilliameufrasio/cururu@v1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.96.1
-          components: clippy,rustfmt
-
-      - name: Build
-        run: cargo build --release
-
-      - name: Review PR
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_BASE_URL: ${{ vars.LLM_BASE_URL || '' }}
-          LLM_MODEL: ${{ vars.LLM_MODEL || '' }}
-          CURURU_PROVIDER: ${{ vars.CURURU_PROVIDER || '' }}
-          CURURU_IGNORE: "**/Cargo.lock,**/package-lock.json,**/pnpm-lock.yaml,**/yarn.lock,**/dist/**,**/build/**"
-          RUST_LOG: info
-        run: ./target/release/cururu review
+          llm_api_key: ${{ secrets.LLM_API_KEY }}

@@ -1,10 +1,13 @@
 version: 2
 updates:
-  - package-ecosystem: cargo
-    directory: "/"
-    schedule:
-      interval: weekly
   - package-ecosystem: github-actions
-    directory: "/"
+    directory: /
     schedule:
       interval: weekly
+    groups:
+      docker-actions:
+        patterns:
+          - docker/*
+      all-actions:
+        patterns:
+          - "*"
