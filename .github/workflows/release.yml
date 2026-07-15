@@ -91,7 +91,7 @@ jobs:
         run: |
           IMG="ghcr.io/${{ github.repository }}"
           TAG="${{ github.ref_name }}"
-          DIGEST="sha256:e01c31d4538dd980a1266809a2126647a48061020ab3012a1bf59c2f52db3046"
+          DIGEST=$(docker buildx imagetools inspect "$IMG:$TAG" --format '{{.Manifest.Digest}}')
           {
             echo "## Image released"
             echo ""
@@ -103,4 +103,9 @@ jobs:
             echo '```'
             docker manifest inspect "$IMG:$TAG" --verbose 2>/dev/null
             echo '```'
+            echo ""
+            echo "Pin this digest in \`action.yml\`:"
+            echo "\`\`\`yaml"
+            echo "image: docker://$IMG@$DIGEST"
+            echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
