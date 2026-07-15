@@ -72,6 +72,7 @@ pub struct ReviewConfig {
     pub max_diff_bytes: usize,
     pub chunk_bytes: usize,
     pub ignore: GlobSet,
+    pub language: String,
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +158,7 @@ impl AppConfig {
                 max_diff_bytes: env_parse("CURURU_MAX_DIFF_BYTES", 180_000)?,
                 chunk_bytes: env_parse("CURURU_CHUNK_BYTES", 45_000)?,
                 ignore: build_globs(&ignore_globs)?,
+                language: env_optional("CURURU_LANGUAGE").unwrap_or_else(|| "pt-BR".into()),
             },
             context: ContextConfig::default(),
             summary: SummaryConfig::default(),
@@ -210,6 +212,11 @@ impl AppConfig {
             }
             if let Some(patterns) = tr.ignore {
                 self.review.ignore = build_globs(&patterns.join(","))?;
+            }
+            if env_optional("CURURU_LANGUAGE").is_none()
+                && let Some(lang) = tr.language
+            {
+                self.review.language = lang;
             }
         }
 
@@ -275,6 +282,8 @@ struct ReviewToml {
     chunk_bytes: Option<usize>,
     #[serde(default)]
     ignore: Option<Vec<String>>,
+    #[serde(default)]
+    language: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,6 +374,7 @@ mod tests {
                 max_diff_bytes: 180_000,
                 chunk_bytes: 45_000,
                 ignore: GlobSetBuilder::new().build().unwrap(),
+                language: "pt-BR".into(),
             },
             context: ContextConfig::default(),
             summary: SummaryConfig::default(),
@@ -556,6 +566,20 @@ mod tests {
             .unwrap();
         assert_eq!(cfg.context.conventions, vec!["CONVENTIONS.md"]);
         assert_eq!(cfg.context.max_bytes, 777);
+    }
+
+    #[test]
+    fn language_default_is_pt_br() {
+        let cfg = base_config();
+        assert_eq!(cfg.review.language, "pt-BR");
+    }
+
+    #[test]
+    fn toml_overrides_language() {
+        let mut cfg = base_config();
+        cfg.merge_toml_str("version = 1\n[review]\nlanguage = \"en-US\"\n")
+            .unwrap();
+        assert_eq!(cfg.review.language, "en-US");
     }
 
     #[test]

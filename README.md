@@ -48,6 +48,7 @@ model = "openai/gpt-5-mini"
 max_diff_bytes = 180000
 chunk_bytes = 45000
 ignore = ["**/*.lock", "dist/**"]
+language = "pt-BR"
 
 [context]
 conventions = ["AGENTS.md", "CONTRIBUTING.md"]
@@ -88,6 +89,17 @@ truncated if the combined content exceeds the limit.
 - OpenAI and Groq do not return monetary cost per request. The summary will
   show token counts.
 
+### Review
+
+| Field | Description |
+|---|---|
+| `max_diff_bytes` | Hard cap for reviewed diff size (default `180000`) |
+| `chunk_bytes` | Chunk size before each LLM call (default `45000`) |
+| `ignore` | Comma-separated glob patterns to skip in diff |
+| `language` | Language for LLM-generated findings (default `pt-BR`) |
+
+`CURURU_LANGUAGE` environment variable overrides the TOML value.
+
 ### Summary
 
 | `show_cost` | Show provider-reported cost |
@@ -108,6 +120,7 @@ through repository configuration.
 | `CURURU_IGNORE` | no | lockfiles, dist, build | Comma-separated globs to skip in diff |
 | `CURURU_MAX_DIFF_BYTES` | no | `180000` | Hard cap for reviewed diff size |
 | `CURURU_CHUNK_BYTES` | no | `45000` | Chunk size before each LLM call |
+| `CURURU_LANGUAGE` | no | `pt-BR` | Review language (overrides TOML) |
 
 ## Fork safety
 

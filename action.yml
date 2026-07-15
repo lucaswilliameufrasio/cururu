@@ -27,10 +27,13 @@ inputs:
     description: "Pull request number"
     required: false
     default: ${{ github.event.pull_request.number }}
+  cururu_language:
+    description: "Review language (e.g. pt-BR, en-US)"
+    required: false
 
 runs:
   using: "docker"
-  image: docker://ghcr.io/lucaswilliameufrasio/cururu@sha256:fa8c968cf9b1fd98521785eb8d929499380228beb881cdad6f59020396213fc3
+  image: docker://ghcr.io/lucaswilliameufrasio/cururu:v1.1.0
   args:
     - review
   env:
@@ -40,3 +43,4 @@ runs:
     LLM_MODEL: ${{ inputs.llm_model }}
     CURURU_PROVIDER: ${{ inputs.cururu_provider }}
     PR_NUMBER: ${{ inputs.pr_number }}
+    CURURU_LANGUAGE: ${{ inputs.cururu_language }}

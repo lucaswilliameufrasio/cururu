@@ -41,10 +41,16 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         "loaded repository context"
     );
 
+    let lang_instruction = format!("\n\nResponda em {}.\n", config.review.language);
     let system_prompt = if context_store.is_empty() {
-        REVIEW_PROMPT.to_string()
+        format!("{}{}", REVIEW_PROMPT.trim(), lang_instruction)
     } else {
-        format!("{REVIEW_PROMPT}{context_rendered}")
+        format!(
+            "{}{}\n\n{}",
+            REVIEW_PROMPT.trim(),
+            lang_instruction,
+            context_rendered
+        )
     };
 
     let agent = agent::build_agent(&config.llm, system_prompt)?;

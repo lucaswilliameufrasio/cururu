@@ -13,6 +13,7 @@ ignore = [
   "**/dist/**",
   "**/build/**",
 ]
+language = "pt-BR"
 
 [context]
 conventions = [
