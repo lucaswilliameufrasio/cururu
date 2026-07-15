@@ -331,3 +331,272 @@ fn build_globs(csv: &str) -> anyhow::Result<GlobSet> {
     }
     Ok(builder.build()?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_config() -> AppConfig {
+        AppConfig {
+            github: GitHubConfig {
+                token: "test-token".into(),
+                repository: "owner/repo".into(),
+                owner: "owner".into(),
+                repo: "repo".into(),
+                pr_number: 42,
+                api_url: "https://api.github.com".into(),
+                server_url: "https://github.com".into(),
+            },
+            llm: LlmConfig {
+                provider: LlmProvider::OpenAI,
+                base_url: "https://api.openai.com/v1".into(),
+                api_key: "sk-test".into(),
+                model: "gpt-5-mini".into(),
+                temperature: 0.1,
+                max_output_tokens: 4000,
+            },
+            review: ReviewConfig {
+                max_diff_bytes: 180_000,
+                chunk_bytes: 45_000,
+                ignore: GlobSetBuilder::new().build().unwrap(),
+            },
+            context: ContextConfig::default(),
+            summary: SummaryConfig::default(),
+        }
+    }
+
+    #[test]
+    fn provider_from_name() {
+        assert_eq!(LlmProvider::from_name("openai"), Some(LlmProvider::OpenAI));
+        assert_eq!(LlmProvider::from_name("OpenAI"), Some(LlmProvider::OpenAI));
+        assert_eq!(LlmProvider::from_name("OPENAI"), Some(LlmProvider::OpenAI));
+        assert_eq!(
+            LlmProvider::from_name("openrouter"),
+            Some(LlmProvider::OpenRouter)
+        );
+        assert_eq!(
+            LlmProvider::from_name("OpenRouter"),
+            Some(LlmProvider::OpenRouter)
+        );
+        assert_eq!(LlmProvider::from_name("groq"), Some(LlmProvider::Groq));
+        assert_eq!(LlmProvider::from_name("GROQ"), Some(LlmProvider::Groq));
+        assert_eq!(LlmProvider::from_name("invalid"), None);
+        assert_eq!(LlmProvider::from_name(""), None);
+    }
+
+    #[test]
+    fn provider_defaults() {
+        assert_eq!(
+            LlmProvider::OpenAI.default_base_url(),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(LlmProvider::OpenAI.default_model(), "gpt-5-mini");
+        assert_eq!(
+            LlmProvider::OpenRouter.default_base_url(),
+            "https://openrouter.ai/api/v1"
+        );
+        assert_eq!(LlmProvider::OpenRouter.default_model(), "openai/gpt-5-mini");
+        assert_eq!(
+            LlmProvider::Groq.default_base_url(),
+            "https://api.groq.com/openai/v1"
+        );
+        assert_eq!(LlmProvider::Groq.default_model(), "llama-3.3-70b-versatile");
+    }
+
+    #[test]
+    fn rejects_unsupported_version() {
+        let mut cfg = base_config();
+        let err = cfg.merge_toml_str("version = 2\n").unwrap_err();
+        assert!(
+            err.to_string().contains("unsupported"),
+            "expected unsupported version error"
+        );
+    }
+
+    #[test]
+    fn accepts_minimal_toml() {
+        let mut cfg = base_config();
+        cfg.merge_toml_str("version = 1\n").unwrap();
+        assert_eq!(cfg.llm.provider, LlmProvider::OpenAI);
+        assert_eq!(cfg.summary.show_cost, false);
+    }
+
+    #[test]
+    fn overrides_provider() {
+        let mut cfg = base_config();
+        cfg.merge_toml_str("version = 1\n[provider]\nname = \"groq\"\nmodel = \"mixtral-8x7b\"\n")
+            .unwrap();
+        assert_eq!(cfg.llm.provider, LlmProvider::Groq);
+        assert_eq!(cfg.llm.model, "mixtral-8x7b");
+        assert_eq!(cfg.llm.base_url, "https://api.groq.com/openai/v1");
+    }
+
+    #[test]
+    fn env_var_blocks_toml_provider_override() {
+        temp_env::with_var("CURURU_PROVIDER", Some("openrouter"), || {
+            let mut cfg = base_config();
+            cfg.merge_toml_str("version = 1\n[provider]\nname = \"groq\"\n")
+                .unwrap();
+            assert_eq!(cfg.llm.provider, LlmProvider::OpenAI);
+        });
+    }
+
+    #[test]
+    fn env_var_blocks_toml_url_override() {
+        temp_env::with_var("LLM_BASE_URL", Some("https://custom.example.com"), || {
+            let mut cfg = base_config();
+            cfg.merge_toml_str("version = 1\n[provider]\nbase_url = \"https://ignored.com\"\n")
+                .unwrap();
+            assert_eq!(cfg.llm.base_url, "https://api.openai.com/v1");
+        });
+    }
+
+    #[test]
+    fn env_var_blocks_toml_model_override() {
+        temp_env::with_var("LLM_MODEL", Some("custom-model"), || {
+            let mut cfg = base_config();
+            cfg.merge_toml_str("version = 1\n[provider]\nmodel = \"ignored\"\n")
+                .unwrap();
+            assert_eq!(cfg.llm.model, "gpt-5-mini");
+        });
+    }
+
+    #[test]
+    fn sets_review_config() {
+        let mut cfg = base_config();
+        cfg.merge_toml_str(
+            "version = 1\n[review]\nmax_diff_bytes = 9999\nchunk_bytes = 1111\nignore = [\"*.lock\"]\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.review.max_diff_bytes, 9999);
+        assert_eq!(cfg.review.chunk_bytes, 1111);
+    }
+
+    #[test]
+    fn sets_context_files() {
+        let mut cfg = base_config();
+        cfg.merge_toml_str(
+            r#"
+            version = 1
+            [context]
+            conventions = ["AGENTS.md"]
+            specifications = ["docs/sdd/**/*.md"]
+            skills = [".agents/skills/**/SKILL.md"]
+            additional = ["docs/adr/**/*.md"]
+            max_bytes = 50000
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.context.conventions, vec!["AGENTS.md"]);
+        assert_eq!(cfg.context.max_bytes, 50000);
+    }
+
+    #[test]
+    fn sets_summary_flags() {
+        let mut cfg = base_config();
+        cfg.merge_toml_str("version = 1\n[summary]\nshow_cost = true\nshow_usage = true\n")
+            .unwrap();
+        assert!(cfg.summary.show_cost);
+        assert!(cfg.summary.show_usage);
+    }
+
+    #[test]
+    fn partial_toml_does_not_reset_unset_fields() {
+        let mut cfg = base_config();
+        cfg.context.max_bytes = 777;
+        cfg.merge_toml_str("version = 1\n[context]\nconventions = [\"CONVENTIONS.md\"]\n")
+            .unwrap();
+        assert_eq!(cfg.context.conventions, vec!["CONVENTIONS.md"]);
+        assert_eq!(cfg.context.max_bytes, 777);
+    }
+
+    #[test]
+    fn build_globs_empty() {
+        let set = build_globs("").unwrap();
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn build_globs_multiple() {
+        let set = build_globs("*.rs,*.toml").unwrap();
+        assert!(set.is_match("main.rs"));
+        assert!(set.is_match("Cargo.toml"));
+        assert!(!set.is_match("README.md"));
+    }
+
+    #[test]
+    fn env_required_ok() {
+        temp_env::with_var("TEST_ENV_REQUIRED", Some("value"), || {
+            assert_eq!(env_required("TEST_ENV_REQUIRED").unwrap(), "value");
+        });
+    }
+
+    #[test]
+    fn env_required_missing() {
+        temp_env::with_var("TEST_ENV_UNSET", None::<&str>, || {
+            assert!(env_required("TEST_ENV_UNSET").is_err());
+        });
+    }
+
+    #[test]
+    fn env_required_empty() {
+        temp_env::with_var("TEST_ENV_EMPTY", Some(""), || {
+            assert!(env_required("TEST_ENV_EMPTY").is_err());
+        });
+    }
+
+    #[test]
+    fn env_optional_returns_none_for_empty() {
+        temp_env::with_var("TEST_OPT_EMPTY", Some(""), || {
+            assert_eq!(env_optional("TEST_OPT_EMPTY"), None);
+        });
+    }
+
+    #[test]
+    fn env_optional_returns_value() {
+        temp_env::with_var("TEST_OPT_VAL", Some("hello"), || {
+            assert_eq!(env_optional("TEST_OPT_VAL"), Some("hello".into()));
+        });
+    }
+
+    #[test]
+    fn env_parse_invalid_returns_error() {
+        temp_env::with_var("TEST_PARSE", Some("not-a-number"), || {
+            assert!(env_parse::<u32>("TEST_PARSE", 0).is_err());
+        });
+    }
+
+    #[test]
+    fn env_parse_valid() {
+        temp_env::with_var("TEST_PARSE_VALID", Some("42"), || {
+            assert_eq!(env_parse::<u32>("TEST_PARSE_VALID", 0).unwrap(), 42);
+        });
+    }
+
+    #[test]
+    fn env_parse_missing_uses_default() {
+        temp_env::with_var("TEST_PARSE_MISSING", None::<&str>, || {
+            assert_eq!(env_parse::<u32>("TEST_PARSE_MISSING", 99).unwrap(), 99);
+        });
+    }
+
+    #[test]
+    fn provider_name_changes_default_url() {
+        temp_env::with_var("CURURU_PROVIDER", Some("groq"), || {
+            temp_env::with_var("LLM_BASE_URL", None::<&str>, || {
+                temp_env::with_var("LLM_API_KEY", Some("key"), || {
+                    temp_env::with_var("GITHUB_TOKEN", Some("token"), || {
+                        temp_env::with_var("GITHUB_REPOSITORY", Some("owner/repo"), || {
+                            temp_env::with_var("PR_NUMBER", Some("1"), || {
+                                let cfg = AppConfig::from_env().unwrap();
+                                assert_eq!(cfg.llm.provider, LlmProvider::Groq);
+                                assert_eq!(cfg.llm.base_url, "https://api.groq.com/openai/v1");
+                                assert_eq!(cfg.llm.model, "llama-3.3-70b-versatile");
+                            });
+                        });
+                    });
+                });
+            });
+        });
+    }
+}
