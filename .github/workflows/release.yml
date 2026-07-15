@@ -11,12 +11,18 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+            suffix: amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            suffix: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -28,14 +34,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata
-        id: meta
+      - name: Generate platform tags
+        id: tags
+        run: |
+          TAG="ghcr.io/${{ github.repository }}:${{ github.ref_name }}-${{ matrix.suffix }}"
+          echo "tags=$TAG" >> "$GITHUB_STEP_SUMMARY"
+          echo "tags=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Docker labels
+        id: labels
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}
 
       - name: Build and push
         id: build
@@ -43,33 +53,59 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: ${{ matrix.platform }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: ${{ steps.labels.outputs.labels }}
+          cache-from: type=gha,scope=release-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.suffix }}
           provenance: true
           sbom: true
 
-      - name: Image summary
-        shell: bash
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multiarch manifest
         run: |
+          IMG="ghcr.io/${{ github.repository }}"
+          TAG="${{ github.ref_name }}"
+          MAJOR="v$(echo $TAG | sed 's/v\([0-9]*\).*/\1/')"
+          docker buildx imagetools create \
+            -t "$IMG:$TAG" \
+            -t "$IMG:$MAJOR" \
+            -t "$IMG:latest" \
+            "$IMG:$TAG-amd64" \
+            "$IMG:$TAG-arm64"
+
+      - name: Image summary
+        run: |
+          IMG="ghcr.io/${{ github.repository }}"
+          TAG="${{ github.ref_name }}"
           {
-            echo "## Image pushed to GHCR"
+            echo "## Image released"
             echo ""
             echo "**Repository:** \`${{ github.repository }}\`"
-            echo "**Digest:** \`${{ steps.build.outputs.digest }}\`"
-            echo "**Tags:**"
+            echo "**Tags:** \`$TAG\`, \`v$(echo $TAG | sed 's/v\([0-9]*\).*/\1/')\`, \`latest\`"
+            echo ""
             echo '```'
-            echo '${{ steps.meta.outputs.tags }}'
+            docker buildx imagetools inspect "$IMG:$TAG"
+            echo '```'
+            echo ""
+            echo "### Per-platform size"
+            echo '```'
+            for suf in amd64 arm64; do
+              echo "--- $suf ---"
+              docker buildx imagetools inspect "$IMG:$TAG-$suf" 2>/dev/null | head -10
+            done
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Multiarch manifest
-        shell: bash
-        run: |
-          IMAGE="ghcr.io/${{ github.repository }}:${{ github.ref_name }}"
-          echo "## Multi-arch manifest for \`${IMAGE}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          docker buildx imagetools inspect "${IMAGE}" >> "$GITHUB_STEP_SUMMARY" 2>&1
-          echo '```' >> "$GITHUB_STEP_SUMMARY"

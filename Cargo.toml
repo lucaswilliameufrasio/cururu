@@ -1,6 +1,6 @@
 [package]
 name = "cururu"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
@@ -29,6 +29,11 @@ url = "2.5"
 insta = { version = "1.43", features = ["json"] }
 temp-env = "0.3"
 wiremock = "0.6"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
 
 [lints.rust]
 unsafe_code = "forbid"

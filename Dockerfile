@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 ARG RUST_VERSION=1.97.0
 ARG CARGO_CHEF_VERSION=0.1.77
 
@@ -21,5 +19,4 @@ RUN cargo build --release --bin cururu
 FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
 WORKDIR /app
 COPY --from=builder /app/target/release/cururu ./cururu
-USER nonroot:nonroot
 ENTRYPOINT ["./cururu"]
