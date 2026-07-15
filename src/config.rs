@@ -185,6 +185,9 @@ impl AppConfig {
                 if env_optional("LLM_BASE_URL").is_none() {
                     self.llm.base_url = p.default_base_url().to_string();
                 }
+                if env_optional("LLM_MODEL").is_none() {
+                    self.llm.model = p.default_model().to_string();
+                }
             }
             if env_optional("LLM_BASE_URL").is_none()
                 && let Some(url) = tp.base_url
@@ -335,6 +338,9 @@ fn build_globs(csv: &str) -> anyhow::Result<GlobSet> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{LazyLock, Mutex};
+
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn base_config() -> AppConfig {
         AppConfig {
@@ -423,6 +429,7 @@ mod tests {
 
     #[test]
     fn overrides_provider() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let mut cfg = base_config();
         cfg.merge_toml_str("version = 1\n[provider]\nname = \"groq\"\nmodel = \"mixtral-8x7b\"\n")
             .unwrap();
@@ -432,32 +439,73 @@ mod tests {
     }
 
     #[test]
-    fn env_var_blocks_toml_provider_override() {
+    fn provider_change_updates_default_model() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let mut cfg = base_config();
+        assert_eq!(cfg.llm.model, "gpt-5-mini");
+        cfg.merge_toml_str("version = 1\n[provider]\nname = \"groq\"\n")
+            .unwrap();
+        assert_eq!(cfg.llm.provider, LlmProvider::Groq);
+        assert_eq!(cfg.llm.model, "llama-3.3-70b-versatile");
+        assert_eq!(cfg.llm.base_url, "https://api.groq.com/openai/v1");
+    }
+
+    #[test]
+    fn env_var_overrides_toml_provider() {
+        let _guard = ENV_LOCK.lock().unwrap();
         temp_env::with_var("CURURU_PROVIDER", Some("openrouter"), || {
-            let mut cfg = base_config();
-            cfg.merge_toml_str("version = 1\n[provider]\nname = \"groq\"\n")
-                .unwrap();
-            assert_eq!(cfg.llm.provider, LlmProvider::OpenAI);
+            temp_env::with_var("GITHUB_TOKEN", Some("token"), || {
+                temp_env::with_var("GITHUB_REPOSITORY", Some("owner/repo"), || {
+                    temp_env::with_var("PR_NUMBER", Some("1"), || {
+                        temp_env::with_var("LLM_API_KEY", Some("key"), || {
+                            let mut cfg = AppConfig::from_env().unwrap();
+                            cfg.merge_toml_str("version = 1\n[provider]\nname = \"groq\"\n")
+                                .unwrap();
+                            assert_eq!(cfg.llm.provider, LlmProvider::OpenRouter);
+                        });
+                    });
+                });
+            });
         });
     }
 
     #[test]
-    fn env_var_blocks_toml_url_override() {
+    fn env_var_overrides_toml_base_url() {
+        let _guard = ENV_LOCK.lock().unwrap();
         temp_env::with_var("LLM_BASE_URL", Some("https://custom.example.com"), || {
-            let mut cfg = base_config();
-            cfg.merge_toml_str("version = 1\n[provider]\nbase_url = \"https://ignored.com\"\n")
-                .unwrap();
-            assert_eq!(cfg.llm.base_url, "https://api.openai.com/v1");
+            temp_env::with_var("GITHUB_TOKEN", Some("token"), || {
+                temp_env::with_var("GITHUB_REPOSITORY", Some("owner/repo"), || {
+                    temp_env::with_var("PR_NUMBER", Some("1"), || {
+                        temp_env::with_var("LLM_API_KEY", Some("key"), || {
+                            let mut cfg = AppConfig::from_env().unwrap();
+                            cfg.merge_toml_str(
+                                "version = 1\n[provider]\nbase_url = \"https://ignored.com\"\n",
+                            )
+                            .unwrap();
+                            assert_eq!(cfg.llm.base_url, "https://custom.example.com");
+                        });
+                    });
+                });
+            });
         });
     }
 
     #[test]
-    fn env_var_blocks_toml_model_override() {
+    fn env_var_overrides_toml_model() {
+        let _guard = ENV_LOCK.lock().unwrap();
         temp_env::with_var("LLM_MODEL", Some("custom-model"), || {
-            let mut cfg = base_config();
-            cfg.merge_toml_str("version = 1\n[provider]\nmodel = \"ignored\"\n")
-                .unwrap();
-            assert_eq!(cfg.llm.model, "gpt-5-mini");
+            temp_env::with_var("GITHUB_TOKEN", Some("token"), || {
+                temp_env::with_var("GITHUB_REPOSITORY", Some("owner/repo"), || {
+                    temp_env::with_var("PR_NUMBER", Some("1"), || {
+                        temp_env::with_var("LLM_API_KEY", Some("key"), || {
+                            let mut cfg = AppConfig::from_env().unwrap();
+                            cfg.merge_toml_str("version = 1\n[provider]\nmodel = \"ignored\"\n")
+                                .unwrap();
+                            assert_eq!(cfg.llm.model, "custom-model");
+                        });
+                    });
+                });
+            });
         });
     }
 
@@ -582,6 +630,7 @@ mod tests {
 
     #[test]
     fn provider_name_changes_default_url() {
+        let _guard = ENV_LOCK.lock().unwrap();
         temp_env::with_var("CURURU_PROVIDER", Some("groq"), || {
             temp_env::with_var("LLM_BASE_URL", None::<&str>, || {
                 temp_env::with_var("LLM_API_KEY", Some("key"), || {
