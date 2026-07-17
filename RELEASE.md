@@ -53,14 +53,19 @@ scopes. The release workflow uses `GITHUB_TOKEN` with `packages: write`.
 
    Commit and push this to `main`.
 
-8. **Update major git tag** so consumers pinned to `@v1` resolve to the commit
-   containing the pinned digest (not the release tag itself):
+8. **Update major git tag** so consumers pinned to `@v1` or `@v2` resolve to
+   the commit containing the pinned digest (not the release tag itself):
 
    ```bash
-   MAJOR=v1
-   git tag -f "$MAJOR" main
-   git push -f origin "$MAJOR"
+   for tag in v1 v2; do
+     git tag -f "$tag" main
+     git push -f origin "$tag"
+   done
    ```
+
+   Major tags (`v1`, `v2`) point to the latest release within that major
+   version. The `v2` tag tracks the 2.x line; maintain `v1` separately if
+   consumers still depend on it.
 
 9. **Create a GitHub Release** with release notes:
 

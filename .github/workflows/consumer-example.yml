@@ -27,7 +27,7 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
-      - uses: lucaswilliameufrasio/cururu@v1
+      - uses: lucaswilliameufrasio/cururu@v2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}
