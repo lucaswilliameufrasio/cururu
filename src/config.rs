@@ -43,7 +43,7 @@ impl LlmProvider {
         match self {
             Self::OpenAI => "gpt-5.6-luna",
             Self::OpenRouter => "openai/gpt-5.6-luna",
-            Self::Groq => "llama-3.3-70b-versatile",
+            Self::Groq => "openai/gpt-oss-120b",
         }
     }
 
@@ -122,7 +122,7 @@ impl AppConfig {
         let provider = provider_name
             .as_deref()
             .and_then(LlmProvider::from_name)
-            .unwrap_or(LlmProvider::OpenAI);
+            .unwrap_or(LlmProvider::OpenRouter);
 
         let base_url =
             env_optional("LLM_BASE_URL").unwrap_or_else(|| provider.default_base_url().to_string());
@@ -363,10 +363,10 @@ mod tests {
                 server_url: "https://github.com".into(),
             },
             llm: LlmConfig {
-                provider: LlmProvider::OpenAI,
-                base_url: "https://api.openai.com/v1".into(),
+                provider: LlmProvider::OpenRouter,
+                base_url: "https://openrouter.ai/api/v1".into(),
                 api_key: "sk-test".into(),
-                model: "gpt-5.6-luna".into(),
+                model: "openai/gpt-5.6-luna".into(),
                 temperature: 0.1,
                 max_output_tokens: 4000,
             },
@@ -419,7 +419,7 @@ mod tests {
             LlmProvider::Groq.default_base_url(),
             "https://api.groq.com/openai/v1"
         );
-        assert_eq!(LlmProvider::Groq.default_model(), "llama-3.3-70b-versatile");
+        assert_eq!(LlmProvider::Groq.default_model(), "openai/gpt-oss-120b");
     }
 
     #[test]
@@ -436,7 +436,7 @@ mod tests {
     fn accepts_minimal_toml() {
         let mut cfg = base_config();
         cfg.merge_toml_str("version = 1\n").unwrap();
-        assert_eq!(cfg.llm.provider, LlmProvider::OpenAI);
+        assert_eq!(cfg.llm.provider, LlmProvider::OpenRouter);
         assert_eq!(cfg.summary.show_cost, false);
     }
 
@@ -455,11 +455,11 @@ mod tests {
     fn provider_change_updates_default_model() {
         let _guard = ENV_LOCK.lock().unwrap();
         let mut cfg = base_config();
-        assert_eq!(cfg.llm.model, "gpt-5.6-luna");
+        assert_eq!(cfg.llm.model, "openai/gpt-5.6-luna");
         cfg.merge_toml_str("version = 1\n[provider]\nname = \"groq\"\n")
             .unwrap();
         assert_eq!(cfg.llm.provider, LlmProvider::Groq);
-        assert_eq!(cfg.llm.model, "llama-3.3-70b-versatile");
+        assert_eq!(cfg.llm.model, "openai/gpt-oss-120b");
         assert_eq!(cfg.llm.base_url, "https://api.groq.com/openai/v1");
     }
 
@@ -667,7 +667,7 @@ mod tests {
                                 let cfg = AppConfig::from_env().unwrap();
                                 assert_eq!(cfg.llm.provider, LlmProvider::Groq);
                                 assert_eq!(cfg.llm.base_url, "https://api.groq.com/openai/v1");
-                                assert_eq!(cfg.llm.model, "llama-3.3-70b-versatile");
+                                assert_eq!(cfg.llm.model, "openai/gpt-oss-120b");
                             });
                         });
                     });

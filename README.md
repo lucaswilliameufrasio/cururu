@@ -50,6 +50,10 @@ chunk_bytes = 45000
 ignore = ["**/*.lock", "dist/**"]
 language = "pt-BR"
 
+[summary]
+show_cost = true
+show_usage = true
+
 [context]
 conventions = ["AGENTS.md", "CONTRIBUTING.md"]
 specifications = ["docs/sdd/**/*.md", "docs/gdd/**/*.md"]
@@ -64,11 +68,11 @@ show_usage = true
 
 ### Provider
 
-| `name` | Default model | Default base URL |
-|---|---|---|
-| `openai` | `gpt-5.6-luna` | `https://api.openai.com/v1` |
-| `openrouter` | `openai/gpt-5.6-luna` | `https://openrouter.ai/api/v1` |
-| `groq` | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` |
+| `name` | Default model | Default base URL | Input/1M | Output/1M |
+|---|---|---|---|---|
+| `openrouter` **default** | `openai/gpt-5.6-luna` | `https://openrouter.ai/api/v1` | $1.00 | $6.00 |
+| `openai` | `gpt-5.6-luna` | `https://api.openai.com/v1` | $1.00 | $6.00 |
+| `groq` | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1` | $0.15 | $0.60 |
 
 `base_url` and `model` in TOML override the provider defaults. Environment
 variables `LLM_BASE_URL` and `LLM_MODEL` override all TOML values.
@@ -85,14 +89,15 @@ truncated if the combined content exceeds the limit.
 ### Cost
 
 A typical PR review uses ~3K tokens (small PR) to ~8K tokens (medium PR with
-context files). Estimated cost per review:
+context files). Estimated cost per review through OpenRouter pricing:
 
 | Model | Input/1M tok | Output/1M tok | Small PR (~$0.01) | Medium PR (~$0.03) |
 |---|---|---|---|---|
-| `gpt-5.6-luna` | $1.00 | $6.00 | ~$0.006 | ~$0.013 |
+| `openai/gpt-5.6-luna` **default** | $1.00 | $6.00 | ~$0.006 | ~$0.013 |
+| `openai/gpt-oss-120b` (Groq) | $0.15 | $0.60 | ~$0.001 | ~$0.002 |
 | `gemini-3.5-flash` | $2.00 | $9.00 | ~$0.010 | ~$0.023 |
 | `gpt-5.6-terra` | $3.00 | $15.00 | ~$0.015 | ~$0.036 |
-| `claude-sonnet-4` | $3.00 | $15.00 | ~$0.015 | ~$0.036 |
+| `qwen/qwen3.6-27b` (Groq preview) | $0.60 | $3.00 | ~$0.003 | ~$0.007 |
 
 **How cost reporting works:**
 
@@ -130,7 +135,7 @@ through repository configuration.
 | `LLM_API_KEY` | yes | — | LLM provider API key |
 | `LLM_BASE_URL` | no | provider default | Override API base URL |
 | `LLM_MODEL` | no | provider default | Override model name |
-| `CURURU_PROVIDER` | no | `openai` | Override provider name |
+| `CURURU_PROVIDER` | no | `openrouter` | Override provider name |
 | `CURURU_IGNORE` | no | lockfiles, dist, build | Comma-separated globs to skip in diff |
 | `CURURU_MAX_DIFF_BYTES` | no | `180000` | Hard cap for reviewed diff size |
 | `CURURU_CHUNK_BYTES` | no | `45000` | Chunk size before each LLM call |
