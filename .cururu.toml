@@ -2,7 +2,7 @@ version = 1
 
 [provider]
 name = "openai"
-model = "gpt-5-mini"
+model = "gpt-5.6-luna"
 
 [review]
 max_diff_bytes = 180000

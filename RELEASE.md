@@ -53,12 +53,12 @@ scopes. The release workflow uses `GITHUB_TOKEN` with `packages: write`.
 
    Commit and push this to `main`.
 
-8. **Update major git tag** so consumers pinned to `@v1` resolve to this
-   release:
+8. **Update major git tag** so consumers pinned to `@v1` resolve to the commit
+   containing the pinned digest (not the release tag itself):
 
    ```bash
    MAJOR=v1
-   git tag -f "$MAJOR" "$RELEASE_VERSION"
+   git tag -f "$MAJOR" main
    git push -f origin "$MAJOR"
    ```
 

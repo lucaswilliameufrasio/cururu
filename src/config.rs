@@ -41,8 +41,8 @@ impl LlmProvider {
 
     pub const fn default_model(&self) -> &str {
         match self {
-            Self::OpenAI => "gpt-5-mini",
-            Self::OpenRouter => "openai/gpt-5-mini",
+            Self::OpenAI => "gpt-5.6-luna",
+            Self::OpenRouter => "openai/gpt-5.6-luna",
             Self::Groq => "llama-3.3-70b-versatile",
         }
     }
@@ -366,7 +366,7 @@ mod tests {
                 provider: LlmProvider::OpenAI,
                 base_url: "https://api.openai.com/v1".into(),
                 api_key: "sk-test".into(),
-                model: "gpt-5-mini".into(),
+                model: "gpt-5.6-luna".into(),
                 temperature: 0.1,
                 max_output_tokens: 4000,
             },
@@ -406,12 +406,15 @@ mod tests {
             LlmProvider::OpenAI.default_base_url(),
             "https://api.openai.com/v1"
         );
-        assert_eq!(LlmProvider::OpenAI.default_model(), "gpt-5-mini");
+        assert_eq!(LlmProvider::OpenAI.default_model(), "gpt-5.6-luna");
         assert_eq!(
             LlmProvider::OpenRouter.default_base_url(),
             "https://openrouter.ai/api/v1"
         );
-        assert_eq!(LlmProvider::OpenRouter.default_model(), "openai/gpt-5-mini");
+        assert_eq!(
+            LlmProvider::OpenRouter.default_model(),
+            "openai/gpt-5.6-luna"
+        );
         assert_eq!(
             LlmProvider::Groq.default_base_url(),
             "https://api.groq.com/openai/v1"
@@ -452,7 +455,7 @@ mod tests {
     fn provider_change_updates_default_model() {
         let _guard = ENV_LOCK.lock().unwrap();
         let mut cfg = base_config();
-        assert_eq!(cfg.llm.model, "gpt-5-mini");
+        assert_eq!(cfg.llm.model, "gpt-5.6-luna");
         cfg.merge_toml_str("version = 1\n[provider]\nname = \"groq\"\n")
             .unwrap();
         assert_eq!(cfg.llm.provider, LlmProvider::Groq);

@@ -42,7 +42,7 @@ version = 1
 
 [provider]
 name = "openrouter"
-model = "openai/gpt-5-mini"
+model = "openai/gpt-5.6-luna"
 
 [review]
 max_diff_bytes = 180000
@@ -66,8 +66,8 @@ show_usage = true
 
 | `name` | Default model | Default base URL |
 |---|---|---|
-| `openai` | `gpt-5-mini` | `https://api.openai.com/v1` |
-| `openrouter` | `openai/gpt-5-mini` | `https://openrouter.ai/api/v1` |
+| `openai` | `gpt-5.6-luna` | `https://api.openai.com/v1` |
+| `openrouter` | `openai/gpt-5.6-luna` | `https://openrouter.ai/api/v1` |
 | `groq` | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` |
 
 `base_url` and `model` in TOML override the provider defaults. Environment
@@ -84,10 +84,24 @@ truncated if the combined content exceeds the limit.
 
 ### Cost
 
+A typical PR review uses ~3K tokens (small PR) to ~8K tokens (medium PR with
+context files). Estimated cost per review:
+
+| Model | Input/1M tok | Output/1M tok | Small PR (~$0.01) | Medium PR (~$0.03) |
+|---|---|---|---|---|
+| `gpt-5.6-luna` | $1.00 | $6.00 | ~$0.006 | ~$0.013 |
+| `gemini-3.5-flash` | $2.00 | $9.00 | ~$0.010 | ~$0.023 |
+| `gpt-5.6-terra` | $3.00 | $15.00 | ~$0.015 | ~$0.036 |
+| `claude-sonnet-4` | $3.00 | $15.00 | ~$0.015 | ~$0.036 |
+
+**How cost reporting works:**
+
 - OpenRouter returns per-request cost in the API response. When `show_cost =
   true` the total is shown in the summary.
 - OpenAI and Groq do not return monetary cost per request. The summary will
   show token counts.
+- All costs estimate through OpenRouter pricing. Direct provider pricing may
+  differ.
 
 ### Review
 
