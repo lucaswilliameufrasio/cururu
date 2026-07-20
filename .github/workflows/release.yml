@@ -61,6 +61,12 @@ jobs:
           provenance: true
           sbom: true
 
+      - name: Smoke test
+        run: |
+          docker run --rm --workdir /github/workspace \
+            "ghcr.io/${{ github.repository }}:${{ github.ref_name }}-${{ matrix.suffix }}" \
+            --version
+
   merge:
     needs: build
     runs-on: ubuntu-24.04

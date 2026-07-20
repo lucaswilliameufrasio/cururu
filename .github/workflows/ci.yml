@@ -39,6 +39,11 @@ jobs:
       - name: Test
         run: cargo test
 
+      - name: Docker smoke test
+        run: |
+          docker build -t cururu:ci .
+          docker run --rm --workdir /github/workspace cururu:ci --version
+
       - name: Audit
         run: |
           if cargo install cargo-audit --locked 2>/dev/null; then

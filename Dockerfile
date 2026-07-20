@@ -19,4 +19,4 @@ RUN cargo build --release --bin cururu
 FROM gcr.io/distroless/cc-debian13 AS runtime
 WORKDIR /app
 COPY --from=builder /app/target/release/cururu ./cururu
-ENTRYPOINT ["./cururu"]
+ENTRYPOINT ["/app/cururu"]
