@@ -33,7 +33,7 @@ inputs:
 
 runs:
   using: "docker"
-  image: docker://ghcr.io/lucaswilliameufrasio/cururu:v1.2.1
+  image: docker://ghcr.io/lucaswilliameufrasio/cururu@sha256:e0525a9bc25a2d6f48496770c1e61eaf85529ff39ec8b5208f8b26dfa05d62a9
   args:
     - review
   env:
