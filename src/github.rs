@@ -5,6 +5,17 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+fn url_encode(value: &str) -> String {
+    value
+        .replace('%', "%25")
+        .replace('/', "%2F")
+        .replace('?', "%3F")
+        .replace('#', "%23")
+        .replace('&', "%26")
+        .replace('+', "%2B")
+        .replace(' ', "%20")
+}
+
 #[derive(Debug, Clone)]
 pub struct GitHubClient {
     client: reqwest::Client,
@@ -20,6 +31,18 @@ struct PullRequest {
 
 #[derive(Debug, Deserialize)]
 struct PullRef {
+    sha: String,
+    #[serde(rename = "ref")]
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitRef {
+    object: GitRefObject,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitRefObject {
     sha: String,
 }
 
@@ -80,14 +103,14 @@ impl GitHubClient {
     }
 
     pub async fn fetch_base_sha(&self) -> anyhow::Result<String> {
-        let url = format!(
+        let pr_url = format!(
             "{}/repos/{}/{}/pulls/{}",
             self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
         );
         let pr: PullRequest = retry_with_backoff(
             || async {
                 self.client
-                    .get(&url)
+                    .get(&pr_url)
                     .timeout(Duration::from_secs(15))
                     .header("Accept", "application/vnd.github+json")
                     .header("X-GitHub-Api-Version", "2026-03-10")
@@ -102,7 +125,37 @@ impl GitHubClient {
             3,
         )
         .await?;
-        Ok(pr.base.sha)
+
+        // Resolve the base branch head so .cururu.toml is read from the current
+        // base branch state, not the possibly-stale merge base recorded on the PR.
+        let ref_url = format!(
+            "{}/repos/{}/{}/git/ref/heads/{}",
+            self.cfg.api_url,
+            self.cfg.owner,
+            self.cfg.repo,
+            url_encode(&pr.base.name)
+        );
+        let head_sha = retry_with_backoff(
+            || async {
+                self.client
+                    .get(&ref_url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<GitRef>()
+                    .await
+                    .context("failed to fetch base branch ref")
+                    .map(|r| r.object.sha)
+            },
+            3,
+        )
+        .await?;
+
+        Ok(head_sha)
     }
 
     pub async fn fetch_config_toml(&self, base_sha: &str) -> anyhow::Result<Option<String>> {
