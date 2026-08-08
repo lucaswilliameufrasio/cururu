@@ -266,7 +266,8 @@ impl GitHubClient {
         );
         retry_with_backoff(
             || async {
-                self.client
+                let resp = self
+                    .client
                     .post(&url)
                     .timeout(Duration::from_secs(15))
                     .header("Accept", "application/vnd.github+json")
@@ -275,9 +276,17 @@ impl GitHubClient {
                     .json(&CreateIssueComment { body })
                     .send()
                     .await
-                    .context("failed to send create comment request")?
-                    .error_for_status()
-                    .context("failed to create GitHub PR summary comment")?;
+                    .context("failed to send create comment request")?;
+                let status = resp.status();
+                if !status.is_success() {
+                    let detail = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "(unreadable body)".to_string());
+                    anyhow::bail!(
+                        "failed to create GitHub PR summary comment ({status}): {detail}"
+                    );
+                }
                 Ok(())
             },
             3,
