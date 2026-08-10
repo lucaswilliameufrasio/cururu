@@ -10,7 +10,7 @@ mod review;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use config::AppConfig;
+use config::{AppConfig, CommentMode};
 use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Debug, Parser)]
@@ -83,11 +83,45 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Review => {
             let result = review::run_review(&config, &github).await?;
-            let body = output::render_summary_comment(&result);
-            github.upsert_summary_comment(&body).await?;
+
+            match config.review.comment_mode {
+                CommentMode::Inline => {
+                    let head_sha = github.fetch_head_sha().await?;
+                    let drafts = build_inline_drafts(&result);
+                    github.reconcile_review_comments(&head_sha, &drafts).await?;
+                    // Keep a compact summary in the PR conversation as well.
+                    let body = output::render_summary_comment(&result);
+                    github.upsert_summary_comment(&body).await?;
+                }
+                CommentMode::Summary => {
+                    let body = output::render_summary_comment(&result);
+                    github.upsert_summary_comment(&body).await?;
+                }
+            }
+
             println!("{}", serde_json::to_string_pretty(&result.review)?);
         }
     }
 
     Ok(())
+}
+
+/// Build review comment drafts from findings. Findings with a valid diff line
+/// are anchored inline; others fall back to a file-level comment.
+fn build_inline_drafts(result: &review::ReviewOutput) -> Vec<github::ReviewCommentDraft> {
+    result
+        .review
+        .findings
+        .iter()
+        .map(|f| {
+            let line = f
+                .line
+                .filter(|line| diff::is_valid_anchor(&result.changed_files, &f.path, *line));
+            github::ReviewCommentDraft {
+                path: f.path.clone(),
+                line,
+                body: output::render_inline_finding(f),
+            }
+        })
+        .collect()
 }

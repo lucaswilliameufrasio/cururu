@@ -11,6 +11,8 @@ pub struct ReviewOutput {
     pub model: String,
     pub show_usage: bool,
     pub show_cost: bool,
+    /// Parsed changed files with right-side line numbers for inline anchors.
+    pub changed_files: Vec<diff::ChangedFile>,
 }
 
 pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Result<ReviewOutput> {
@@ -84,6 +86,7 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         model,
         show_usage: config.summary.show_usage,
         show_cost: config.summary.show_cost,
+        changed_files: files,
     })
 }
 

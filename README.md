@@ -50,6 +50,7 @@ max_diff_bytes = 180000
 chunk_bytes = 45000
 ignore = ["**/*.lock", "dist/**"]
 language = "pt-BR"
+comment_mode = "inline"
 
 [summary]
 show_cost = true
@@ -61,10 +62,6 @@ specifications = ["docs/sdd/**/*.md", "docs/gdd/**/*.md"]
 skills = [".agents/skills/**/SKILL.md"]
 additional = ["docs/adr/**/*.md"]
 max_bytes = 100000
-
-[summary]
-show_cost = true
-show_usage = true
 ```
 
 ### Provider
@@ -117,8 +114,27 @@ context files). Estimated cost per review through OpenRouter pricing:
 | `chunk_bytes` | Chunk size before each LLM call (default `45000`) |
 | `ignore` | Comma-separated glob patterns to skip in diff |
 | `language` | Language for LLM-generated findings (default `pt-BR`) |
+| `comment_mode` | `inline` (default) or `summary` |
 
 `CURURU_LANGUAGE` environment variable overrides the TOML value.
+
+### Comment modes
+
+Cururu can post review feedback in two ways, configured via `[review].
+comment_mode`:
+
+**`inline` (default)** — one review comment anchored to each finding's diff
+line, like a normal human review. Comments carry the severity, finding, and
+suggestion, with line-level highlights on the changed lines. On subsequent
+pushes Cururu updates comments that remain relevant and removes those that are
+no longer flagged, keeping the review in sync.
+
+**`summary`** — a single compact comment in the PR conversation with a findings
+table, tokens, and cost. This is the previous behavior; it updates in place via
+a marker instead of duplicating.
+
+The action requires `pull-requests: write` and `issues: write` permissions to
+post inline comments and the summary comment respectively.
 
 ### Summary
 

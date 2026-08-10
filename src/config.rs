@@ -67,12 +67,29 @@ pub struct LlmConfig {
     pub max_output_tokens: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommentMode {
+    Inline,
+    Summary,
+}
+
+impl CommentMode {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "inline" => Some(Self::Inline),
+            "summary" => Some(Self::Summary),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ReviewConfig {
     pub max_diff_bytes: usize,
     pub chunk_bytes: usize,
     pub ignore: GlobSet,
     pub language: String,
+    pub comment_mode: CommentMode,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +176,7 @@ impl AppConfig {
                 chunk_bytes: env_parse("CURURU_CHUNK_BYTES", 45_000)?,
                 ignore: build_globs(&ignore_globs)?,
                 language: env_optional("CURURU_LANGUAGE").unwrap_or_else(|| "pt-BR".into()),
+                comment_mode: CommentMode::Inline,
             },
             context: ContextConfig::default(),
             summary: SummaryConfig::default(),
@@ -217,6 +235,11 @@ impl AppConfig {
                 && let Some(lang) = tr.language
             {
                 self.review.language = lang;
+            }
+            if let Some(mode) = tr.comment_mode
+                && let Some(m) = CommentMode::from_name(&mode)
+            {
+                self.review.comment_mode = m;
             }
         }
 
@@ -284,6 +307,8 @@ struct ReviewToml {
     ignore: Option<Vec<String>>,
     #[serde(default)]
     language: Option<String>,
+    #[serde(default)]
+    comment_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -375,6 +400,7 @@ mod tests {
                 chunk_bytes: 45_000,
                 ignore: GlobSetBuilder::new().build().unwrap(),
                 language: "pt-BR".into(),
+                comment_mode: CommentMode::Inline,
             },
             context: ContextConfig::default(),
             summary: SummaryConfig::default(),
@@ -531,6 +557,39 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.review.max_diff_bytes, 9999);
         assert_eq!(cfg.review.chunk_bytes, 1111);
+    }
+
+    #[test]
+    fn comment_mode_defaults_to_inline() {
+        let cfg = base_config();
+        assert_eq!(cfg.review.comment_mode, CommentMode::Inline);
+    }
+
+    #[test]
+    fn toml_overrides_comment_mode() {
+        let mut cfg = base_config();
+        cfg.merge_toml_str("version = 1\n[review]\ncomment_mode = \"summary\"\n")
+            .unwrap();
+        assert_eq!(cfg.review.comment_mode, CommentMode::Summary);
+
+        let mut cfg = base_config();
+        cfg.merge_toml_str("version = 1\n[review]\ncomment_mode = \"inline\"\n")
+            .unwrap();
+        assert_eq!(cfg.review.comment_mode, CommentMode::Inline);
+    }
+
+    #[test]
+    fn comment_mode_from_name() {
+        assert_eq!(CommentMode::from_name("inline"), Some(CommentMode::Inline));
+        assert_eq!(
+            CommentMode::from_name("SUMMARY"),
+            Some(CommentMode::Summary)
+        );
+        assert_eq!(
+            CommentMode::from_name("  summary  "),
+            Some(CommentMode::Summary)
+        );
+        assert_eq!(CommentMode::from_name("nope"), None);
     }
 
     #[test]
