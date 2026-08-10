@@ -13,7 +13,10 @@ Focus on:
 Rules:
 - Return JSON only.
 - Do not use Markdown outside JSON string fields.
-- Do not invent line numbers. Use null if unsure.
+- For each finding, report the line number in the NEW file (the right side of
+  the diff, i.e. the `+new` numbering from the `@@` hunk headers). The diff
+  contains the exact line numbers; read them from the hunk headers and count
+  lines from there. Only use null when you genuinely cannot determine a line.
 - Only report high-confidence findings.
 - Avoid style-only nitpicks.
 - Do not ask questions in findings.
