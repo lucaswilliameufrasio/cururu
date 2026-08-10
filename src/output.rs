@@ -103,7 +103,6 @@ pub fn render_inline_finding(f: &ReviewFinding) -> String {
     if !suggestion.is_empty() {
         let _ = write!(out, "\n\n> **Sugestão:** {suggestion}");
     }
-    out.push_str(&render_signature());
     out
 }
 
@@ -178,10 +177,9 @@ mod tests {
     }
 
     #[test]
-    fn signature_is_appended_to_inline_finding() {
+    fn inline_finding_has_no_signature() {
         let body = render_inline_finding(&finding());
-        assert!(body.contains("_Cururu_"));
-        assert!(body.contains("cururu"));
+        assert!(!body.contains("_Cururu_"));
     }
 
     #[test]
