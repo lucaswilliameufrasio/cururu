@@ -17,6 +17,7 @@ pull_request event
 Add `.github/workflows/cururu-review.yml` to any repository:
 
 ```yaml
+name: Cururu PR Review
 on: pull_request_target
 permissions:
   contents: read
@@ -26,7 +27,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: lucaswilliameufrasio/cururu@v2
+      - uses: lucaswilliameufrasio/cururu@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}
