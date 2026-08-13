@@ -1,5 +1,7 @@
 # Cururu
 
+![cururu-github](https://the-counter.lucaswilliameufrasio.com/v1/badges/cururu-github?label=Visualiza%C3%A7%C3%B5es&label_color=%23555&color=%2350c700)
+
 A stateless Rust PR review bot for GitHub Actions. Runs on any repository without
 installation — add one workflow file and configure it with `.cururu.toml`.
 
