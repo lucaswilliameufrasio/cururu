@@ -66,6 +66,8 @@ struct IssueComment {
 #[derive(Debug, Deserialize)]
 pub struct CommentUser {
     pub login: String,
+    #[serde(rename = "type")]
+    pub kind: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -283,9 +285,15 @@ impl GitHubClient {
         ))
     }
 
-    async fn current_login(&self) -> anyhow::Result<String> {
+    /// Resolve the authenticated user's login, when the token permits it.
+    ///
+    /// GitHub Actions tokens (`GITHUB_TOKEN`) cannot call `GET /user` and return
+    /// 403. In that case we fall back to `None` and identify Cururu's own
+    /// comments by bot type combined with the exclusive Cururu marker, so we
+    /// never touch another bot's comments.
+    async fn current_login(&self) -> Option<String> {
         let url = format!("{}/user", self.cfg.api_url);
-        Ok(self
+        let user = self
             .client
             .get(&url)
             .timeout(Duration::from_secs(15))
@@ -294,12 +302,39 @@ impl GitHubClient {
             .bearer_auth(&self.cfg.token)
             .send()
             .await
-            .context("failed to fetch authenticated GitHub user")?
-            .error_for_status()?
+            .ok()?
+            .error_for_status()
+            .ok()?
             .json::<AuthenticatedUser>()
             .await
-            .context("failed to parse authenticated GitHub user")?
-            .login)
+            .ok()?;
+        Some(user.login)
+    }
+
+    /// Match a comment user against Cururu's own identity.
+    ///
+    /// Prefers the authenticated login when available; otherwise matches bots
+    /// whose comments carry the exclusive Cururu marker.
+    fn user_is_cururu(user: Option<&CommentUser>, own_login: Option<&str>) -> bool {
+        let user_login = user.map(|u| u.login.as_str());
+        let is_bot = user.is_some_and(|u| u.kind == "Bot");
+        own_login.is_some_and(|own| user_login == Some(own)) || (own_login.is_none() && is_bot)
+    }
+
+    fn comment_is_cururu(comment: &ReviewComment, own_login: Option<&str>) -> bool {
+        Self::user_is_cururu(comment.user.as_ref(), own_login)
+            && comment
+                .body
+                .as_deref()
+                .is_some_and(|b| b.contains(output::finding_marker()))
+    }
+
+    fn issue_comment_is_cururu(comment: &IssueComment, own_login: Option<&str>) -> bool {
+        Self::user_is_cururu(comment.user.as_ref(), own_login)
+            && comment
+                .body
+                .as_deref()
+                .is_some_and(|b| b.contains(output::marker()))
     }
 
     #[allow(dead_code)]
@@ -478,20 +513,10 @@ impl GitHubClient {
         desired: &[ReviewCommentDraft],
     ) -> anyhow::Result<()> {
         let existing = self.list_review_comments().await?;
-        let current_login = self.current_login().await?;
+        let own_login = self.current_login().await;
         let cururu_existing: Vec<ReviewComment> = existing
             .into_iter()
-            .filter(|c| {
-                let is_cururu_user = c
-                    .user
-                    .as_ref()
-                    .is_some_and(|user| user.login == current_login);
-                is_cururu_user
-                    && c.body
-                        .as_deref()
-                        .unwrap_or_default()
-                        .contains(output::finding_marker())
-            })
+            .filter(|c| Self::comment_is_cururu(c, own_login.as_deref()))
             .collect();
 
         // Map desired comments by (path, line) key so multiple findings on the
@@ -551,12 +576,9 @@ impl GitHubClient {
             .json()
             .await
             .context("failed to parse PR comments")?;
-        let current_login = self.current_login().await?;
+        let own_login = self.current_login().await;
         Ok(comments.iter().any(|comment| {
-            comment
-                .user
-                .as_ref()
-                .is_some_and(|user| user.login == current_login)
+            Self::issue_comment_is_cururu(comment, own_login.as_deref())
                 && comment.body.as_deref().is_some_and(|body| {
                     body.contains(output::marker())
                         && body.contains(&format!("<!-- cururu:state:v1 head={head_sha} -->"))
@@ -587,21 +609,11 @@ impl GitHubClient {
             3,
         )
         .await?;
-        let current_login = self.current_login().await?;
+        let own_login = self.current_login().await;
 
         Ok(comments
             .into_iter()
-            .find(|c| {
-                let is_cururu_user = c
-                    .user
-                    .as_ref()
-                    .is_some_and(|user| user.login == current_login);
-                is_cururu_user
-                    && c.body
-                        .as_deref()
-                        .unwrap_or_default()
-                        .contains(output::marker())
-            })
+            .find(|c| Self::issue_comment_is_cururu(c, own_login.as_deref()))
             .map(|c| c.id))
     }
 
@@ -739,5 +751,54 @@ mod tests {
         ];
         let map = merge_desired_by_anchor(&drafts);
         assert_eq!(map.len(), 2);
+    }
+
+    fn comment(body: &str, login: &str, kind: &str) -> ReviewComment {
+        ReviewComment {
+            id: 1,
+            body: Some(body.into()),
+            user: Some(CommentUser {
+                login: login.into(),
+                kind: kind.into(),
+            }),
+            path: "a.rs".into(),
+            line: None,
+            subject_type: None,
+        }
+    }
+
+    fn finding_comment(login: &str, kind: &str) -> ReviewComment {
+        comment(&format!("{} body", output::finding_marker()), login, kind)
+    }
+
+    #[test]
+    fn cururu_comment_matches_by_login_when_available() {
+        let c = finding_comment("cururu[bot]", "Bot");
+        assert!(GitHubClient::comment_is_cururu(&c, Some("cururu[bot]")));
+    }
+
+    #[test]
+    fn cururu_comment_does_not_match_other_login() {
+        let c = finding_comment("other[bot]", "Bot");
+        assert!(!GitHubClient::comment_is_cururu(&c, Some("cururu[bot]")));
+    }
+
+    #[test]
+    fn falls_back_to_bot_with_marker_when_login_unavailable() {
+        let c = finding_comment("github-actions[bot]", "Bot");
+        assert!(GitHubClient::comment_is_cururu(&c, None));
+    }
+
+    #[test]
+    fn does_not_touch_other_bot_without_marker() {
+        // Another bot without the exclusive Cururu marker is not ours.
+        let c = comment("no marker here", "other[bot]", "Bot");
+        assert!(!GitHubClient::comment_is_cururu(&c, None));
+    }
+
+    #[test]
+    fn ignores_human_comments_when_login_unavailable() {
+        let c = finding_comment("alice", "User");
+        assert!(!GitHubClient::comment_is_cururu(&c, None));
     }
 }
