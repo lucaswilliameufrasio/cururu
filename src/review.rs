@@ -1,4 +1,11 @@
-use crate::{agent, config::AppConfig, context, diff, github::GitHubClient, provider};
+use crate::{
+    agent,
+    config::AppConfig,
+    context::{self, ContextFile, ContextStore},
+    diff,
+    github::GitHubClient,
+    provider,
+};
 use anyhow::Context;
 use tracing::{info, warn};
 
@@ -13,9 +20,11 @@ pub struct ReviewOutput {
     pub show_cost: bool,
     /// Parsed changed files with right-side line numbers for inline anchors.
     pub changed_files: Vec<diff::ChangedFile>,
+    pub head_sha: String,
 }
 
 pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Result<ReviewOutput> {
+    let head_sha = github.fetch_head_sha().await?;
     let raw_diff = github
         .fetch_pr_diff()
         .await
@@ -36,14 +45,28 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
     );
     info!(files = files.len(), chunks = chunks.len(), pr = %github.pr_url(), "reviewing PR diff");
 
-    let context_store = fetch_repo_context(config, github).await?;
+    let mut context_store = fetch_repo_context(config, github).await?;
+    if config.context.auto.enabled {
+        append_auto_context(config, github, &mut context_store, &files).await?;
+    }
     let context_rendered = context_store.render();
     info!(
         files = context_store.files.len(),
         "loaded repository context"
     );
 
-    let lang_instruction = format!("\n\nResponda em {}.\n", config.review.language);
+    let focus_instruction = if config.review.policy.focus.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nPriorize estes focos de review: {}.\n",
+            config.review.policy.focus.join(", ")
+        )
+    };
+    let lang_instruction = format!(
+        "\n\nResponda em {}.{}\n",
+        config.review.language, focus_instruction
+    );
     let system_prompt = if context_store.is_empty() {
         format!("{}{}", REVIEW_PROMPT.trim(), lang_instruction)
     } else {
@@ -65,7 +88,12 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
 
     let model = config.llm.model.clone();
     let usage = provider::merge_usage(&chunk_results);
-    let review = agent::merge_results(model.clone(), files.len(), chunk_results);
+    let review = agent::merge_results(
+        model.clone(),
+        files.len(),
+        chunk_results,
+        &config.review.policy,
+    );
 
     let context_paths: Vec<String> = context_store.files.iter().map(|f| f.path.clone()).collect();
 
@@ -87,6 +115,7 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         show_usage: config.summary.show_usage,
         show_cost: config.summary.show_cost,
         changed_files: files,
+        head_sha,
     })
 }
 
@@ -121,4 +150,68 @@ async fn fetch_repo_context(
     )
     .await
     .context("failed to fetch repository context")
+}
+
+async fn append_auto_context(
+    config: &AppConfig,
+    github: &GitHubClient,
+    store: &mut ContextStore,
+    files: &[diff::ChangedFile],
+) -> anyhow::Result<()> {
+    let base_sha = github.fetch_base_sha().await?;
+    let auto = &config.context.auto;
+    let include = compile_globs(&auto.include)?;
+    let exclude = compile_globs(&auto.exclude)?;
+    let mut total = store
+        .files
+        .iter()
+        .map(|file| file.content.len())
+        .sum::<usize>();
+
+    for changed in files {
+        if store.files.iter().any(|file| file.path == changed.path)
+            || !include.is_match(&changed.path)
+            || exclude.is_match(&changed.path)
+            || store.files.len() >= auto.max_files
+            || total >= auto.max_bytes
+        {
+            continue;
+        }
+
+        let Ok(content) = github.fetch_file_at_ref(&changed.path, &base_sha).await else {
+            continue;
+        };
+        let remaining = auto.max_bytes.saturating_sub(total);
+        let limit = remaining.min(auto.per_file_bytes);
+        let content = truncate_utf8(&content, limit);
+        if content.is_empty() {
+            continue;
+        }
+        total += content.len();
+        store.files.push(ContextFile {
+            label: "Automatic base context".into(),
+            path: changed.path.clone(),
+            content,
+        });
+    }
+    Ok(())
+}
+
+fn compile_globs(patterns: &[String]) -> anyhow::Result<globset::GlobSet> {
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(globset::Glob::new(pattern)?);
+    }
+    Ok(builder.build()?)
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    value
+        .char_indices()
+        .take_while(|(index, _)| *index < max_bytes)
+        .map(|(_, character)| character)
+        .collect()
 }

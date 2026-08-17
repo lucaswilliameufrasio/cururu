@@ -16,6 +16,10 @@ is sensitive.
   provider. Do not review PRs containing secrets.
 - **Context files** (conventions, specifications, skills) are read from the base
   commit to prevent prompt injection through the contributor branch.
+- **Automatic context**, when enabled, is also read only from the base commit and
+  is bounded by file and byte limits.
+- **Custom LLM endpoints** receive the configured API key; only enable
+  `base_url` for an endpoint controlled and trusted by the repository owner.
 
 ## Safe Action usage
 
@@ -28,3 +32,8 @@ on: pull_request_target
 
 Cururu reads the diff and context files through the GitHub API and never
 executes code from the PR branch.
+
+Comment-triggered reviews use `issue_comment` and accept only exact Cururu
+commands from users with repository write-level permission or higher. The
+comment body is treated as data and cannot inject arbitrary prompts or shell
+commands.

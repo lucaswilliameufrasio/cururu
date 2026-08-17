@@ -90,6 +90,138 @@ pub struct ReviewConfig {
     pub ignore: GlobSet,
     pub language: String,
     pub comment_mode: CommentMode,
+    pub policy: ReviewPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewPolicy {
+    pub profile: String,
+    pub minimum_confidence: f32,
+    pub max_findings: usize,
+    pub fail_on: FailOn,
+    pub allowed_severities: Vec<Severity>,
+    pub suggested_changes: bool,
+    pub incremental: bool,
+    pub synthesis: bool,
+    pub focus: Vec<String>,
+}
+
+impl Default for ReviewPolicy {
+    fn default() -> Self {
+        Self {
+            profile: "balanced".into(),
+            minimum_confidence: 0.65,
+            max_findings: 30,
+            fail_on: FailOn::Off,
+            allowed_severities: Severity::all(),
+            suggested_changes: false,
+            incremental: false,
+            synthesis: false,
+            focus: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailOn {
+    Off,
+    Critical,
+    High,
+    Medium,
+    Low,
+}
+
+impl FailOn {
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" => Some(Self::Off),
+            "critical" => Some(Self::Critical),
+            "high" => Some(Self::High),
+            "medium" => Some(Self::Medium),
+            "low" => Some(Self::Low),
+            _ => None,
+        }
+    }
+
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Off => u8::MAX,
+            Self::Critical => 0,
+            Self::High => 1,
+            Self::Medium => 2,
+            Self::Low => 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Critical,
+    High,
+    Medium,
+    Low,
+}
+
+impl Severity {
+    pub fn from_name(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "critical" => Some(Self::Critical),
+            "high" => Some(Self::High),
+            "medium" => Some(Self::Medium),
+            "low" => Some(Self::Low),
+            _ => None,
+        }
+    }
+
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Critical => 0,
+            Self::High => 1,
+            Self::Medium => 2,
+            Self::Low => 3,
+        }
+    }
+
+    pub fn all() -> Vec<Self> {
+        vec![Self::Critical, Self::High, Self::Medium, Self::Low]
+    }
+}
+
+fn validate_confidence(value: f32) -> anyhow::Result<()> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        bail!("policy.minimum_confidence must be finite and between 0 and 1")
+    }
+}
+
+fn profile_defaults(name: &str) -> anyhow::Result<ReviewPolicy> {
+    let mut policy = ReviewPolicy {
+        profile: name.to_string(),
+        ..ReviewPolicy::default()
+    };
+    match name.trim().to_ascii_lowercase().as_str() {
+        "balanced" => {}
+        "strict" => {
+            policy.minimum_confidence = 0.8;
+            policy.max_findings = 50;
+            policy.fail_on = FailOn::High;
+        }
+        "security" => {
+            policy.minimum_confidence = 0.75;
+            policy.max_findings = 40;
+            policy.fail_on = FailOn::High;
+            policy.allowed_severities = vec![Severity::Critical, Severity::High, Severity::Medium];
+            policy.focus = vec!["security".into()];
+        }
+        "minimal" => {
+            policy.minimum_confidence = 0.8;
+            policy.max_findings = 10;
+            policy.allowed_severities = vec![Severity::Critical, Severity::High];
+        }
+        _ => bail!("invalid review.profile: {name}"),
+    }
+    Ok(policy)
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +231,30 @@ pub struct ContextConfig {
     pub skills: Vec<String>,
     pub additional: Vec<String>,
     pub max_bytes: usize,
+    pub auto: AutoContextConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoContextConfig {
+    pub enabled: bool,
+    pub max_bytes: usize,
+    pub max_files: usize,
+    pub per_file_bytes: usize,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+}
+
+impl Default for AutoContextConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_bytes: 50_000,
+            max_files: 20,
+            per_file_bytes: 12_000,
+            include: vec!["src/**".into(), "tests/**".into()],
+            exclude: vec!["**/generated/**".into(), "**/*.min.js".into()],
+        }
+    }
 }
 
 impl Default for ContextConfig {
@@ -109,6 +265,7 @@ impl Default for ContextConfig {
             skills: Vec::new(),
             additional: Vec::new(),
             max_bytes: 100_000,
+            auto: AutoContextConfig::default(),
         }
     }
 }
@@ -151,6 +308,15 @@ impl AppConfig {
             "**/Cargo.lock,**/package-lock.json,**/pnpm-lock.yaml,**/yarn.lock,**/dist/**,**/build/**".to_string()
         });
 
+        let mut policy = env_optional("CURURU_PROFILE").map_or_else(
+            || Ok(ReviewPolicy::default()),
+            |value| profile_defaults(&value),
+        )?;
+        if let Some(value) = env_optional("CURURU_FAIL_ON") {
+            policy.fail_on = FailOn::from_name(&value)
+                .with_context(|| format!("invalid CURURU_FAIL_ON: {value}"))?;
+        }
+
         Ok(Self {
             github: GitHubConfig {
                 token: env_required("GITHUB_TOKEN")?,
@@ -177,12 +343,14 @@ impl AppConfig {
                 ignore: build_globs(&ignore_globs)?,
                 language: env_optional("CURURU_LANGUAGE").unwrap_or_else(|| "pt-BR".into()),
                 comment_mode: CommentMode::Inline,
+                policy,
             },
             context: ContextConfig::default(),
             summary: SummaryConfig::default(),
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn merge_toml_str(&mut self, raw: &str) -> anyhow::Result<()> {
         let de = toml::Deserializer::new(raw);
         let parsed: CururuToml =
@@ -219,6 +387,16 @@ impl AppConfig {
             {
                 self.llm.model = model;
             }
+            if env_optional("LLM_TEMPERATURE").is_none()
+                && let Some(temperature) = tp.temperature
+            {
+                self.llm.temperature = temperature;
+            }
+            if env_optional("LLM_MAX_OUTPUT_TOKENS").is_none()
+                && let Some(max_output_tokens) = tp.max_output_tokens
+            {
+                self.llm.max_output_tokens = max_output_tokens;
+            }
         }
 
         if let Some(tr) = parsed.review {
@@ -241,6 +419,51 @@ impl AppConfig {
             {
                 self.review.comment_mode = m;
             }
+
+            if env_optional("CURURU_PROFILE").is_none()
+                && let Some(profile) = tr.profile
+            {
+                self.review.policy = profile_defaults(&profile)?;
+            }
+        }
+
+        if let Some(tp) = parsed.policy {
+            if let Some(v) = tp.minimum_confidence {
+                validate_confidence(v)?;
+                self.review.policy.minimum_confidence = v;
+            }
+            if let Some(v) = tp.max_findings {
+                self.review.policy.max_findings = v;
+            }
+            if env_optional("CURURU_FAIL_ON").is_none()
+                && let Some(v) = tp.fail_on
+            {
+                self.review.policy.fail_on = FailOn::from_name(&v)
+                    .with_context(|| format!("invalid policy.fail_on: {v}"))?;
+            }
+            if let Some(values) = tp.allowed_severities {
+                let mut parsed = Vec::with_capacity(values.len());
+                for value in values {
+                    parsed.push(
+                        Severity::from_name(&value).with_context(|| {
+                            format!("invalid policy.allowed_severities: {value}")
+                        })?,
+                    );
+                }
+                self.review.policy.allowed_severities = parsed;
+            }
+            if let Some(v) = tp.suggested_changes {
+                self.review.policy.suggested_changes = v;
+            }
+            if let Some(v) = tp.incremental {
+                self.review.policy.incremental = v;
+            }
+            if let Some(v) = tp.synthesis {
+                self.review.policy.synthesis = v;
+            }
+            if let Some(v) = tp.focus {
+                self.review.policy.focus = v;
+            }
         }
 
         if let Some(tc) = parsed.context {
@@ -258,6 +481,26 @@ impl AppConfig {
             }
             if let Some(v) = tc.max_bytes {
                 self.context.max_bytes = v;
+            }
+            if let Some(auto) = tc.auto {
+                if let Some(v) = auto.enabled {
+                    self.context.auto.enabled = v;
+                }
+                if let Some(v) = auto.max_bytes {
+                    self.context.auto.max_bytes = v;
+                }
+                if let Some(v) = auto.max_files {
+                    self.context.auto.max_files = v;
+                }
+                if let Some(v) = auto.per_file_bytes {
+                    self.context.auto.per_file_bytes = v;
+                }
+                if let Some(v) = auto.include {
+                    self.context.auto.include = v;
+                }
+                if let Some(v) = auto.exclude {
+                    self.context.auto.exclude = v;
+                }
             }
         }
 
@@ -282,6 +525,8 @@ struct CururuToml {
     #[serde(default)]
     review: Option<ReviewToml>,
     #[serde(default)]
+    policy: Option<PolicyToml>,
+    #[serde(default)]
     context: Option<ContextToml>,
     #[serde(default)]
     summary: Option<SummaryToml>,
@@ -295,6 +540,10 @@ struct ProviderToml {
     model: Option<String>,
     #[serde(default)]
     base_url: Option<String>,
+    #[serde(default)]
+    temperature: Option<f32>,
+    #[serde(default)]
+    max_output_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -309,6 +558,28 @@ struct ReviewToml {
     language: Option<String>,
     #[serde(default)]
     comment_mode: Option<String>,
+    #[serde(default)]
+    profile: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolicyToml {
+    #[serde(default)]
+    minimum_confidence: Option<f32>,
+    #[serde(default)]
+    max_findings: Option<usize>,
+    #[serde(default)]
+    fail_on: Option<String>,
+    #[serde(default)]
+    allowed_severities: Option<Vec<String>>,
+    #[serde(default)]
+    suggested_changes: Option<bool>,
+    #[serde(default)]
+    incremental: Option<bool>,
+    #[serde(default)]
+    synthesis: Option<bool>,
+    #[serde(default)]
+    focus: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -323,6 +594,24 @@ struct ContextToml {
     additional: Option<Vec<String>>,
     #[serde(default)]
     max_bytes: Option<usize>,
+    #[serde(default)]
+    auto: Option<AutoContextToml>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AutoContextToml {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    max_bytes: Option<usize>,
+    #[serde(default)]
+    max_files: Option<usize>,
+    #[serde(default)]
+    per_file_bytes: Option<usize>,
+    #[serde(default)]
+    include: Option<Vec<String>>,
+    #[serde(default)]
+    exclude: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -401,6 +690,7 @@ mod tests {
                 ignore: GlobSetBuilder::new().build().unwrap(),
                 language: "pt-BR".into(),
                 comment_mode: CommentMode::Inline,
+                policy: ReviewPolicy::default(),
             },
             context: ContextConfig::default(),
             summary: SummaryConfig::default(),
@@ -463,7 +753,7 @@ mod tests {
         let mut cfg = base_config();
         cfg.merge_toml_str("version = 1\n").unwrap();
         assert_eq!(cfg.llm.provider, LlmProvider::OpenRouter);
-        assert_eq!(cfg.summary.show_cost, false);
+        assert!(!cfg.summary.show_cost);
     }
 
     #[test]
@@ -487,6 +777,62 @@ mod tests {
         assert_eq!(cfg.llm.provider, LlmProvider::Groq);
         assert_eq!(cfg.llm.model, "openai/gpt-oss-120b");
         assert_eq!(cfg.llm.base_url, "https://api.groq.com/openai/v1");
+    }
+
+    #[test]
+    fn toml_overrides_generation_parameters() {
+        let mut cfg = base_config();
+        cfg.merge_toml_str(
+            "version = 1\n[provider]\ntemperature = 0.3\nmax_output_tokens = 8192\n",
+        )
+        .unwrap();
+        assert!((cfg.llm.temperature - 0.3).abs() < f32::EPSILON);
+        assert_eq!(cfg.llm.max_output_tokens, 8192);
+    }
+
+    #[test]
+    fn policy_profile_and_overrides_are_merged() {
+        let mut cfg = base_config();
+        cfg.merge_toml_str(
+            "version = 1\n[review]\nprofile = \"security\"\n[policy]\nmax_findings = 7\nsuggested_changes = true\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.review.policy.profile, "security");
+        assert!((cfg.review.policy.minimum_confidence - 0.75).abs() < f32::EPSILON);
+        assert_eq!(cfg.review.policy.max_findings, 7);
+        assert_eq!(cfg.review.policy.fail_on, FailOn::High);
+        assert!(cfg.review.policy.suggested_changes);
+    }
+
+    #[test]
+    fn invalid_policy_values_are_rejected() {
+        let mut cfg = base_config();
+        assert!(
+            cfg.merge_toml_str("version = 1\n[policy]\nminimum_confidence = 2.0\n")
+                .is_err()
+        );
+        assert!(
+            cfg.merge_toml_str("version = 1\n[policy]\nfail_on = \"urgent\"\n")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn env_overrides_toml_generation_parameters() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        temp_env::with_var("LLM_TEMPERATURE", Some("0.7"), || {
+            temp_env::with_var("LLM_MAX_OUTPUT_TOKENS", Some("2048"), || {
+                let mut cfg = base_config();
+                cfg.llm.temperature = 0.7;
+                cfg.llm.max_output_tokens = 2048;
+                cfg.merge_toml_str(
+                    "version = 1\n[provider]\ntemperature = 0.3\nmax_output_tokens = 8192\n",
+                )
+                .unwrap();
+                assert!((cfg.llm.temperature - 0.7).abs() < f32::EPSILON);
+                assert_eq!(cfg.llm.max_output_tokens, 2048);
+            });
+        });
     }
 
     #[test]

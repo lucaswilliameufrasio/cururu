@@ -22,6 +22,9 @@ Rules:
 - Do not ask questions in findings.
 - Use severity: critical, high, medium, low.
 - confidence must be between 0 and 1.
+- When `suggested_changes` is enabled by the project policy, include a
+  `suggested_change` with a complete single-line replacement only when the
+  correction is exact and safe. Otherwise use null.
 
 JSON shape:
 {
@@ -36,7 +39,8 @@ JSON shape:
       "title": "Short title",
       "message": "What is wrong and why it matters.",
       "suggestion": "Concrete fix.",
-      "confidence": 0.85
+      "confidence": 0.85,
+      "suggested_change": null
     }
   ]
 }

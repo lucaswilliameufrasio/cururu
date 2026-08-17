@@ -47,6 +47,16 @@ struct GitRefObject {
 }
 
 #[derive(Debug, Deserialize)]
+struct CollaboratorPermission {
+    permission: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthenticatedUser {
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct IssueComment {
     id: u64,
     body: Option<String>,
@@ -55,10 +65,7 @@ struct IssueComment {
 
 #[derive(Debug, Deserialize)]
 pub struct CommentUser {
-    #[allow(dead_code)]
     pub login: String,
-    #[serde(rename = "type")]
-    pub kind: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -220,6 +227,79 @@ impl GitHubClient {
                 .await
                 .context("failed to read .cururu.toml")?,
         ))
+    }
+
+    pub async fn fetch_file_at_ref(&self, path: &str, sha: &str) -> anyhow::Result<String> {
+        let url = format!(
+            "{}/repos/{}/{}/contents/{}?ref={}",
+            self.cfg.api_url,
+            self.cfg.owner,
+            self.cfg.repo,
+            url_encode(path),
+            url_encode(sha)
+        );
+        self.client
+            .get(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github.raw")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .send()
+            .await
+            .context("failed to fetch file content")?
+            .error_for_status()
+            .context("file content API error")?
+            .text()
+            .await
+            .context("failed to read file content")
+    }
+
+    pub async fn user_can_review(&self, login: &str) -> anyhow::Result<bool> {
+        let url = format!(
+            "{}/repos/{}/{}/collaborators/{}/permission",
+            self.cfg.api_url,
+            self.cfg.owner,
+            self.cfg.repo,
+            url_encode(login)
+        );
+        let permission: CollaboratorPermission = self
+            .client
+            .get(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .send()
+            .await
+            .context("failed to check commenter permission")?
+            .error_for_status()
+            .context("failed to read commenter permission")?
+            .json()
+            .await
+            .context("failed to parse commenter permission")?;
+        Ok(matches!(
+            permission.permission.as_str(),
+            "admin" | "maintain" | "write"
+        ))
+    }
+
+    async fn current_login(&self) -> anyhow::Result<String> {
+        let url = format!("{}/user", self.cfg.api_url);
+        Ok(self
+            .client
+            .get(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .send()
+            .await
+            .context("failed to fetch authenticated GitHub user")?
+            .error_for_status()?
+            .json::<AuthenticatedUser>()
+            .await
+            .context("failed to parse authenticated GitHub user")?
+            .login)
     }
 
     #[allow(dead_code)]
@@ -398,11 +478,15 @@ impl GitHubClient {
         desired: &[ReviewCommentDraft],
     ) -> anyhow::Result<()> {
         let existing = self.list_review_comments().await?;
+        let current_login = self.current_login().await?;
         let cururu_existing: Vec<ReviewComment> = existing
             .into_iter()
             .filter(|c| {
-                let is_bot = c.user.as_ref().is_none_or(|u| u.kind == "Bot");
-                is_bot
+                let is_cururu_user = c
+                    .user
+                    .as_ref()
+                    .is_some_and(|user| user.login == current_login);
+                is_cururu_user
                     && c.body
                         .as_deref()
                         .unwrap_or_default()
@@ -448,6 +532,38 @@ impl GitHubClient {
         }
     }
 
+    pub async fn summary_has_head(&self, head_sha: &str) -> anyhow::Result<bool> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/comments?per_page=100",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        let comments: Vec<IssueComment> = self
+            .client
+            .get(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .send()
+            .await
+            .context("failed to list PR comments")?
+            .error_for_status()?
+            .json()
+            .await
+            .context("failed to parse PR comments")?;
+        let current_login = self.current_login().await?;
+        Ok(comments.iter().any(|comment| {
+            comment
+                .user
+                .as_ref()
+                .is_some_and(|user| user.login == current_login)
+                && comment.body.as_deref().is_some_and(|body| {
+                    body.contains(output::marker())
+                        && body.contains(&format!("<!-- cururu:state:v1 head={head_sha} -->"))
+                })
+        }))
+    }
+
     async fn find_existing_summary_comment(&self) -> anyhow::Result<Option<u64>> {
         let url = format!(
             "{}/repos/{}/{}/issues/{}/comments?per_page=100",
@@ -471,16 +587,20 @@ impl GitHubClient {
             3,
         )
         .await?;
+        let current_login = self.current_login().await?;
 
         Ok(comments
             .into_iter()
             .find(|c| {
-                let bot = c.user.as_ref().is_none_or(|u| u.kind == "Bot");
-                bot && c
-                    .body
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains(output::marker())
+                let is_cururu_user = c
+                    .user
+                    .as_ref()
+                    .is_some_and(|user| user.login == current_login);
+                is_cururu_user
+                    && c.body
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains(output::marker())
             })
             .map(|c| c.id))
     }

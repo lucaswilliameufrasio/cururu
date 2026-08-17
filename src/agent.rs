@@ -1,4 +1,4 @@
-use crate::config::LlmConfig;
+use crate::config::{LlmConfig, ReviewPolicy, Severity};
 use crate::diff::DiffChunk;
 use crate::provider::{ChatResponse, ProviderUsage};
 use crate::retry::retry_with_backoff;
@@ -25,6 +25,13 @@ pub struct ReviewFinding {
     pub message: String,
     pub suggestion: String,
     pub confidence: f32,
+    #[serde(default)]
+    pub suggested_change: Option<SuggestedChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SuggestedChange {
+    pub replacement: String,
 }
 
 #[derive(Debug, Clone)]
@@ -162,20 +169,34 @@ pub fn merge_results(
     model: String,
     files_reviewed: usize,
     results: Vec<ChunkResult>,
+    policy: &ReviewPolicy,
 ) -> ReviewResult {
     let mut findings: Vec<ReviewFinding> = results
         .into_iter()
         .flat_map(|r| r.review.findings)
         .collect();
 
-    findings.retain(|f| f.confidence >= 0.65);
+    findings.retain(|f| {
+        f.confidence.is_finite()
+            && f.confidence >= policy.minimum_confidence
+            && Severity::from_name(&f.severity)
+                .is_some_and(|severity| policy.allowed_severities.contains(&severity))
+    });
+    if !policy.suggested_changes {
+        for finding in &mut findings {
+            finding.suggested_change = None;
+        }
+    }
     findings.sort_by(|a, b| {
         severity_rank(&a.severity)
             .cmp(&severity_rank(&b.severity))
             .then(a.path.cmp(&b.path))
             .then(a.line.cmp(&b.line))
     });
-    findings.truncate(30);
+    if policy.synthesis {
+        findings = deduplicate_findings(findings);
+    }
+    findings.truncate(policy.max_findings);
 
     ReviewResult {
         model,
@@ -186,6 +207,25 @@ pub fn merge_results(
         ),
         findings,
     }
+}
+
+fn deduplicate_findings(findings: Vec<ReviewFinding>) -> Vec<ReviewFinding> {
+    let mut unique = Vec::with_capacity(findings.len());
+    for finding in findings {
+        let duplicate = unique.iter_mut().find(|existing: &&mut ReviewFinding| {
+            existing.path == finding.path
+                && existing.line == finding.line
+                && existing.title.eq_ignore_ascii_case(&finding.title)
+        });
+        if let Some(existing) = duplicate {
+            if finding.confidence > existing.confidence {
+                *existing = finding;
+            }
+        } else {
+            unique.push(finding);
+        }
+    }
+    unique
 }
 
 fn severity_rank(severity: &str) -> u8 {

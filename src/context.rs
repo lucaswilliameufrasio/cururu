@@ -121,7 +121,7 @@ pub async fn fetch_context(
                     files.push(ContextFile {
                         label: label.to_string(),
                         path: (*p).clone(),
-                        content: content[..remaining].to_string(),
+                        content: truncate_utf8(&content, remaining),
                     });
                     total_bytes = config.max_bytes;
                 } else {
@@ -216,4 +216,15 @@ fn match_path(path: &str, pattern: &str) -> bool {
     } else {
         path == pattern
     }
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    value
+        .char_indices()
+        .take_while(|(index, _)| *index < max_bytes)
+        .map(|(_, character)| character)
+        .collect()
 }

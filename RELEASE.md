@@ -81,6 +81,19 @@ scopes. The release workflow uses `GITHUB_TOKEN` with `packages: write`.
 - All releases are tagged from `main`.
 - The `v1` major tag is a floating pointer to the latest `v1.x.y` release.
 
+## v4 feature release checklist
+
+The policy, quality-gate outputs, `issue_comment` trigger, suggested changes,
+incremental markers, and automatic context are behavior additions and should be
+released as `v4` rather than silently changing the `v3` contract. Before tagging
+`v4`:
+
+- Pin and publish the new Docker image digest in `action.yml`.
+- Verify the default `fail_on = "off"` behavior in a downstream repository.
+- Verify `issue_comment` permission checks with an authorized and unauthorized user.
+- Verify old version-1 `.cururu.toml` files produce the balanced profile.
+- Publish migration notes for opt-in `policy`, `context.auto`, and comment commands.
+
 ## Architecture
 
 - **linux/amd64** built on `ubuntu-24.04`

@@ -3,6 +3,8 @@ name: Cururu PR Review
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
@@ -15,9 +17,9 @@ concurrency:
 
 jobs:
   review:
-    if: github.event.pull_request.draft == false && github.actor != 'dependabot[bot]'
+    if: (github.event_name == 'issue_comment' || github.event.pull_request.draft == false) && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: lucaswilliameufrasio/cururu@v3
+      - uses: lucaswilliameufrasio/cururu@v4
         with:
           llm_api_key: ${{ secrets.LLM_API_KEY }}

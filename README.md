@@ -29,7 +29,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: lucaswilliameufrasio/cururu@v3
+      - uses: lucaswilliameufrasio/cururu@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}
@@ -47,6 +47,8 @@ version = 1
 [provider]
 name = "openrouter"
 model = "openai/gpt-5.6-luna"
+temperature = 0.1
+max_output_tokens = 4000
 
 [review]
 max_diff_bytes = 180000
@@ -54,6 +56,16 @@ chunk_bytes = 45000
 ignore = ["**/*.lock", "dist/**"]
 language = "pt-BR"
 comment_mode = "inline"
+
+[policy]
+minimum_confidence = 0.65
+max_findings = 30
+fail_on = "off"
+allowed_severities = ["critical", "high", "medium", "low"]
+suggested_changes = false
+incremental = false
+synthesis = false
+focus = []
 
 [summary]
 show_cost = true
@@ -65,6 +77,14 @@ specifications = ["docs/sdd/**/*.md", "docs/gdd/**/*.md"]
 skills = [".agents/skills/**/SKILL.md"]
 additional = ["docs/adr/**/*.md"]
 max_bytes = 100000
+
+[context.auto]
+enabled = false
+max_bytes = 50000
+max_files = 20
+per_file_bytes = 12000
+include = ["src/**", "tests/**"]
+exclude = ["**/generated/**", "**/*.min.js"]
 ```
 
 ### Provider
@@ -75,8 +95,16 @@ max_bytes = 100000
 | `openai` | `gpt-5.6-luna` | `https://api.openai.com/v1` | $1.00 | $6.00 |
 | `groq` | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1` | $0.15 | $0.60 |
 
-`base_url` and `model` in TOML override the provider defaults. Environment
-variables `LLM_BASE_URL` and `LLM_MODEL` override all TOML values.
+`base_url`, `model`, `temperature`, and `max_output_tokens` in TOML override the
+provider defaults. Environment variables `LLM_BASE_URL`, `LLM_MODEL`,
+`LLM_TEMPERATURE`, and `LLM_MAX_OUTPUT_TOKENS` override the corresponding TOML
+values.
+
+`temperature` controls how deterministic the review is. Keep it low (`0.0` to
+`0.2`) for consistent, factual code reviews; increase it only when a project
+prefers more varied suggestions. `max_output_tokens` limits the model response
+per call. Use `2000` to `4000` for normal PRs, and increase it for large PRs or
+when findings are being truncated. Larger values can increase cost.
 
 ### Context files
 
@@ -86,6 +114,11 @@ is kept separate as untrusted input.
 
 Set `max_bytes` to cap total context size. Files are loaded in order and
 truncated if the combined content exceeds the limit.
+
+Automatic source context is opt-in under `[context.auto]`. When enabled, Cururu
+fetches only base-commit versions of changed files matching `include`, subject
+to `max_files`, `max_bytes`, and `per_file_bytes`. Files matching `exclude` are
+skipped. This keeps repository context trusted and bounded.
 
 ### Cost
 
@@ -144,6 +177,27 @@ post inline comments and the summary comment respectively.
 | `show_cost` | Show provider-reported cost |
 | `show_usage` | Show token counts (prompt, completion, cached, reasoning) |
 
+### Policy and profiles
+
+The optional `[policy]` section controls how findings are retained and whether
+the Action fails. `fail_on = "off"` is the default and never blocks existing
+consumers.
+
+| Field | Default | Description |
+|---|---:|---|
+| `minimum_confidence` | `0.65` | Minimum confidence from the model (`0..=1`) |
+| `max_findings` | `30` | Maximum findings posted |
+| `fail_on` | `off` | `off`, `critical`, `high`, `medium`, or `low` |
+| `allowed_severities` | all | Severities retained in the result |
+| `suggested_changes` | `false` | Enable safe one-line GitHub suggestions |
+| `incremental` | `false` | Enable incremental review state |
+| `synthesis` | `false` | Enable cross-chunk synthesis |
+| `focus` | `[]` | Review focus hints such as `security` or `tests` |
+
+Built-in profiles can be selected with `review.profile`: `balanced` (default),
+`strict`, `security`, or `minimal`. Explicit `[policy]` fields override the
+selected profile.
+
 ## Environment variables
 
 Secrets are always passed through GitHub Actions secrets / environment, never
@@ -155,11 +209,15 @@ through repository configuration.
 | `LLM_API_KEY` | yes | — | LLM provider API key |
 | `LLM_BASE_URL` | no | provider default | Override API base URL |
 | `LLM_MODEL` | no | provider default | Override model name |
+| `LLM_TEMPERATURE` | no | `0.1` | Override response randomness |
+| `LLM_MAX_OUTPUT_TOKENS` | no | `4000` | Override maximum response tokens |
 | `CURURU_PROVIDER` | no | `openrouter` | Override provider name |
 | `CURURU_IGNORE` | no | lockfiles, dist, build | Comma-separated globs to skip in diff |
 | `CURURU_MAX_DIFF_BYTES` | no | `180000` | Hard cap for reviewed diff size |
 | `CURURU_CHUNK_BYTES` | no | `45000` | Chunk size before each LLM call |
 | `CURURU_LANGUAGE` | no | `pt-BR` | Review language (overrides TOML) |
+| `CURURU_PROFILE` | no | `balanced` | Review profile |
+| `CURURU_FAIL_ON` | no | `off` | Fail the action at a severity threshold |
 
 ## Fork safety
 
@@ -180,6 +238,20 @@ cargo run -- dry-run
 cargo run -- review
 cargo run -- print-config
 ```
+
+## Comment commands
+
+The example workflows also listen for `issue_comment`. Authorized repository
+collaborators can request an explicit review with:
+
+```text
+/cururu review
+/cururu review --full
+```
+
+Only exact commands are accepted. The commenter must have `write`, `maintain`,
+or `admin` permission, and comment text cannot change the model, endpoint,
+prompt, or secrets.
 
 ## Commands
 

@@ -41,6 +41,7 @@ pub fn render_signature() -> String {
 pub fn render_summary_comment(output: &ReviewOutput) -> String {
     let mut out = String::new();
     out.push_str(MARKER);
+    let _ = writeln!(out, "<!-- cururu:state:v1 head={} -->", output.head_sha);
     out.push_str("\n## 🐸 Cururu review\n\n");
 
     render_header(output, &mut out);
@@ -103,6 +104,13 @@ pub fn render_inline_finding(f: &ReviewFinding) -> String {
     if !suggestion.is_empty() {
         let _ = write!(out, "\n\n> **Sugestão:** {suggestion}");
     }
+    if let Some(change) = &f.suggested_change
+        && !change.replacement.is_empty()
+        && !change.replacement.contains('\n')
+        && !change.replacement.contains("```")
+    {
+        let _ = write!(out, "\n\n```suggestion\n{}\n```", change.replacement);
+    }
     out
 }
 
@@ -156,6 +164,7 @@ mod tests {
             message: "Query is interpolated into sh -c.".into(),
             suggestion: "Use Command::new with args.".into(),
             confidence: 0.9,
+            suggested_change: None,
         }
     }
 
@@ -171,7 +180,7 @@ mod tests {
     #[test]
     fn inline_finding_handles_empty_title() {
         let mut f = finding();
-        f.title = "".into();
+        f.title = String::new();
         let body = render_inline_finding(&f);
         assert!(body.contains("**CRITICAL:** Finding"));
     }
@@ -180,6 +189,27 @@ mod tests {
     fn inline_finding_has_no_signature() {
         let body = render_inline_finding(&finding());
         assert!(!body.contains("_Cururu_"));
+    }
+
+    #[test]
+    fn inline_finding_renders_safe_suggested_change() {
+        let mut f = finding();
+        f.suggested_change = Some(crate::agent::SuggestedChange {
+            replacement: "use std::process::Command;".into(),
+        });
+        let body = render_inline_finding(&f);
+        assert!(body.contains("```suggestion"));
+        assert!(body.contains("use std::process::Command;"));
+    }
+
+    #[test]
+    fn inline_finding_ignores_multiline_suggested_change() {
+        let mut f = finding();
+        f.suggested_change = Some(crate::agent::SuggestedChange {
+            replacement: "first\nsecond".into(),
+        });
+        let body = render_inline_finding(&f);
+        assert!(!body.contains("```suggestion"));
     }
 
     #[test]
@@ -197,6 +227,7 @@ mod tests {
             show_usage: false,
             show_cost: false,
             changed_files: vec![],
+            head_sha: "head".into(),
         };
         let body = render_summary_comment(&output);
         assert!(body.contains("_Cururu_"));
