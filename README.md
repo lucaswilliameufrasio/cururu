@@ -154,6 +154,12 @@ context files). Estimated cost per review through OpenRouter pricing:
 
 `CURURU_LANGUAGE` environment variable overrides the TOML value.
 
+The review prompt is intentionally language- and framework-agnostic. It
+systematically considers security boundaries, authentication and authorization,
+injection, secrets, error handling, concurrency, resource limits, external
+calls, compatibility, migrations, observability, and tests. It only reports a
+category when the changed code provides concrete evidence of a problem.
+
 ### Comment modes
 
 Cururu can post review feedback in two ways, configured via `[review].
