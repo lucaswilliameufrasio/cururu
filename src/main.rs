@@ -110,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
             let result = review::run_review(&config, &github).await?;
             let report = quality::evaluate(&result.review, config.review.policy.fail_on);
             write_action_outputs(&report)?;
+            write_analysis_outputs(&result.analysis)?;
             println!("{}", serde_json::to_string_pretty(&result.review)?);
         }
         Command::Review => {
@@ -123,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
             let result = review::run_review(&config, &github).await?;
             let report = quality::evaluate(&result.review, config.review.policy.fail_on);
             write_action_outputs(&report)?;
+            write_analysis_outputs(&result.analysis)?;
 
             match config.review.comment_mode {
                 CommentMode::Inline => {
@@ -169,6 +171,39 @@ fn write_action_outputs(report: &quality::QualityReport) -> anyhow::Result<()> {
     writeln!(file, "medium_count={}", report.medium_count)?;
     writeln!(file, "low_count={}", report.low_count)?;
     writeln!(file, "highest_severity={}", report.highest_severity)?;
+    Ok(())
+}
+
+fn write_analysis_outputs(report: &analysis::AnalysisReport) -> anyhow::Result<()> {
+    let Some(path) = std::env::var_os("GITHUB_OUTPUT") else {
+        return Ok(());
+    };
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .context("failed to open GITHUB_OUTPUT")?;
+    writeln!(file, "analysis_status={}", report.status)?;
+    writeln!(file, "analysis_tools_total={}", report.tools.len())?;
+    writeln!(
+        file,
+        "analysis_tools_failed={}",
+        report
+            .tools
+            .iter()
+            .filter(|tool| tool.status == "failed")
+            .count()
+    )?;
+    writeln!(
+        file,
+        "analysis_tools_not_run={}",
+        report
+            .tools
+            .iter()
+            .filter(|tool| tool.status == "not_run")
+            .count()
+    )?;
+    writeln!(file, "analysis_findings_count={}", report.findings.len())?;
     Ok(())
 }
 

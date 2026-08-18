@@ -21,6 +21,7 @@ pub struct ReviewOutput {
     /// Parsed changed files with right-side line numbers for inline anchors.
     pub changed_files: Vec<diff::ChangedFile>,
     pub head_sha: String,
+    pub analysis: analysis::AnalysisReport,
 }
 
 pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Result<ReviewOutput> {
@@ -88,13 +89,13 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
 
     let model = config.llm.model.clone();
     let usage = provider::merge_usage(&chunk_results);
-    let analysis_findings = analysis::load_findings(&config.analysis, &files)?;
+    let analysis_report = analysis::load_evidence(&config.analysis, &files, &head_sha)?;
     let review = agent::merge_results(
         model.clone(),
         files.len(),
         chunk_results,
         &config.review.policy,
-        analysis_findings,
+        analysis_report.findings.clone(),
     );
 
     let context_paths: Vec<String> = context_store.files.iter().map(|f| f.path.clone()).collect();
@@ -118,6 +119,7 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         show_cost: config.summary.show_cost,
         changed_files: files,
         head_sha,
+        analysis: analysis_report,
     })
 }
 

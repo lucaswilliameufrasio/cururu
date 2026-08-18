@@ -16,16 +16,20 @@ pub struct AppConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnalysisConfig {
     pub enabled: bool,
+    pub manifest: Option<String>,
     pub sarif_paths: Vec<String>,
     pub max_findings: usize,
+    pub require_current_head: bool,
 }
 
 impl Default for AnalysisConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            manifest: None,
             sarif_paths: Vec::new(),
             max_findings: 100,
+            require_current_head: true,
         }
     }
 }
@@ -536,11 +540,17 @@ impl AppConfig {
             if let Some(v) = ta.enabled {
                 self.analysis.enabled = v;
             }
+            if let Some(v) = ta.manifest {
+                self.analysis.manifest = Some(v);
+            }
             if let Some(v) = ta.sarif_paths {
                 self.analysis.sarif_paths = v;
             }
             if let Some(v) = ta.max_findings {
                 self.analysis.max_findings = v;
+            }
+            if let Some(v) = ta.require_current_head {
+                self.analysis.require_current_head = v;
             }
         }
 
@@ -570,9 +580,13 @@ struct AnalysisToml {
     #[serde(default)]
     enabled: Option<bool>,
     #[serde(default)]
+    manifest: Option<String>,
+    #[serde(default)]
     sarif_paths: Option<Vec<String>>,
     #[serde(default)]
     max_findings: Option<usize>,
+    #[serde(default)]
+    require_current_head: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -101,6 +101,31 @@ and execute their own analyzers in CI; Cururu only reads configured SARIF files.
 It does not autodetect or execute repository commands. The feature is additive
 and disabled unless `[analysis].enabled = true`.
 
+## v4.2 analyzer execution manifest
+
+The `v4.2` minor release adds an optional analysis manifest that records the
+lifecycle of each analyzer separately from its diagnostics:
+
+```json
+{
+  "schema_version": 1,
+  "commit_sha": "<head sha>",
+  "tools": [
+    { "name": "cargo-clippy", "status": "failed", "exit_code": 101,
+      "message": "compilation failed", "sarif_path": "artifacts/clippy.sarif" }
+  ]
+}
+```
+
+Supported tool statuses are `passed`, `failed`, `not_run`, `skipped`, and
+`timed_out`. A stale `commit_sha` is rejected when `require_current_head` is
+enabled. Cururu still only reads files; it never executes analyzer commands. The
+feature is additive and disabled by default.
+
+New action outputs: `analysis_status`, `analysis_tools_total`,
+`analysis_tools_failed`, `analysis_tools_not_run`, and
+`analysis_findings_count`.
+
 ## Architecture
 
 - **linux/amd64** built on `ubuntu-24.04`

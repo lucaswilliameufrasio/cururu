@@ -54,10 +54,20 @@ outputs:
     description: "Number of low findings"
   highest_severity:
     description: "Highest finding severity"
+  analysis_status:
+    description: "Analyzer evidence status (disabled, passed, failed, partial, stale, no_evidence)"
+  analysis_tools_total:
+    description: "Total number of analyzer tools reported"
+  analysis_tools_failed:
+    description: "Number of analyzer tools that failed"
+  analysis_tools_not_run:
+    description: "Number of analyzer tools that did not run"
+  analysis_findings_count:
+    description: "Number of analyzer findings published"
 
 runs:
   using: "docker"
-  image: docker://ghcr.io/lucaswilliameufrasio/cururu@sha256:f658e2bf8cd369502bdd78447c2e6eb7730e658b1295b1f22af6a9ffba294b48
+  image: docker://ghcr.io/lucaswilliameufrasio/cururu:v4.2.0
   args:
     - review
   env:

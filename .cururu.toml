@@ -58,5 +58,7 @@ show_usage = true
 
 [analysis]
 enabled = false
+manifest = "artifacts/analysis.json"
 sarif_paths = ["artifacts/**/*.sarif"]
 max_findings = 100
+require_current_head = true

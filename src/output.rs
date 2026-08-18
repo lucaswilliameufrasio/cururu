@@ -77,6 +77,23 @@ fn render_header(output: &ReviewOutput, out: &mut String) {
         );
     }
 
+    if output.analysis.status != "disabled" {
+        let _ = writeln!(out, "**Analyzer status:** `{}`  ", output.analysis.status);
+        if !output.analysis.tools.is_empty() {
+            let _ = writeln!(
+                out,
+                "**Analyzer tools:** {}  ",
+                output
+                    .analysis
+                    .tools
+                    .iter()
+                    .map(|tool| format!("`{}`: `{}`", tool.name, tool.status))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
     if output.show_usage
         && let Some(ref usage) = output.usage
     {
@@ -235,6 +252,11 @@ mod tests {
             show_cost: false,
             changed_files: vec![],
             head_sha: "head".into(),
+            analysis: crate::analysis::AnalysisReport {
+                status: "disabled".into(),
+                tools: vec![],
+                findings: vec![],
+            },
         };
         let body = render_summary_comment(&output);
         assert!(body.contains("_Cururu_"));

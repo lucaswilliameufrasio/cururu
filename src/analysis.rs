@@ -1,7 +1,7 @@
 use crate::{agent::ReviewFinding, config::AnalysisConfig, diff::ChangedFile};
 use anyhow::Context;
 use globset::{Glob, GlobSetBuilder};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
@@ -66,15 +66,117 @@ struct SarifRegion {
     start_line: Option<u32>,
 }
 
-pub fn load_findings(
+#[derive(Debug, Clone, Serialize)]
+pub struct AnalysisReport {
+    pub status: String,
+    pub tools: Vec<AnalysisTool>,
+    pub findings: Vec<ReviewFinding>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AnalysisTool {
+    pub name: String,
+    pub status: String,
+    pub exit_code: Option<i32>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Manifest {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(default)]
+    commit_sha: Option<String>,
+    #[serde(default)]
+    tools: Vec<ManifestTool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManifestTool {
+    name: String,
+    status: String,
+    #[serde(default)]
+    exit_code: Option<i32>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    sarif_path: Option<String>,
+}
+
+pub fn load_evidence(
     config: &AnalysisConfig,
     changed_files: &[ChangedFile],
-) -> anyhow::Result<Vec<ReviewFinding>> {
-    if !config.enabled || config.sarif_paths.is_empty() {
-        return Ok(Vec::new());
+    expected_head: &str,
+) -> anyhow::Result<AnalysisReport> {
+    if !config.enabled {
+        return Ok(AnalysisReport {
+            status: "disabled".into(),
+            tools: Vec::new(),
+            findings: Vec::new(),
+        });
     }
 
-    let paths = expand_paths(&config.sarif_paths)?;
+    let mut tools = Vec::new();
+    let mut sarif_paths = config.sarif_paths.clone();
+    if let Some(manifest_path) = &config.manifest {
+        let raw = std::fs::read_to_string(manifest_path)
+            .with_context(|| format!("failed to read analysis manifest {manifest_path}"))?;
+        let manifest: Manifest = serde_json::from_str(&raw)
+            .with_context(|| format!("failed to parse analysis manifest {manifest_path}"))?;
+        if manifest.schema_version != 1 {
+            anyhow::bail!(
+                "unsupported analysis manifest version {} (expected 1)",
+                manifest.schema_version
+            );
+        }
+        if config.require_current_head
+            && manifest
+                .commit_sha
+                .as_deref()
+                .is_some_and(|sha| sha != expected_head)
+        {
+            return Ok(AnalysisReport {
+                status: "stale".into(),
+                tools: Vec::new(),
+                findings: Vec::new(),
+            });
+        }
+        for tool in manifest.tools {
+            if let Some(path) = tool.sarif_path {
+                sarif_paths.push(path);
+            }
+            tools.push(AnalysisTool {
+                name: tool.name,
+                status: tool.status,
+                exit_code: tool.exit_code,
+                message: tool.message,
+            });
+        }
+    }
+
+    let findings = load_sarif_paths(&sarif_paths, changed_files, config.max_findings)?;
+    let status = if tools.iter().any(|tool| tool.status == "failed") {
+        "failed"
+    } else if tools.iter().any(|tool| tool.status == "not_run") {
+        "partial"
+    } else if tools.is_empty() && findings.is_empty() {
+        "no_evidence"
+    } else {
+        "passed"
+    };
+    Ok(AnalysisReport {
+        status: status.into(),
+        tools,
+        findings,
+    })
+}
+
+fn load_sarif_paths(
+    configured_paths: &[String],
+    changed_files: &[ChangedFile],
+    max_findings: usize,
+) -> anyhow::Result<Vec<ReviewFinding>> {
+    let paths = expand_paths(configured_paths)?;
     let mut findings = Vec::new();
     for path in paths {
         let raw = std::fs::read_to_string(&path)
@@ -122,7 +224,7 @@ pub fn load_findings(
                     source: Some(tool),
                     rule: Some(rule),
                 });
-                if findings.len() >= config.max_findings {
+                if findings.len() >= max_findings {
                     return Ok(findings);
                 }
             }
@@ -199,17 +301,50 @@ mod tests {
         .unwrap();
         let config = AnalysisConfig {
             enabled: true,
+            manifest: None,
             sarif_paths: vec![path.to_string_lossy().into()],
             max_findings: 10,
+            require_current_head: true,
         };
         let changed = vec![ChangedFile {
             path: "src/main.rs".into(),
             patch: String::new(),
             right_lines: vec![7],
         }];
-        let findings = load_findings(&config, &changed).unwrap();
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].severity, "high");
-        assert_eq!(findings[0].rule.as_deref(), Some("SEC001"));
+        let report = load_evidence(&config, &changed, "head").unwrap();
+        assert_eq!(report.status, "passed");
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].severity, "high");
+        assert_eq!(report.findings[0].rule.as_deref(), Some("SEC001"));
+    }
+
+    #[test]
+    fn reports_tool_failure_and_rejects_stale_manifest() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("analysis.json");
+        std::fs::write(
+            &path,
+            r#"{"schema_version":1,"commit_sha":"old","tools":[{"name":"compiler","status":"failed","exit_code":101,"message":"compilation failed"}]}"#,
+        )
+        .unwrap();
+        let config = AnalysisConfig {
+            enabled: true,
+            manifest: Some(path.to_string_lossy().into()),
+            sarif_paths: vec![],
+            max_findings: 10,
+            require_current_head: true,
+        };
+        let changed = Vec::new();
+        let report = load_evidence(&config, &changed, "new").unwrap();
+        assert_eq!(report.status, "stale");
+
+        std::fs::write(
+            &path,
+            r#"{"schema_version":1,"commit_sha":"new","tools":[{"name":"compiler","status":"failed","exit_code":101,"message":"compilation failed"}]}"#,
+        )
+        .unwrap();
+        let report = load_evidence(&config, &changed, "new").unwrap();
+        assert_eq!(report.status, "failed");
+        assert_eq!(report.tools[0].exit_code, Some(101));
     }
 }
