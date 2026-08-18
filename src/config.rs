@@ -10,6 +10,24 @@ pub struct AppConfig {
     pub review: ReviewConfig,
     pub context: ContextConfig,
     pub summary: SummaryConfig,
+    pub analysis: AnalysisConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalysisConfig {
+    pub enabled: bool,
+    pub sarif_paths: Vec<String>,
+    pub max_findings: usize,
+}
+
+impl Default for AnalysisConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sarif_paths: Vec::new(),
+            max_findings: 100,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -347,6 +365,7 @@ impl AppConfig {
             },
             context: ContextConfig::default(),
             summary: SummaryConfig::default(),
+            analysis: AnalysisConfig::default(),
         })
     }
 
@@ -513,6 +532,18 @@ impl AppConfig {
             }
         }
 
+        if let Some(ta) = parsed.analysis {
+            if let Some(v) = ta.enabled {
+                self.analysis.enabled = v;
+            }
+            if let Some(v) = ta.sarif_paths {
+                self.analysis.sarif_paths = v;
+            }
+            if let Some(v) = ta.max_findings {
+                self.analysis.max_findings = v;
+            }
+        }
+
         Ok(())
     }
 }
@@ -530,6 +561,18 @@ struct CururuToml {
     context: Option<ContextToml>,
     #[serde(default)]
     summary: Option<SummaryToml>,
+    #[serde(default)]
+    analysis: Option<AnalysisToml>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnalysisToml {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    sarif_paths: Option<Vec<String>>,
+    #[serde(default)]
+    max_findings: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -694,6 +737,7 @@ mod tests {
             },
             context: ContextConfig::default(),
             summary: SummaryConfig::default(),
+            analysis: AnalysisConfig::default(),
         }
     }
 
@@ -815,6 +859,18 @@ mod tests {
             cfg.merge_toml_str("version = 1\n[policy]\nfail_on = \"urgent\"\n")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn analysis_config_is_loaded() {
+        let mut cfg = base_config();
+        cfg.merge_toml_str(
+            "version = 1\n[analysis]\nenabled = true\nsarif_paths = [\"reports/**/*.sarif\"]\nmax_findings = 12\n",
+        )
+        .unwrap();
+        assert!(cfg.analysis.enabled);
+        assert_eq!(cfg.analysis.sarif_paths, vec!["reports/**/*.sarif"]);
+        assert_eq!(cfg.analysis.max_findings, 12);
     }
 
     #[test]

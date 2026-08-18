@@ -94,6 +94,13 @@ released as `v4` rather than silently changing the `v3` contract. Before tagging
 - Verify old version-1 `.cururu.toml` files produce the balanced profile.
 - Publish migration notes for opt-in `policy`, `context.auto`, and comment commands.
 
+## v4.1 analyzer evidence
+
+The `v4.1` minor release adds optional SARIF ingestion. Consumers still choose
+and execute their own analyzers in CI; Cururu only reads configured SARIF files.
+It does not autodetect or execute repository commands. The feature is additive
+and disabled unless `[analysis].enabled = true`.
+
 ## Architecture
 
 - **linux/amd64** built on `ubuntu-24.04`

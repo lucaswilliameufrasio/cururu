@@ -82,6 +82,8 @@ mod tests {
                     suggestion: "fix".into(),
                     confidence: 0.9,
                     suggested_change: None,
+                    source: None,
+                    rule: None,
                 })
                 .collect(),
         }

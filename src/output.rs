@@ -136,12 +136,17 @@ fn render_usage(usage: &ProviderUsage, show_cost: bool, out: &mut String) {
 
 fn render_finding_row(f: &ReviewFinding) -> String {
     let line_str = f.line.map_or_else(|| "-".to_string(), |v| v.to_string());
+    let title = if f.title.trim().is_empty() {
+        f.message.clone()
+    } else {
+        format!("{}: {}", f.title.trim(), f.message.trim())
+    };
     format!(
         "| {} | `{}` | {} | {} | {} |\n",
         escape_md(&f.severity),
         escape_md(&f.path),
         line_str,
-        escape_md(&f.message),
+        escape_md(&title),
         escape_md(&f.suggestion),
     )
 }
@@ -165,6 +170,8 @@ mod tests {
             suggestion: "Use Command::new with args.".into(),
             confidence: 0.9,
             suggested_change: None,
+            source: None,
+            rule: None,
         }
     }
 

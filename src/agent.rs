@@ -27,6 +27,10 @@ pub struct ReviewFinding {
     pub confidence: f32,
     #[serde(default)]
     pub suggested_change: Option<SuggestedChange>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub rule: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -170,11 +174,13 @@ pub fn merge_results(
     files_reviewed: usize,
     results: Vec<ChunkResult>,
     policy: &ReviewPolicy,
+    additional_findings: Vec<ReviewFinding>,
 ) -> ReviewResult {
     let mut findings: Vec<ReviewFinding> = results
         .into_iter()
         .flat_map(|r| r.review.findings)
         .collect();
+    findings.extend(additional_findings);
 
     findings.retain(|f| {
         f.confidence.is_finite()

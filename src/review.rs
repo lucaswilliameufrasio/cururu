@@ -1,5 +1,5 @@
 use crate::{
-    agent,
+    agent, analysis,
     config::AppConfig,
     context::{self, ContextFile, ContextStore},
     diff,
@@ -88,11 +88,13 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
 
     let model = config.llm.model.clone();
     let usage = provider::merge_usage(&chunk_results);
+    let analysis_findings = analysis::load_findings(&config.analysis, &files)?;
     let review = agent::merge_results(
         model.clone(),
         files.len(),
         chunk_results,
         &config.review.policy,
+        analysis_findings,
     );
 
     let context_paths: Vec<String> = context_store.files.iter().map(|f| f.path.clone()).collect();

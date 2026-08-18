@@ -204,6 +204,24 @@ Built-in profiles can be selected with `review.profile`: `balanced` (default),
 `strict`, `security`, or `minimal`. Explicit `[policy]` fields override the
 selected profile.
 
+### Analyzer evidence
+
+Cururu does not guess or execute a project's linter. Projects choose and run
+their own tools in CI, then optionally provide SARIF evidence:
+
+```toml
+[analysis]
+enabled = true
+sarif_paths = ["artifacts/**/*.sarif"]
+max_findings = 100
+```
+
+SARIF findings are normalized into the same review format, limited to changed
+files, deduplicated with LLM findings when synthesis is enabled, and posted in
+the same comments. This works with compiler diagnostics, linters, security
+scanners, and custom analyzers without Cururu knowing the project's technology.
+Cururu only reads the files; it never executes commands from the repository.
+
 ## Environment variables
 
 Secrets are always passed through GitHub Actions secrets / environment, never

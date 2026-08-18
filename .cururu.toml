@@ -55,3 +55,8 @@ exclude = ["**/generated/**", "**/*.min.js"]
 [summary]
 show_cost = false
 show_usage = true
+
+[analysis]
+enabled = false
+sarif_paths = ["artifacts/**/*.sarif"]
+max_findings = 100
