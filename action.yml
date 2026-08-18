@@ -67,7 +67,7 @@ outputs:
 
 runs:
   using: "docker"
-  image: docker://ghcr.io/lucaswilliameufrasio/cururu@sha256:656e1238c7464ec3f09fa86e8e66e052a4e41614858f0d93ca693aa869f66cf1
+  image: docker://ghcr.io/lucaswilliameufrasio/cururu@sha256:f0c81284684742d510ce63c4a0f5365c8fa5db86066139a834918bd36fec3210
   args:
     - review
   env:
