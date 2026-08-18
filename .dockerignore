@@ -3,3 +3,6 @@ target/
 *.md
 LICENSE-*
 rust-toolchain.toml
+action.yml
+.github/
+SECURITY.md
