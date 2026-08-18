@@ -126,6 +126,14 @@ New action outputs: `analysis_status`, `analysis_tools_total`,
 `analysis_tools_failed`, `analysis_tools_not_run`, and
 `analysis_findings_count`.
 
+## v4.2.1 security fix
+
+The `v4.2.1` patch release rebuilds the published image with `h2 v0.4.16` to
+remediate `RUSTSEC-2026-0258` (unbounded empty DATA frames, published
+2026-08-17). No behavior change; only the dependency lock and the published
+image digest were updated. Consumers pinned by digest should update to the new
+digest; consumers using `@v4` resolve automatically.
+
 ## Architecture
 
 - **linux/amd64** built on `ubuntu-24.04`
