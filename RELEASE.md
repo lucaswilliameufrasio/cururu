@@ -134,6 +134,21 @@ remediate `RUSTSEC-2026-0258` (unbounded empty DATA frames, published
 image digest were updated. Consumers pinned by digest should update to the new
 digest; consumers using `@v4` resolve automatically.
 
+## v4.3 finding synthesis
+
+The `v4.3` minor release strengthens how analyzer findings and LLM findings are
+deduplicated and merged when `[policy].synthesis = true`:
+
+- Findings are grouped by (path, line, rule); rules must match exactly when
+  both sides carry one.
+- A finding that has a deterministic `source` (an analyzer) is kept over an
+  LLM finding on the same anchor, regardless of LLM confidence. The analyzer
+  is treated as ground truth and is never silently dropped for a more
+  confident heuristic.
+- When neither side is an analyzer, the higher-confidence finding wins, as
+  before.
+- Findings on the same line with different analyzer rules stay separate.
+
 ## Architecture
 
 - **linux/amd64** built on `ubuntu-24.04`

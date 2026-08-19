@@ -216,22 +216,50 @@ pub fn merge_results(
 }
 
 fn deduplicate_findings(findings: Vec<ReviewFinding>) -> Vec<ReviewFinding> {
-    let mut unique = Vec::with_capacity(findings.len());
+    let mut unique: Vec<ReviewFinding> = Vec::with_capacity(findings.len());
     for finding in findings {
-        let duplicate = unique.iter_mut().find(|existing: &&mut ReviewFinding| {
+        let matches = unique.iter().position(|existing| {
             existing.path == finding.path
                 && existing.line == finding.line
-                && existing.title.eq_ignore_ascii_case(&finding.title)
+                && same_rule(existing, &finding)
+                && titles_overlap(existing, &finding)
         });
-        if let Some(existing) = duplicate {
-            if finding.confidence > existing.confidence {
-                *existing = finding;
+        match matches {
+            Some(index) => {
+                let existing = &mut unique[index];
+                if merge_prefers(&finding, existing) {
+                    *existing = finding;
+                }
             }
-        } else {
-            unique.push(finding);
+            None => unique.push(finding),
         }
     }
     unique
+}
+
+fn same_rule(a: &ReviewFinding, b: &ReviewFinding) -> bool {
+    match (&a.rule, &b.rule) {
+        (Some(x), Some(y)) => x == y,
+        _ => true,
+    }
+}
+
+fn titles_overlap(a: &ReviewFinding, b: &ReviewFinding) -> bool {
+    match (a.rule.as_deref(), b.rule.as_deref()) {
+        (Some(x), Some(y)) => x == y,
+        (Some(_), None) | (None, Some(_)) => true,
+        (None, None) => a.title.eq_ignore_ascii_case(&b.title),
+    }
+}
+
+fn merge_prefers(candidate: &ReviewFinding, existing: &ReviewFinding) -> bool {
+    let candidate_is_tool = candidate.source.is_some();
+    let existing_is_tool = existing.source.is_some();
+    match (candidate_is_tool, existing_is_tool) {
+        (true, false) => true,
+        (false, true) => false,
+        _ => candidate.confidence > existing.confidence,
+    }
 }
 
 fn severity_rank(severity: &str) -> u8 {
@@ -241,5 +269,84 @@ fn severity_rank(severity: &str) -> u8 {
         "medium" => 2,
         "low" => 3,
         _ => 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn llm_finding(path: &str, line: u32, title: &str, confidence: f32) -> ReviewFinding {
+        ReviewFinding {
+            severity: "high".into(),
+            path: path.into(),
+            line: Some(line),
+            title: title.into(),
+            message: "llm".into(),
+            suggestion: String::new(),
+            confidence,
+            suggested_change: None,
+            source: None,
+            rule: None,
+        }
+    }
+
+    fn tool_finding(path: &str, line: u32, rule: &str, severity: &str) -> ReviewFinding {
+        ReviewFinding {
+            severity: severity.into(),
+            path: path.into(),
+            line: Some(line),
+            title: format!("tool: {rule}"),
+            message: "tool".into(),
+            suggestion: String::new(),
+            confidence: 1.0,
+            suggested_change: None,
+            source: Some("clippy".into()),
+            rule: Some(rule.into()),
+        }
+    }
+
+    #[test]
+    fn tool_finding_wins_over_llm_on_same_line() {
+        let findings = vec![
+            llm_finding("src/a.rs", 5, "dangerous unwrap", 0.9),
+            tool_finding("src/a.rs", 5, "unused_must_use", "medium"),
+        ];
+        let merged = deduplicate_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].source.as_deref(), Some("clippy"));
+        assert_eq!(merged[0].severity, "medium");
+    }
+
+    #[test]
+    fn tool_finding_not_overridden_by_higher_confidence_llm() {
+        let findings = vec![
+            tool_finding("src/a.rs", 9, "needless_return", "low"),
+            llm_finding("src/a.rs", 9, "needless_return", 0.99),
+        ];
+        let merged = deduplicate_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].source.as_deref(), Some("clippy"));
+    }
+
+    #[test]
+    fn different_rules_on_same_line_stay_separate() {
+        let findings = vec![
+            tool_finding("src/a.rs", 3, "rule_a", "high"),
+            tool_finding("src/a.rs", 3, "rule_b", "high"),
+        ];
+        let merged = deduplicate_findings(findings);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn higher_confidence_llm_wins_over_lower_confidence_llm() {
+        let findings = vec![
+            llm_finding("src/a.rs", 7, "same issue", 0.7),
+            llm_finding("src/a.rs", 7, "same issue", 0.95),
+        ];
+        let merged = deduplicate_findings(findings);
+        assert_eq!(merged.len(), 1);
+        assert!((merged[0].confidence - 0.95).abs() < f32::EPSILON);
     }
 }
