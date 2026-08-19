@@ -149,6 +149,15 @@ deduplicated and merged when `[policy].synthesis = true`:
   before.
 - Findings on the same line with different analyzer rules stay separate.
 
+## v4.4 check-run evidence
+
+The `v4.4` minor release lets Cururu ingest analyzer evidence reported through
+GitHub **Check Runs** annotations, in addition to SARIF artifacts. Configured
+via `[analysis].check_runs = true` and optionally `check_run_names`. Requires
+`checks: read` on the workflow token. Annotations are normalized, filtered to
+changed files, and merged with LLM findings under synthesis. Opt-in and
+additive.
+
 ## Architecture
 
 - **linux/amd64** built on `ubuntu-24.04`

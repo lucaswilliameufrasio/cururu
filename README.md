@@ -247,6 +247,29 @@ Supported statuses are `passed`, `failed`, `not_run`, `skipped`, and
 enabled, preventing evidence from another PR revision from being presented as
 current.
 
+Cururu can also ingest analyzer evidence reported through GitHub **Check Runs**
+annotations instead of a SARIF artifact:
+
+```toml
+[analysis]
+enabled = true
+check_runs = true
+check_run_names = ["clippy", "rust-clippy"]
+```
+
+`check_run_names` is optional; when empty, annotations from all non-successful
+check runs on the head commit are used. This requires the workflow token to
+have `checks: read` permission:
+
+```yaml
+permissions:
+  contents: read
+  checks: read
+```
+
+Annotations are normalized to the same review format, filtered to changed
+files, and deduplicated with LLM findings when synthesis is enabled.
+
 ## Environment variables
 
 Secrets are always passed through GitHub Actions secrets / environment, never

@@ -62,3 +62,5 @@ manifest = "artifacts/analysis.json"
 sarif_paths = ["artifacts/**/*.sarif"]
 max_findings = 100
 require_current_head = true
+check_runs = false
+check_run_names = []

@@ -1,4 +1,6 @@
-use crate::{agent::ReviewFinding, config::AnalysisConfig, diff::ChangedFile};
+use crate::{
+    agent::ReviewFinding, config::AnalysisConfig, diff::ChangedFile, github::GitHubClient,
+};
 use anyhow::Context;
 use globset::{Glob, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
@@ -103,10 +105,11 @@ struct ManifestTool {
     sarif_path: Option<String>,
 }
 
-pub fn load_evidence(
+pub async fn load_evidence(
     config: &AnalysisConfig,
     changed_files: &[ChangedFile],
     expected_head: &str,
+    github: &GitHubClient,
 ) -> anyhow::Result<AnalysisReport> {
     if !config.enabled {
         return Ok(AnalysisReport {
@@ -154,7 +157,27 @@ pub fn load_evidence(
         }
     }
 
-    let findings = load_sarif_paths(&sarif_paths, changed_files, config.max_findings)?;
+    let mut findings = load_sarif_paths(&sarif_paths, changed_files, config.max_findings)?;
+    if config.check_runs {
+        let annotations = github
+            .list_check_annotations(expected_head, &config.check_run_names)
+            .await?;
+        let mut check_findings = annotations_to_findings(&annotations, changed_files);
+        check_findings.truncate(config.max_findings.saturating_sub(findings.len()));
+        findings.extend(check_findings);
+        if !annotations.is_empty()
+            && tools.iter().all(|tool| tool.status != "failed")
+            && tools.iter().all(|tool| tool.status != "not_run")
+        {
+            tools.push(AnalysisTool {
+                name: "check-runs".into(),
+                status: "failed".into(),
+                exit_code: None,
+                message: Some(format!("{} annotation(s) reported", annotations.len())),
+            });
+        }
+    }
+
     let status = if tools.iter().any(|tool| tool.status == "failed") {
         "failed"
     } else if tools.iter().any(|tool| tool.status == "not_run") {
@@ -169,6 +192,52 @@ pub fn load_evidence(
         tools,
         findings,
     })
+}
+
+fn annotations_to_findings(
+    annotations: &[crate::github::CheckAnnotation],
+    changed_files: &[ChangedFile],
+) -> Vec<ReviewFinding> {
+    let mut findings = Vec::new();
+    for annotation in annotations {
+        let path = normalize_path(&annotation.path);
+        if !changed_files.iter().any(|file| file.path == path) {
+            continue;
+        }
+        let line = annotation.start_line.or(annotation.end_line);
+        let rule = annotation
+            .title
+            .clone()
+            .unwrap_or_else(|| "check-run".into());
+        let severity = match annotation.annotation_level.as_str() {
+            "failure" => "high",
+            "warning" => "medium",
+            _ => "low",
+        };
+        let message = if annotation.message.is_empty() {
+            annotation
+                .raw_details
+                .clone()
+                .unwrap_or_else(|| rule.clone())
+        } else {
+            annotation.message.clone()
+        };
+        findings.push(ReviewFinding {
+            severity: severity.into(),
+            path,
+            line,
+            title: format!("check-run: {rule}"),
+            message,
+            suggestion:
+                "See the check-run annotation and project configuration for the recommended fix."
+                    .into(),
+            confidence: 1.0,
+            suggested_change: None,
+            source: Some("check-runs".into()),
+            rule: Some(rule),
+        });
+    }
+    findings
 }
 
 fn load_sarif_paths(
@@ -288,10 +357,36 @@ fn collect_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::GitHubConfig;
     use tempfile::tempdir;
 
-    #[test]
-    fn parses_sarif_and_filters_to_changed_files() {
+    fn dummy_github() -> GitHubClient {
+        GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: "https://api.github.com".into(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap()
+    }
+
+    fn base_config() -> AnalysisConfig {
+        AnalysisConfig {
+            enabled: true,
+            manifest: None,
+            sarif_paths: vec![],
+            max_findings: 10,
+            require_current_head: true,
+            check_runs: false,
+            check_run_names: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn parses_sarif_and_filters_to_changed_files() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("analysis.sarif");
         std::fs::write(
@@ -299,27 +394,24 @@ mod tests {
             r#"{"runs":[{"tool":{"driver":{"name":"demo-linter"}},"results":[{"ruleId":"SEC001","level":"error","message":{"text":"Bad input"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/main.rs"},"region":{"startLine":7}}}]},{"ruleId":"OTHER","level":"warning","message":{"text":"Ignored"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/other.rs"},"region":{"startLine":2}}}]}]}]}"#,
         )
         .unwrap();
-        let config = AnalysisConfig {
-            enabled: true,
-            manifest: None,
-            sarif_paths: vec![path.to_string_lossy().into()],
-            max_findings: 10,
-            require_current_head: true,
-        };
+        let mut config = base_config();
+        config.sarif_paths = vec![path.to_string_lossy().into()];
         let changed = vec![ChangedFile {
             path: "src/main.rs".into(),
             patch: String::new(),
             right_lines: vec![7],
         }];
-        let report = load_evidence(&config, &changed, "head").unwrap();
+        let report = load_evidence(&config, &changed, "head", &dummy_github())
+            .await
+            .unwrap();
         assert_eq!(report.status, "passed");
         assert_eq!(report.findings.len(), 1);
         assert_eq!(report.findings[0].severity, "high");
         assert_eq!(report.findings[0].rule.as_deref(), Some("SEC001"));
     }
 
-    #[test]
-    fn reports_tool_failure_and_rejects_stale_manifest() {
+    #[tokio::test]
+    async fn reports_tool_failure_and_rejects_stale_manifest() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("analysis.json");
         std::fs::write(
@@ -327,15 +419,12 @@ mod tests {
             r#"{"schema_version":1,"commit_sha":"old","tools":[{"name":"compiler","status":"failed","exit_code":101,"message":"compilation failed"}]}"#,
         )
         .unwrap();
-        let config = AnalysisConfig {
-            enabled: true,
-            manifest: Some(path.to_string_lossy().into()),
-            sarif_paths: vec![],
-            max_findings: 10,
-            require_current_head: true,
-        };
+        let mut config = base_config();
+        config.manifest = Some(path.to_string_lossy().into());
         let changed = Vec::new();
-        let report = load_evidence(&config, &changed, "new").unwrap();
+        let report = load_evidence(&config, &changed, "new", &dummy_github())
+            .await
+            .unwrap();
         assert_eq!(report.status, "stale");
 
         std::fs::write(
@@ -343,8 +432,44 @@ mod tests {
             r#"{"schema_version":1,"commit_sha":"new","tools":[{"name":"compiler","status":"failed","exit_code":101,"message":"compilation failed"}]}"#,
         )
         .unwrap();
-        let report = load_evidence(&config, &changed, "new").unwrap();
+        let report = load_evidence(&config, &changed, "new", &dummy_github())
+            .await
+            .unwrap();
         assert_eq!(report.status, "failed");
         assert_eq!(report.tools[0].exit_code, Some(101));
+    }
+
+    #[test]
+    fn annotations_are_filtered_to_changed_files() {
+        let annotations = vec![
+            crate::github::CheckAnnotation {
+                path: "src/main.rs".into(),
+                start_line: Some(3),
+                end_line: Some(3),
+                annotation_level: "failure".into(),
+                message: "panic".into(),
+                title: Some("unwrap".into()),
+                raw_details: None,
+            },
+            crate::github::CheckAnnotation {
+                path: "src/other.rs".into(),
+                start_line: Some(1),
+                end_line: Some(1),
+                annotation_level: "warning".into(),
+                message: "x".into(),
+                title: Some("clippy".into()),
+                raw_details: None,
+            },
+        ];
+        let changed = vec![ChangedFile {
+            path: "src/main.rs".into(),
+            patch: String::new(),
+            right_lines: vec![3],
+        }];
+        let findings = annotations_to_findings(&annotations, &changed);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, "high");
+        assert_eq!(findings[0].source.as_deref(), Some("check-runs"));
+        assert_eq!(findings[0].line, Some(3));
     }
 }

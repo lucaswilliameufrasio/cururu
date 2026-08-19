@@ -20,6 +20,8 @@ pub struct AnalysisConfig {
     pub sarif_paths: Vec<String>,
     pub max_findings: usize,
     pub require_current_head: bool,
+    pub check_runs: bool,
+    pub check_run_names: Vec<String>,
 }
 
 impl Default for AnalysisConfig {
@@ -30,6 +32,8 @@ impl Default for AnalysisConfig {
             sarif_paths: Vec::new(),
             max_findings: 100,
             require_current_head: true,
+            check_runs: false,
+            check_run_names: Vec::new(),
         }
     }
 }
@@ -552,6 +556,12 @@ impl AppConfig {
             if let Some(v) = ta.require_current_head {
                 self.analysis.require_current_head = v;
             }
+            if let Some(v) = ta.check_runs {
+                self.analysis.check_runs = v;
+            }
+            if let Some(v) = ta.check_run_names {
+                self.analysis.check_run_names = v;
+            }
         }
 
         Ok(())
@@ -587,6 +597,10 @@ struct AnalysisToml {
     max_findings: Option<usize>,
     #[serde(default)]
     require_current_head: Option<bool>,
+    #[serde(default)]
+    check_runs: Option<bool>,
+    #[serde(default)]
+    check_run_names: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]

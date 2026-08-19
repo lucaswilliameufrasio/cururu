@@ -110,6 +110,37 @@ struct CreateReviewComment<'a> {
     subject_type: Option<&'a str>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CheckAnnotation {
+    pub path: String,
+    #[serde(rename = "start_line")]
+    pub start_line: Option<u32>,
+    #[serde(rename = "end_line")]
+    pub end_line: Option<u32>,
+    #[serde(rename = "annotation_level")]
+    pub annotation_level: String,
+    pub message: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(rename = "raw_details")]
+    #[serde(default)]
+    pub raw_details: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CheckRunList {
+    #[serde(default)]
+    check_runs: Vec<CheckRun>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CheckRun {
+    id: u64,
+    name: String,
+    #[serde(default)]
+    conclusion: Option<String>,
+}
+
 impl GitHubClient {
     pub fn new(cfg: &GitHubConfig) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
@@ -362,6 +393,72 @@ impl GitHubClient {
         )
         .await?;
         Ok(pr.head.sha)
+    }
+
+    /// List check-run annotations for a commit SHA, optionally filtered to the
+    /// configured check run names. Used to ingest analyzer evidence that is
+    /// reported through GitHub Check Runs instead of a SARIF artifact.
+    pub async fn list_check_annotations(
+        &self,
+        head_sha: &str,
+        names: &[String],
+    ) -> anyhow::Result<Vec<CheckAnnotation>> {
+        let runs_url = format!(
+            "{}/repos/{}/{}/commits/{}/check-runs?per_page=100",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, head_sha
+        );
+        let list: CheckRunList = retry_with_backoff(
+            || async {
+                self.client
+                    .get(&runs_url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<CheckRunList>()
+                    .await
+                    .context("failed to list check runs")
+            },
+            3,
+        )
+        .await?;
+
+        let mut annotations = Vec::new();
+        for run in list.check_runs {
+            if !names.is_empty() && !names.iter().any(|n| n == &run.name) {
+                continue;
+            }
+            if run.conclusion.as_deref() == Some("success") {
+                continue;
+            }
+            let ann_url = format!(
+                "{}/repos/{}/{}/check-runs/{}/annotations?per_page=100",
+                self.cfg.api_url, self.cfg.owner, self.cfg.repo, run.id
+            );
+            let mut page: Vec<CheckAnnotation> = retry_with_backoff(
+                || async {
+                    self.client
+                        .get(&ann_url)
+                        .timeout(Duration::from_secs(15))
+                        .header("Accept", "application/vnd.github+json")
+                        .header("X-GitHub-Api-Version", "2026-03-10")
+                        .bearer_auth(&self.cfg.token)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .json::<Vec<CheckAnnotation>>()
+                        .await
+                        .context("failed to list check annotations")
+                },
+                3,
+            )
+            .await?;
+            annotations.append(&mut page);
+        }
+        Ok(annotations)
     }
 
     pub async fn list_review_comments(&self) -> anyhow::Result<Vec<ReviewComment>> {

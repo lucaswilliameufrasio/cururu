@@ -89,7 +89,8 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
 
     let model = config.llm.model.clone();
     let usage = provider::merge_usage(&chunk_results);
-    let analysis_report = analysis::load_evidence(&config.analysis, &files, &head_sha)?;
+    let analysis_report =
+        analysis::load_evidence(&config.analysis, &files, &head_sha, github).await?;
     let review = agent::merge_results(
         model.clone(),
         files.len(),
