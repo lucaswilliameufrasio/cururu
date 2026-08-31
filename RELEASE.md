@@ -158,6 +158,29 @@ via `[analysis].check_runs = true` and optionally `check_run_names`. Requires
 changed files, and merged with LLM findings under synthesis. Opt-in and
 additive.
 
+## v4.5 prompt injection hardening
+
+The `v4.5` minor release hardens the review prompt against prompt injection
+carried in PR content and documents the hostile-PR threat model:
+
+- `prompts/review.md` now instructs the model to treat the diff and repository
+  context as untrusted data whose embedded instructions never override the
+  prompt.
+- `SECURITY.md` documents the threat model for PR content: the review runs no
+  code from the PR branch, credentials never enter the prompt, findings must
+  pass anchor validation (`is_valid_anchor`), the bot only creates, updates and
+  deletes inline review comments (never approving or blocking review events),
+  and the residual risk of a manipulated review comment is stated.
+- `src/config.rs` was split into `src/config/` modules by domain
+  (`github`, `provider`, `review`, `context`, `summary`, `analysis`, `schema`,
+  `env`); no behavior change. Recorded as ADR 005.
+- New documentation: `docs/architecture.md`, `docs/glossary.md`,
+  `docs/decisions.md` (ADR 001–005).
+
+The config schema, CLI, and action outputs are unchanged. Consumers pinned by
+digest should update to the new digest; consumers using `@v4` resolve
+automatically.
+
 ## Architecture
 
 - **linux/amd64** built on `ubuntu-24.04`
