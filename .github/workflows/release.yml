@@ -69,6 +69,9 @@ jobs:
 
   merge:
     needs: build
+    permissions:
+      contents: write
+      packages: write
     runs-on: ubuntu-24.04
     steps:
       - name: Set up Docker Buildx
@@ -115,3 +118,38 @@ jobs:
             echo "image: docker://$IMG@$DIGEST"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout main for digest pin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+
+      - name: Pin digest in action.yml and move major tag
+        env:
+          TAG: ${{ github.ref_name }}
+          IMG: ghcr.io/${{ github.repository }}
+        run: |
+          DIGEST=$(docker buildx imagetools inspect "$IMG:$TAG" --format '{{.Manifest.Digest}}')
+          sed -i "s#image: docker://$IMG[@:].*#image: docker://$IMG@$DIGEST#" action.yml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet; then
+            echo "action.yml already pinned to this digest"
+          else
+            git commit -am "chore: pin $TAG OCI digest"
+            git push origin main
+          fi
+
+          MAJOR="v$(echo $TAG | sed 's/v\([0-9]*\).*/\1/')"
+          git tag -f "$MAJOR" HEAD
+          git push -f origin "$MAJOR"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --generate-notes --verify-tag 2>/dev/null \
+            || echo "release $TAG already exists"

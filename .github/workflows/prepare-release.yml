@@ -1,0 +1,100 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 4.6.0 or v4.6.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-prep-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    environment: release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate version format
+        id: version-check
+        run: |
+          RAW="${{ inputs.version }}"
+          CLEAN="$(echo "$RAW" | sed 's/^v//')"
+          echo "version=$CLEAN" >> "$GITHUB_OUTPUT"
+          if ! echo "$CLEAN" | grep -qP '^\d+\.\d+\.\d+$'; then
+            echo "error: version must be semver format (e.g., 4.6.0 or v4.6.0)"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install git-cliff
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        with:
+          tool: git-cliff@2.13.1
+
+      - name: Generate changelog for release
+        env:
+          V: ${{ steps.version-check.outputs.version }}
+        run: |
+          git cliff --bump --tag "v$V" -o CHANGELOG.md
+
+      - name: Update version in Cargo.toml
+        env:
+          V: ${{ steps.version-check.outputs.version }}
+        run: |
+          sed -i "s/^version = \".*\"/version = \"$V\"/" Cargo.toml
+          cargo update -p cururu
+
+      - name: Point action.yml at the version tag
+        env:
+          V: ${{ steps.version-check.outputs.version }}
+        run: |
+          sed -i "s#image: docker://ghcr.io/lucaswilliameufrasio/cururu[@:].*#image: docker://ghcr.io/lucaswilliameufrasio/cururu:v$V#" action.yml
+
+      - name: Create release PR via gh CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ steps.version-check.outputs.version }}
+          BRANCH: release/v${{ steps.version-check.outputs.version }}-rc.${{ github.run_attempt }}
+          TITLE: Release v${{ steps.version-check.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add CHANGELOG.md Cargo.toml Cargo.lock action.yml
+          git commit -m "chore(release): prepare for v$V"
+
+          git push origin HEAD:"$BRANCH"
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "$TITLE" \
+            --body "Automated release preparation for **v$V**.
+
+          ## After merging
+
+          Pull the latest main, then create and push the tag to trigger the
+          build and release:
+
+          \`\`\`bash
+          git checkout main
+          git pull --rebase
+          git tag v$V
+          git push origin v$V
+          \`\`\`
+
+          The \`Release\` workflow builds the multi-arch image, then
+          automatically pins the OCI digest in \`action.yml\`, moves the major
+          git tag (v4), and creates the GitHub Release."
