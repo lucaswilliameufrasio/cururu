@@ -29,13 +29,27 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: lucaswilliameufrasio/cururu@v4
+      - name: Check LLM API key
+        id: llm_key
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          if [ -z "$LLM_API_KEY" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::LLM_API_KEY is not configured — skipping Cururu review."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Review PR
+        if: steps.llm_key.outputs.skip == 'false'
+        uses: lucaswilliameufrasio/cururu@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}
 ```
 
-Set `LLM_API_KEY` as a repository secret. That is it.
+Set `LLM_API_KEY` as a repository secret. That is it — if the secret is not
+configured, the review is skipped with a notice instead of failing the PR.
 
 ## Configuration
 

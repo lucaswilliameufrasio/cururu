@@ -6,6 +6,9 @@
 #   1. Add LLM_API_KEY as a repository secret
 #   2. (Optional) Add a .cururu.toml at the repository root
 #   3. Push this workflow file
+#
+# If LLM_API_KEY is not configured, the review is skipped with a notice
+# instead of failing every pull request.
 
 name: Cururu PR Review
 
@@ -29,7 +32,20 @@ jobs:
     if: (github.event_name == 'issue_comment' || github.event.pull_request.draft == false) && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: lucaswilliameufrasio/cururu@v4
+      - name: Check LLM API key
+        id: llm_key
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          if [ -z "$LLM_API_KEY" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::LLM_API_KEY is not configured — skipping Cururu review."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Review PR
+        if: steps.llm_key.outputs.skip == 'false'
+        uses: lucaswilliameufrasio/cururu@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}

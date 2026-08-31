@@ -20,6 +20,19 @@ jobs:
     if: (github.event_name == 'issue_comment' || github.event.pull_request.draft == false) && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      - uses: lucaswilliameufrasio/cururu@v4
+      - name: Check LLM API key
+        id: llm_key
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          if [ -z "$LLM_API_KEY" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::LLM_API_KEY is not configured — skipping Cururu review."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Review PR
+        if: steps.llm_key.outputs.skip == 'false'
+        uses: lucaswilliameufrasio/cururu@v4
         with:
           llm_api_key: ${{ secrets.LLM_API_KEY }}
