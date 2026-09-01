@@ -15,6 +15,8 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -24,8 +26,16 @@ jobs:
           toolchain: 1.97.0
           components: clippy,rustfmt
 
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-targets: false
+
+      - name: Set Rust compiler wrapper
+        run: echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Format
         run: cargo fmt --check
@@ -39,10 +49,20 @@ jobs:
       - name: Test
         run: cargo test
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
       - name: Docker smoke test
-        run: |
-          docker build -t cururu:ci .
-          docker run --rm --workdir /github/workspace cururu:ci --version
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          tags: cururu:ci
+          cache-from: type=gha,scope=ci
+          cache-to: type=gha,mode=max,scope=ci
+
+      - name: Run Docker smoke test
+        run: docker run --rm --workdir /github/workspace cururu:ci --version
 
       - name: Audit
         run: |
