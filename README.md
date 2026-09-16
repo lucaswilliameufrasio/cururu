@@ -23,6 +23,7 @@ name: Cururu PR Review
 on: pull_request_target
 permissions:
   contents: read
+  checks: read
   pull-requests: write
   issues: write
 jobs:
@@ -42,18 +43,45 @@ jobs:
           fi
       - name: Review PR
         if: steps.llm_key.outputs.skip == 'false'
-        uses: lucaswilliameufrasio/cururu@v4
+        uses: lucaswilliameufrasio/cururu@4c629d6f9457b274c689bc5d4542db3a6f935e67 # v4.5.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}
+          cururu_language: pt-BR
+          cururu_profile: balanced
+          cururu_fail_on: off
 ```
 
 Set `LLM_API_KEY` as a repository secret. That is it — if the secret is not
 configured, the review is skipped with a notice instead of failing the PR.
 
+## Integration discovery prompt
+
+Before choosing a model or enabling Cururu in a production repository, use the
+canonical [integration prompt](prompts/integration.md). It makes budget discovery a
+mandatory first step, then reviews repository documentation and historical GitHub
+activity before recommending a configuration.
+
+The prompt is GitHub-specific. It optionally recommends the GitHub CLI (`gh`) so the
+project owner can provide bounded metadata about commits, merged pull requests, PR
+frequency, and PR size. `gh` is not required to run Cururu, but without it (or
+equivalent GitHub API data) cost and historical-regression estimates are incomplete
+and less reliable. The prompt must distinguish observed history from assumptions and
+must never expose credentials.
+
+The current review Action is a Docker Action. Installing `gh` on the GitHub Actions
+runner does not automatically make it available inside Cururu's container. Use `gh`
+during integration discovery, or add a separate data-producing workflow only after
+designing a trusted input path for that data.
+
 ## Configuration
 
 Cururu reads `.cururu.toml` from the trusted base commit of the PR.
+
+The repository's [example `.cururu.toml`](.cururu.toml) is fully commented in English.
+Its bounded diff, chunk, context, output, and finding limits make the cost and review
+trade-offs explicit. Copy the relevant sections to a consuming repository and adjust
+them after measuring real PR volume and risk.
 
 ```toml
 version = 1
@@ -78,8 +106,8 @@ fail_on = "off"
 allowed_severities = ["critical", "high", "medium", "low"]
 suggested_changes = false
 incremental = false
-synthesis = false
-focus = []
+synthesis = true
+focus = ["correctness", "security", "performance", "cost", "regressions", "tests"]
 
 [summary]
 show_cost = true
@@ -89,7 +117,7 @@ show_usage = true
 conventions = ["AGENTS.md", "CONTRIBUTING.md"]
 specifications = ["docs/sdd/**/*.md", "docs/gdd/**/*.md"]
 skills = [".agents/skills/**/SKILL.md"]
-additional = ["docs/adr/**/*.md"]
+additional = ["docs/adr/**/*.md", "docs/architecture.md", "docs/decisions.md", "SECURITY.md", "CHANGELOG.md"]
 max_bytes = 100000
 
 [context.auto]

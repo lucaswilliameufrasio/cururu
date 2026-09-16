@@ -1,66 +1,110 @@
+# Cururu configuration schema version.
 version = 1
 
 [provider]
+# OpenAI-compatible provider used for review requests.
 name = "openrouter"
+# Model identifier. Choose this after checking project risk and budget.
 model = "openai/gpt-5.6-luna"
+# Low temperature keeps findings deterministic and reduces review drift.
 temperature = 0.1
+# Maximum completion tokens per LLM call; higher values can increase cost.
 max_output_tokens = 4000
 
 [review]
+# Hard upper bound for the diff reviewed in one PR.
 max_diff_bytes = 180000
+# Maximum bytes per LLM chunk; smaller chunks reduce request failures but add calls.
 chunk_bytes = 45000
+# Lockfiles and generated build output add noise and unnecessary token cost.
 ignore = [
   "**/target/**",
   "**/*.lock",
   "**/dist/**",
   "**/build/**",
 ]
+# Language used in findings and summary comments.
 language = "pt-BR"
+# Inline comments are anchored to changed lines; use "summary" for one PR comment.
 comment_mode = "inline"
 
 [policy]
+# Retain only findings above this confidence threshold.
 minimum_confidence = 0.65
+# Bound the number of findings posted to keep reviews actionable and predictable.
 max_findings = 30
+# Keep the Action non-blocking until the project calibrates false positives.
 fail_on = "off"
+# Severities accepted after confidence filtering.
 allowed_severities = ["critical", "high", "medium", "low"]
+# Safe one-line GitHub suggestions are disabled by default.
 suggested_changes = false
+# Review only the current PR by default; state is not persisted between runs.
 incremental = false
-synthesis = false
-focus = []
+# Deduplicate overlapping findings from multiple chunks.
+synthesis = true
+# Explicit risk areas make the review intent visible to the model.
+focus = ["correctness", "security", "performance", "cost", "regressions", "tests"]
 
 [context]
+# Trusted project conventions loaded from the base branch when present.
 conventions = [
   "CONTRIBUTING.md",
   "AGENTS.md",
 ]
+# Project requirements and design specifications.
 specifications = [
   "docs/specs/**/*.md",
   "docs/sdd/**/*.md",
   "docs/gdd/**/*.md",
 ]
-skills = []
+# Optional review skills maintained by the consuming repository.
+skills = [
+  ".agents/skills/**/SKILL.md",
+]
+# Architecture, security, decisions, and correction history provide review context.
 additional = [
   "docs/adr/**/*.md",
+  "docs/architecture.md",
+  "docs/decisions.md",
+  "SECURITY.md",
+  "CHANGELOG.md",
 ]
+# Total context budget; lowering this reduces input tokens and cost.
 max_bytes = 100000
 
 [context.auto]
+# Disabled by default because automatic source context increases API calls and tokens.
 enabled = false
+# Total automatic source-context budget when enabled.
 max_bytes = 50000
+# Maximum number of changed source files added automatically.
 max_files = 20
+# Per-file cap for automatic source context.
 per_file_bytes = 12000
+# Only these changed files are eligible for automatic context.
 include = ["src/**", "tests/**"]
+# Generated and minified files are excluded from automatic context.
 exclude = ["**/generated/**", "**/*.min.js"]
 
 [summary]
-show_cost = false
+# Show provider-reported monetary cost when available.
+show_cost = true
+# Show prompt, completion, cached, and reasoning token usage.
 show_usage = true
 
 [analysis]
-enabled = false
+# Ingest external analyzer evidence without executing repository commands.
+enabled = true
+# Optional lifecycle manifest produced by the repository's own CI analyzers.
 manifest = "artifacts/analysis.json"
+# SARIF files are read only when they exist in the workspace.
 sarif_paths = ["artifacts/**/*.sarif"]
+# Bound external analyzer findings.
 max_findings = 100
+# Reject analyzer evidence produced for a different PR revision.
 require_current_head = true
-check_runs = false
+# Read annotations from GitHub Check Runs on the PR head.
+check_runs = true
+# Empty means all non-successful Check Runs; set names to narrow the scope.
 check_run_names = []
