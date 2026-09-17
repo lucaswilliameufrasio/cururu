@@ -2,11 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [4.6.0] - 2026-09-17
+
+### Bug Fixes
+
+- Refresh Cargo.lock to replace yanked chacha20 0.10.1
+- Update rustls security patch
+
+### CI / Build
+
+- Automate release preparation and digest pinning
+- Add sccache and buildx caching to speed up builds
 
 ### Chores
 
 - Pin v4.5.0 OCI digest
+- Sync Cargo.lock with v4.5.0
+
+### Documentation
+
+- Add Cururu integration guidance
 ## [4.5.0] - 2026-08-31
 
 ### CI / Build
