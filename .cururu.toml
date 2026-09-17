@@ -94,8 +94,8 @@ show_cost = true
 show_usage = true
 
 [analysis]
-# Ingest external analyzer evidence without executing repository commands.
-enabled = true
+# External analyzer evidence is opt-in; enable this only when CI produces the files.
+enabled = false
 # Optional lifecycle manifest produced by the repository's own CI analyzers.
 manifest = "artifacts/analysis.json"
 # SARIF files are read only when they exist in the workspace.
@@ -104,7 +104,7 @@ sarif_paths = ["artifacts/**/*.sarif"]
 max_findings = 100
 # Reject analyzer evidence produced for a different PR revision.
 require_current_head = true
-# Read annotations from GitHub Check Runs on the PR head.
-check_runs = true
+# Read annotations from GitHub Check Runs on the PR head when evidence is enabled.
+check_runs = false
 # Empty means all non-successful Check Runs; set names to narrow the scope.
 check_run_names = []
