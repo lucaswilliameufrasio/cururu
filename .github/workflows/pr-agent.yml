@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  checks: read
   pull-requests: write
   issues: write
 
@@ -19,6 +20,7 @@ jobs:
   review:
     if: (github.event_name == 'issue_comment' || github.event.pull_request.draft == false) && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check LLM API key
         id: llm_key
@@ -33,6 +35,9 @@ jobs:
           fi
       - name: Review PR
         if: steps.llm_key.outputs.skip == 'false'
-        uses: lucaswilliameufrasio/cururu@v4
+        uses: lucaswilliameufrasio/cururu@4c629d6f9457b274c689bc5d4542db3a6f935e67 # v4.5.0
         with:
           llm_api_key: ${{ secrets.LLM_API_KEY }}
+          cururu_language: pt-BR
+          cururu_profile: balanced
+          cururu_fail_on: off
