@@ -43,7 +43,7 @@ jobs:
           fi
       - name: Review PR
         if: steps.llm_key.outputs.skip == 'false'
-        uses: lucaswilliameufrasio/cururu@4c629d6f9457b274c689bc5d4542db3a6f935e67 # v4.5.0
+        uses: lucaswilliameufrasio/cururu@ee65b0ef0211a9a79ce14a2af597b45964ca7b8f # v4.6.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}
