@@ -18,6 +18,7 @@ pub struct ReviewOutput {
     pub model: String,
     pub show_usage: bool,
     pub show_cost: bool,
+    pub logo_url: Option<String>,
     /// Parsed changed files with right-side line numbers for inline anchors.
     pub changed_files: Vec<diff::ChangedFile>,
     pub head_sha: String,
@@ -65,8 +66,14 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         )
     };
     let lang_instruction = format!(
-        "\n\nResponda em {}.{}\n",
-        config.review.language, focus_instruction
+        "\n\nResponda em {}. Use tom {} e escreva para um leitor de nível técnico {}.{}\n\
+         Nas sugestões, use nível de detalhe {}: explique o contexto e por que a correção resolve o problema, incluindo uma ação concreta e segura quando possível.\
+         Se o diff/contexto não permitir inferir uma correção segura, diga isso claramente em vez de inventar detalhes.\n",
+        config.review.language,
+        config.review.tone,
+        config.review.technical_level,
+        focus_instruction,
+        config.review.suggestion_detail,
     );
     let system_prompt = if context_store.is_empty() {
         format!("{}{}", REVIEW_PROMPT.trim(), lang_instruction)
@@ -118,6 +125,7 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         model,
         show_usage: config.summary.show_usage,
         show_cost: config.summary.show_cost,
+        logo_url: config.summary.logo_url.clone(),
         changed_files: files,
         head_sha,
         analysis: analysis_report,

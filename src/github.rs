@@ -52,6 +52,12 @@ struct CollaboratorPermission {
 }
 
 #[derive(Debug, Deserialize)]
+struct PullRequestReview {
+    body: Option<String>,
+    user: Option<CommentUser>,
+}
+
+#[derive(Debug, Deserialize)]
 struct AuthenticatedUser {
     login: String,
 }
@@ -108,6 +114,17 @@ struct CreateReviewComment<'a> {
     line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     subject_type: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+struct PullRequestReviewBody<'a> {
+    body: &'a str,
+    event: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct RequestReviewers<'a> {
+    reviewers: [&'a str; 1],
 }
 
 #[derive(Debug, Deserialize)]
@@ -287,6 +304,41 @@ impl GitHubClient {
             .context("failed to read file content")
     }
 
+    pub async fn fetch_repository_file_at_ref(
+        &self,
+        repository: &str,
+        path: &str,
+        sha: &str,
+    ) -> anyhow::Result<String> {
+        let (owner, repo) = repository
+            .split_once('/')
+            .context("repository must be owner/repository")?;
+        let encoded_path = path
+            .split('/')
+            .map(url_encode)
+            .collect::<Vec<_>>()
+            .join("/");
+        let url = format!(
+            "{}/repos/{owner}/{repo}/contents/{encoded_path}?ref={}",
+            self.cfg.api_url,
+            url_encode(sha)
+        );
+        self.client
+            .get(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github.raw")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .send()
+            .await
+            .context("failed to fetch shared config")?
+            .error_for_status()
+            .context("shared config API error; verify that the GitHub token can read the base repository")?
+            .text()
+            .await
+            .context("failed to read shared config")
+    }
+
     pub async fn user_can_review(&self, login: &str) -> anyhow::Result<bool> {
         let url = format!(
             "{}/repos/{}/{}/collaborators/{}/permission",
@@ -352,7 +404,7 @@ impl GitHubClient {
         own_login.is_some_and(|own| user_login == Some(own)) || (own_login.is_none() && is_bot)
     }
 
-    fn comment_is_cururu(comment: &ReviewComment, own_login: Option<&str>) -> bool {
+    pub(crate) fn comment_is_cururu(comment: &ReviewComment, own_login: Option<&str>) -> bool {
         Self::user_is_cururu(comment.user.as_ref(), own_login)
             && comment
                 .body
@@ -533,6 +585,93 @@ impl GitHubClient {
         .await
     }
 
+    pub async fn submit_formal_review(&self, body: &str) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/reviews",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        self.client
+            .post(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .json(&PullRequestReviewBody {
+                body,
+                event: "COMMENT",
+            })
+            .send()
+            .await
+            .context("failed to submit formal Cururu review")?
+            .error_for_status()
+            .context("GitHub rejected the formal pull request review")?;
+        Ok(())
+    }
+
+    pub async fn formal_review_exists(
+        &self,
+        marker: &str,
+        bot_login: &str,
+    ) -> anyhow::Result<bool> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/reviews?per_page=100",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        let reviews: Vec<PullRequestReview> = self
+            .client
+            .get(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .send()
+            .await
+            .context("failed to list pull request reviews")?
+            .error_for_status()
+            .context("GitHub rejected pull request review listing")?
+            .json()
+            .await
+            .context("invalid pull request review list")?;
+        Ok(reviews.iter().any(|review| {
+            review
+                .body
+                .as_deref()
+                .is_some_and(|body| body.contains(marker))
+                && review
+                    .user
+                    .as_ref()
+                    .is_some_and(|user| user.login.eq_ignore_ascii_case(bot_login))
+        }))
+    }
+
+    /// Attempt to request the Cururu App bot as a reviewer. GitHub documents
+    /// this endpoint for user and team logins; an App bot may be rejected with
+    /// 422, which is reported as `false` so the formal review can still be posted.
+    pub async fn request_app_reviewer(&self, login: &str) -> anyhow::Result<bool> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/requested_reviewers",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        let response = self
+            .client
+            .post(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .json(&RequestReviewers { reviewers: [login] })
+            .send()
+            .await
+            .context("failed to request Cururu as reviewer")?;
+        if response.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+            return Ok(false);
+        }
+        response
+            .error_for_status()
+            .context("GitHub rejected the Cururu reviewer request")?;
+        Ok(true)
+    }
+
     pub async fn update_review_comment(&self, id: u64, body: &str) -> anyhow::Result<()> {
         let url = format!(
             "{}/repos/{}/{}/pulls/comments/{}",
@@ -564,6 +703,26 @@ impl GitHubClient {
             3,
         )
         .await
+    }
+
+    pub async fn reply_review_comment(&self, id: u64, body: &str) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/comments/{id}/replies",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        self.client
+            .post(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .json(&ReviewCommentBody { body })
+            .send()
+            .await
+            .context("failed to reply to pull request review comment")?
+            .error_for_status()
+            .context("GitHub rejected review-comment reply")?;
+        Ok(())
     }
 
     pub async fn delete_review_comment(&self, id: u64) -> anyhow::Result<()> {
@@ -714,7 +873,7 @@ impl GitHubClient {
             .map(|c| c.id))
     }
 
-    async fn create_issue_comment(&self, body: &str) -> anyhow::Result<()> {
+    pub async fn create_issue_comment(&self, body: &str) -> anyhow::Result<()> {
         let url = format!(
             "{}/repos/{}/{}/issues/{}/comments",
             self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
@@ -803,6 +962,96 @@ fn merge_desired_by_anchor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{header, method, path, query_param},
+    };
+
+    #[tokio::test]
+    async fn fetches_shared_config_from_another_repository_with_token() {
+        let server = MockServer::start().await;
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        Mock::given(method("GET"))
+            .and(path(
+                "/repos/acme/standards/contents/configs/cururu/base.toml",
+            ))
+            .and(query_param("ref", commit))
+            .and(header("authorization", "Bearer installation-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("version = 1\n"))
+            .mount(&server)
+            .await;
+
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "installation-token".into(),
+            repository: "consumer/repo".into(),
+            owner: "consumer".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+        let body = client
+            .fetch_repository_file_at_ref("acme/standards", "configs/cururu/base.toml", commit)
+            .await
+            .unwrap();
+        assert_eq!(body, "version = 1\n");
+    }
+
+    #[tokio::test]
+    async fn unsupported_app_bot_reviewer_request_falls_back_without_failing() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/pulls/1/requested_reviewers"))
+            .respond_with(ResponseTemplate::new(422))
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+        assert!(!client.request_app_reviewer("cururu[bot]").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn formal_review_records_bot_identity_marker() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1/reviews"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"body":"<!-- cururu:formal-review:v1 head=abc -->", "user":{"login":"cururu[bot]","type":"Bot"}}
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/pulls/1/reviews"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+        assert!(
+            client
+                .formal_review_exists("<!-- cururu:formal-review:v1 head=abc -->", "cururu[bot]")
+                .await
+                .unwrap()
+        );
+        client.submit_formal_review("Cururu review.").await.unwrap();
+    }
 
     #[test]
     fn merge_desired_groups_same_anchor() {

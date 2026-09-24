@@ -1,0 +1,54 @@
+# Example for a private shared base in a separate GitHub organization.
+# Keep .cururu.toml and all context files on the trusted base commit.
+name: Cururu PR Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  checks: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    if: github.event_name == 'issue_comment' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      # This token can read the consumer repo and write Cururu PR/issue comments.
+      - name: Mint consumer installation token
+        id: consumer-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.CURURU_APP_ID }}
+          private-key: ${{ secrets.CURURU_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: read
+          permission-pull-requests: write
+          permission-issues: write
+
+      # This separate installation token is read-only and scoped to the base repo.
+      - name: Mint shared-config installation token
+        id: base-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.CURURU_APP_ID }}
+          private-key: ${{ secrets.CURURU_APP_PRIVATE_KEY }}
+          owner: ${{ vars.CURURU_BASE_OWNER }}
+          repositories: ${{ vars.CURURU_BASE_REPOSITORY }}
+          permission-contents: read
+
+      - name: Review PR
+        uses: lucaswilliameufrasio/cururu@ee65b0ef0211a9a79ce14a2af597b45964ca7b8f # v4.6.0
+        with:
+          github_token: ${{ steps.consumer-token.outputs.token }}
+          shared_config_token: ${{ steps.base-token.outputs.token }}
+          llm_api_key: ${{ secrets.LLM_API_KEY }}
+          cururu_language: pt-BR
+          cururu_profile: balanced
+          cururu_fail_on: off

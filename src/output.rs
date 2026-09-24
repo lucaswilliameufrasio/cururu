@@ -15,25 +15,18 @@ pub const fn finding_marker() -> &'static str {
     FINDING_MARKER
 }
 
-const CURURU_SIGNATURE: &str = "\
-> _Cururu_ — revisão automatizada por IA. Trate como auxiliar; não substitui
-> uma revisão humana.
->
-> ```
->      _   _
->     (o)_(o)
->      (_) \\
->     /   \\ \\
->    |_____|_|
->    cururu
-> ```";
-
 /// Branded footer appended to every Cururu comment so the bot is recognizable
 /// regardless of which GitHub identity runs the workflow.
-pub fn render_signature() -> String {
+pub fn render_signature(logo_url: Option<&str>) -> String {
     let mut out = String::new();
     out.push_str("\n\n---\n\n");
-    out.push_str(CURURU_SIGNATURE);
+    out.push_str("> _Cururu_ — revisão automatizada por IA. Trate como auxiliar; não substitui\n");
+    out.push_str("> uma revisão humana.\n>\n");
+    if let Some(url) = logo_url {
+        let _ = writeln!(out, "> ![Cururu](<{url}>)");
+    } else {
+        out.push_str("> ```\n>      _   _\n>     (o)_(o)\n>      (_) \\\n>     /   \\ \\\n>    |_____|_|\n>    cururu\n> ```");
+    }
     out.push('\n');
     out
 }
@@ -56,7 +49,7 @@ pub fn render_summary_comment(output: &ReviewOutput) -> String {
         }
     }
 
-    out.push_str(&render_signature());
+    out.push_str(&render_signature(output.logo_url.as_deref()));
     out
 }
 
@@ -111,6 +104,7 @@ pub fn render_inline_finding(f: &ReviewFinding) -> String {
 
     let mut out = String::new();
     out.push_str(FINDING_MARKER);
+    out.push_str("\n\n");
     let _ = write!(out, "**{}:** {title}", f.severity.to_uppercase());
     out.push('\n');
     let message = f.message.trim().replace('\n', " ");
@@ -196,6 +190,7 @@ mod tests {
     fn inline_finding_contains_marker_and_fields() {
         let body = render_inline_finding(&finding());
         assert!(body.contains("<!-- cururu:finding -->"));
+        assert!(body.starts_with("<!-- cururu:finding -->\n\n**CRITICAL:**"));
         assert!(body.contains("**CRITICAL:** Command injection"));
         assert!(body.contains("Query is interpolated"));
         assert!(body.contains("**Sugestão:** Use Command::new"));
@@ -250,6 +245,7 @@ mod tests {
             model: "m".into(),
             show_usage: false,
             show_cost: false,
+            logo_url: Some("https://example.test/cururu.svg".into()),
             changed_files: vec![],
             head_sha: "head".into(),
             analysis: crate::analysis::AnalysisReport {
@@ -260,5 +256,7 @@ mod tests {
         };
         let body = render_summary_comment(&output);
         assert!(body.contains("_Cururu_"));
+        assert!(body.contains("![Cururu](<https://example.test/cururu.svg>)"));
+        assert!(!body.contains("(o)_(o)"));
     }
 }

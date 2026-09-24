@@ -1,0 +1,67 @@
+---
+import "../styles/global.css";
+
+const title = "Cururu — thoughtful code review, on your terms";
+const description = "Self-service AI code review for GitHub. Use the GitHub Action or run Cururu's GitHub App on your own infrastructure.";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#101713" />
+    <link rel="icon" type="image/svg+xml" href="/cururu-logo.svg" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <main class="shell">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="#top"><img src="/cururu-logo.svg" alt="" /><span>cururu</span></a>
+        <div class="nav-links"><a href="#principles">How it works</a><a href="#configure">Configuration</a><a href="/self-hosted-app">Self-host</a><a href="https://github.com/lucaswilliameufrasio/cururu">GitHub</a></div>
+      </nav>
+
+      <section class="hero" id="top">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="status-dot"></span> YOUR REVIEWER. YOUR REPO. YOUR RULES.</p>
+          <h1>Better reviews.<br /><em>Less guesswork.</em></h1>
+          <p class="lede">Cururu reviews GitHub pull requests with context you control. Clear findings, useful suggestions, and no central service in the middle.</p>
+          <div class="actions"><a class="button primary" href="#quickstart">Get started <span aria-hidden="true">↗</span></a><a class="button secondary" href="https://github.com/lucaswilliameufrasio/cururu">Explore the source</a></div>
+          <div class="trust"><span>Open source</span><span>Self-service</span><span>GitHub Actions</span></div>
+        </div>
+        <div class="review-card" aria-label="Example of a Cururu code review comment">
+          <div class="card-top"><span class="dots"><i></i><i></i><i></i></span><span>pull request / review</span><span class="live"><b></b> ready</span></div>
+          <div class="file"><span class="file-icon">⌘</span><span>src/payment.rs</span><span class="line">L42</span></div>
+          <div class="finding"><div class="finding-heading"><span class="severity">MEDIUM</span><span>Retry can charge twice</span></div><p>If the request times out after the provider processes the charge, retrying this call may create a second payment. Use the provider's idempotency key for every attempt so retries resolve to the original operation.</p><div class="suggestion"><span>CURURU SUGGESTION</span><code>charge(amount, idempotency_key = payment.id)</code></div></div>
+          <div class="card-foot"><span>grounded in your diff</span><span class="confidence">● high confidence</span></div>
+        </div>
+      </section>
+
+      <section class="principles" id="principles" aria-label="Product principles">
+        <article><span class="index">01 / OWNERSHIP</span><h2>Your infrastructure.</h2><p>Start with GitHub Actions, or run the installable GitHub App with a PostgreSQL or SQLite queue on infrastructure you control.</p></article>
+        <article><span class="index">02 / CONTEXT</span><h2>Your rules stay yours.</h2><p>Keep repository-specific architecture and context while sharing stable review defaults from a pinned base config.</p></article>
+        <article><span class="index">03 / CLARITY</span><h2>Suggestions with reasons.</h2><p>Set the tone, technical audience, and how much explanation each recommendation should include.</p></article>
+      </section>
+
+      <section class="quickstart" id="quickstart">
+        <div><p class="eyebrow">01 / QUICK START</p><h2>Put Cururu on a pull request.</h2><p>Install the CLI, scaffold a workflow and configuration, then add your model key as a repository secret.</p><p class="note">The generated workflow uses the repository's trusted base configuration and does not execute pull-request code.</p></div>
+        <pre><code>{"# Install from source (until release binaries ship)\ncargo install --git https://github.com/lucaswilliameufrasio/cururu\n\n# In the repository to review\ncururu init\n\n# Set LLM_API_KEY in repository secrets"}</code></pre>
+      </section>
+
+      <section class="configure" id="configure">
+        <div><p class="eyebrow">02 / CONFIGURE THE REVIEW</p><h2>Choose how Cururu thinks and explains.</h2><p>Voice, technical level, and suggestion detail are separate controls. Detailed suggestions explain why a fix matters and what to do next.</p></div>
+        <pre><code>{"# .cururu.toml\n[review]\nlanguage = 'en-US'\ntone = 'didactic'               # neutral | direct | didactic\ntechnical_level = 'intermediate' # beginner | intermediate | expert\nsuggestion_detail = 'detailed'   # concise | standard | detailed\n\n[summary]\n# Optional; only appears in the main PR summary.\nlogo_url = 'https://raw.githubusercontent.com/lucaswilliameufrasio/cururu/main/assets/cururu-logo.svg'"}</code></pre>
+      </section>
+
+      <section class="shared">
+        <div class="shared-icon">↗</div><div><p class="eyebrow">SHARED CONFIGURATION</p><h2>One baseline. Local judgment stays local.</h2><p>Point each repository at a pinned commit SHA in a shared config repository. Scalars can be overridden locally; shared focus and context rules can be extended. Private sources work when the GitHub token can read both repositories.</p><a class="text-link" href="https://github.com/lucaswilliameufrasio/cururu#shared-configuration">Read the configuration guide →</a></div>
+      </section>
+
+      <section class="app-roadmap"><span class="roadmap-tag">SELF-HOSTED / GITHUB APP</span><h2>Run your own reviewer.</h2><p>Install Cururu into selected repositories. It can submit formal reviews, attempt a reviewer request, respond to authorized mentions, and reply in suggestion threads.</p><a class="text-link" href="/self-hosted-app">Read the self-hosting guide →</a></section>
+
+      <section class="bottom-cta"><img src="/cururu-logo.svg" alt="Cururu frog logo"/><p class="eyebrow">CALM, CLEAR CODE REVIEWS</p><h2>Ship with a second set of eyes.</h2><a class="button primary" href="https://github.com/lucaswilliameufrasio/cururu">Start with Cururu <span aria-hidden="true">↗</span></a></section>
+      <footer><span>Cururu / open-source GitHub review</span><span>AI review is assistance, not approval.</span></footer>
+    </main>
+  </body>
+</html>
