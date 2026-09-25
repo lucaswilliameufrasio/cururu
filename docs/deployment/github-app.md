@@ -50,10 +50,10 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-The included `compose.yaml` runs Cururu and PostgreSQL. By default, backend
-port 8080 and Nginx port 18082 bind to loopback. On a Tailscale host, set
-`CURURU_TAILSCALE_IP` in `.env` and use the overlay to add a Tailscale-only
-backend binding:
+The included `compose.yaml` runs Cururu and PostgreSQL. The backend has no host
+port binding by default; Nginx is available at `127.0.0.1:18082`. On a Tailscale
+host, set `CURURU_TAILSCALE_IP` in `.env` and use the overlay to bind the backend
+only to the Tailscale interface:
 
 ```sh
 CURURU_TAILSCALE_IP="$(tailscale ip -4)" \
@@ -61,7 +61,7 @@ CURURU_TAILSCALE_IP="$(tailscale ip -4)" \
 ```
 
 The operator can then validate Cururu privately at
-`http://<CURURU_TAILSCALE_IP>:8080/health`. Nginx proxies the versioned webhook
+`http://<CURURU_TAILSCALE_IP>:<CURURU_PORT>/health`. Nginx proxies the versioned webhook
 path `/v1/webhooks/github` to the backend. **Tailscale is for operator access;
 GitHub's hosted webhook sender cannot reach a tailnet-private address.**
 
@@ -71,10 +71,10 @@ DNS name, routes HTTPS/443 to Nginx, and installs a valid TLS certificate. Use
 as a template: copy it to `deploy/nginx/cururu-public.conf`, replace the sample
 hostname/certificate paths, then start Compose with
 `-f compose.public-nginx.yaml`. This makes the included Nginx container listen on
-public 80/443 and proxy directly to the loopback-only backend. Set that
-operator's App webhook to `https://<their-hostname>/v1/webhooks/github`. Keep
-backend port 8080 restricted to loopback and the tailnet; Nginx is the public
-entry point.
+public 80/443 and proxy to Cururu over the private Compose network. Set that
+operator's App webhook to `https://<their-hostname>/v1/webhooks/github`. Keep the
+backend port restricted to the private Compose network and, when enabled, the
+Tailscale interface; Nginx is the public entry point.
 
 `GET /health` is a liveness endpoint. Configure the GitHub App webhook only after
 the operator's public HTTPS endpoint is reachable from GitHub.

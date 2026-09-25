@@ -13,8 +13,6 @@ services:
       GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
       GITHUB_SERVER_URL: ${GITHUB_SERVER_URL:-https://github.com}
       LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in .env}
-    ports:
-      - "127.0.0.1:${CURURU_PORT:-8080}:8080"
     volumes:
       - cururu-sqlite:/data
     secrets:
@@ -22,8 +20,9 @@ services:
 
   nginx:
     image: nginx:1.30.4-alpine
-    network_mode: host
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:18082:80"
     volumes:
       - ./deploy/nginx/cururu.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
