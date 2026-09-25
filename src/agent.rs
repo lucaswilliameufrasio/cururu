@@ -112,9 +112,7 @@ pub async fn answer_question(
         .await
         .context("failed to parse Cururu conversation response")?;
     let response_content = response
-        .choices
-        .first()
-        .context("LLM returned no answer choices")?
+        .first_choice("LLM returned no answer choices")?
         .message
         .content
         .trim();
@@ -215,9 +213,7 @@ impl ReviewAgent for OpenAiCompatibleAgent {
         .await?;
 
         let content = response
-            .choices
-            .first()
-            .context("LLM returned no choices")?
+            .first_choice("LLM returned no choices")?
             .message
             .content
             .trim()
@@ -342,6 +338,11 @@ fn severity_rank(severity: &str) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::LlmProvider;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
 
     fn llm_finding(path: &str, line: u32, title: &str, confidence: f32) -> ReviewFinding {
         ReviewFinding {
@@ -356,6 +357,44 @@ mod tests {
             source: None,
             rule: None,
         }
+    }
+
+    #[tokio::test]
+    async fn review_reports_provider_error_envelope_without_choices() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "error": {"message": "No endpoints found for this model"},
+                "request_id": "req-123"
+            })))
+            .mount(&server)
+            .await;
+
+        let agent = OpenAiCompatibleAgent::new(
+            LlmConfig {
+                provider: LlmProvider::OpenRouter,
+                base_url: server.uri(),
+                api_key: "test-key".into(),
+                model: "test-model".into(),
+                temperature: 0.1,
+                max_output_tokens: 100,
+            },
+            "Review prompt".into(),
+        )
+        .unwrap();
+        let result = agent
+            .review_chunk(&DiffChunk {
+                index: 0,
+                text: "diff --git a/a.rs b/a.rs".into(),
+                files: vec!["a.rs".into()],
+            })
+            .await;
+
+        let error = result.unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("No endpoints found for this model"));
+        assert!(!message.contains("missing field `choices`"));
     }
 
     fn tool_finding(path: &str, line: u32, rule: &str, severity: &str) -> ReviewFinding {
