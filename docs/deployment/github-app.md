@@ -1,9 +1,10 @@
 # Self-hosted GitHub App
 
-Cururu's GitHub App server is operated by the repository owner. It receives
-GitHub webhooks, verifies their signatures, stores deliveries in a durable queue,
-and processes reviews asynchronously. The Action remains available for users who
-do not need a continuously running service.
+Every operator who hosts Cururu creates and operates a separate GitHub App for
+their deployment. Cururu does not provide a shared App or central webhook
+service. The server receives GitHub webhooks, verifies their signatures, stores
+deliveries in a durable queue, and processes reviews asynchronously. The Action
+remains available for users who do not need a continuously running service.
 
 Use either the Action or the GitHub App for a given repository, not both at the
 same time. Each mode has a distinct GitHub identity and owns its own review
@@ -12,9 +13,12 @@ comments. When switching an open PR from Action to App, a collaborator can run
 
 ## Create and install the App
 
-Create a GitHub App in the account/organization that owns the installation:
+Each operator creates and configures **their own GitHub App** for their own
+Cururu deployment. The App webhook points to that operator's backend; there is
+no shared Cururu App or central webhook endpoint. Create the App in the
+account/organization that owns the installation:
 
-- **Webhook URL:** `https://cururu.example.com/api/webhooks/github`
+- **Webhook URL:** `https://cururu.example.com/v1/webhooks/github`
 - **Webhook secret:** generate a unique random value and set it as
   `GITHUB_WEBHOOK_SECRET` in the deployment.
 - **Repository permissions:** Metadata (read, automatic), Contents (read), Pull
@@ -46,30 +50,34 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-The included `compose.yaml` runs Cururu and PostgreSQL. Expose port 8080 behind
-the included Nginx reverse proxy and register the public
-`/api/webhooks/github` URL in the App settings. Nginx listens only on
-`127.0.0.1:18082`, forwards to Cururu's loopback-only port 8080, limits request
-bodies to 1 MB, and keeps access logs on stdout.
-
-### Expose with Tailscale Funnel
-
-On a host joined to a tailnet with Funnel enabled by its admin, publish Nginx's
-local port:
+The included `compose.yaml` runs Cururu and PostgreSQL. By default, backend
+port 8080 and Nginx port 18082 bind to loopback. On a Tailscale host, set
+`CURURU_TAILSCALE_IP` in `.env` and use the overlay to add a Tailscale-only
+backend binding:
 
 ```sh
-sudo tailscale funnel --bg 18082
-tailscale funnel status
+CURURU_TAILSCALE_IP="$(tailscale ip -4)" \
+  docker compose --env-file .env -f compose.yaml -f compose.tailscale.yaml up -d --build
 ```
 
-Tailscale terminates public HTTPS; the webhook URL is
-`https://<machine>.<tailnet>.ts.net/api/webhooks/github`. Replace the placeholders
-with the DNS name shown by `tailscale status`. If you use a regular public domain
-instead, point DNS and ports 80/443 at the host and configure Nginx with a
-trusted TLS certificate.
+The operator can then validate Cururu privately at
+`http://<CURURU_TAILSCALE_IP>:8080/health`. Nginx proxies the versioned webhook
+path `/v1/webhooks/github` to the backend. **Tailscale is for operator access;
+GitHub's hosted webhook sender cannot reach a tailnet-private address.**
 
-`GET /health` is a liveness endpoint. Configure the App's webhook URL only after
-the HTTPS endpoint is reachable from GitHub.
+When ready to accept GitHub webhooks, the operator configures their own public
+DNS name, routes HTTPS/443 to Nginx, and installs a valid TLS certificate. Use
+[`deploy/nginx/cururu-public.conf.example`](../../deploy/nginx/cururu-public.conf.example)
+as a template: copy it to `deploy/nginx/cururu-public.conf`, replace the sample
+hostname/certificate paths, then start Compose with
+`-f compose.public-nginx.yaml`. This makes the included Nginx container listen on
+public 80/443 and proxy directly to the loopback-only backend. Set that
+operator's App webhook to `https://<their-hostname>/v1/webhooks/github`. Keep
+backend port 8080 restricted to loopback and the tailnet; Nginx is the public
+entry point.
+
+`GET /health` is a liveness endpoint. Configure the GitHub App webhook only after
+the operator's public HTTPS endpoint is reachable from GitHub.
 
 ## Run with SQLite
 

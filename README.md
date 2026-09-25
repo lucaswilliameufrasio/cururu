@@ -407,6 +407,10 @@ SQLite online backups and optional Litestream replication:
 
 **[Self-host the Cururu GitHub App](docs/deployment/github-app.md)**
 
+Every operator creates a separate GitHub App whose webhook points to that
+operator's Cururu deployment. The repository does not provide a shared App or
+central webhook endpoint.
+
 ## Fork safety
 
 The example workflow uses `pull_request_target` so the action runs in the

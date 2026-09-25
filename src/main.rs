@@ -35,7 +35,7 @@ enum Command {
     Init,
     /// Run the self-hosted GitHub App webhook server.
     Serve,
-    /// Create a consistent online backup of the configured SQLite database.
+    /// Create a consistent online backup of the configured `SQLite` database.
     BackupSqlite {
         /// Destination path for the backup copy.
         destination: std::path::PathBuf,

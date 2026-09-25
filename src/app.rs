@@ -25,6 +25,7 @@ use tokio::net::TcpListener;
 use tracing::{info, warn};
 
 type HmacSha256 = Hmac<Sha256>;
+pub const GITHUB_WEBHOOK_PATH: &str = "/v1/webhooks/github";
 
 #[derive(Clone)]
 struct AppState {
@@ -60,7 +61,7 @@ pub async fn serve() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/api/webhooks/github", post(receive_webhook))
+        .route(GITHUB_WEBHOOK_PATH, post(receive_webhook))
         .layer(DefaultBodyLimit::max(1_000_000))
         .with_state(state);
     let host = std::env::var("CURURU_HOST").unwrap_or_else(|_| "0.0.0.0".into());
@@ -500,6 +501,11 @@ mod tests {
         assert!(should_review_pull_request("synchronize", false));
         assert!(!should_review_pull_request("closed", false));
         assert!(!should_review_pull_request("opened", true));
+    }
+
+    #[test]
+    fn webhook_endpoint_is_versioned_without_redundant_api_prefix() {
+        assert_eq!(GITHUB_WEBHOOK_PATH, "/v1/webhooks/github");
     }
 
     #[test]

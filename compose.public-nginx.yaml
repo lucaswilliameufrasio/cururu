@@ -1,0 +1,8 @@
+# Optional overlay for the operator's public HTTPS Nginx ingress. Only use
+# after DNS points at the host and valid certificates are provisioned.
+services:
+  nginx:
+    volumes:
+      - ./deploy/nginx/cururu-public.conf:/etc/nginx/conf.d/default.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/letsencrypt:/var/www/letsencrypt:ro

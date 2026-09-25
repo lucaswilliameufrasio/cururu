@@ -30,13 +30,13 @@ const description = "Install and operate Cururu's GitHub App on your own infrast
 
       <section class="guide-section">
         <p class="eyebrow">01 / GITHUB APP SETUP</p><h2>Create the installation.</h2>
-        <p>Create a GitHub App in the account or organization that will own the installation. Configure the webhook URL as <code>https://cururu.example.com/api/webhooks/github</code> and set a unique webhook secret.</p>
+        <p>Each operator creates their own GitHub App for their own Cururu deployment; there is no shared central App. Configure its webhook URL as <code>https://your-hostname/v1/webhooks/github</code> and set a unique webhook secret.</p>
         <div class="permission-grid"><article><b>Contents</b><span>Read repository config, context and diffs.</span></article><article><b>Pull requests</b><span>Read PRs; write formal reviews and inline comments.</span></article><article><b>Issues</b><span>Write summary comments and mention replies.</span></article><article><b>Events</b><span>Pull request, issue comment and pull request review comment.</span></article></div>
         <p class="note">Metadata read is granted automatically. Add only the repositories where Cururu should operate.</p>
       </section>
 
       <section class="guide-section split">
-        <div><p class="eyebrow">02 / PRIVATE BASE CONFIG</p><h2>Access follows the installation.</h2><p>Install the App on both consumer and shared-config repositories. An all-repositories installation can read new bases in that organization without per-repository changes. Selective installations require an admin to add each repository. For a base in another organization, install the App there too; Cururu uses that installation's read token for the pinned config fetch.</p><p class="note">Pin the base to a full commit SHA in the trusted consumer `.cururu.toml`.</p></div>
+        <div><p class="eyebrow">02 / PRIVATE BASE CONFIG</p><h2>Access follows your installation.</h2><p>Install your App on both consumer and shared-config repositories. An all-repositories installation can read new bases in that organization without per-repository changes. Selective installations require an admin to add each repository. For a base in another organization, install your App there too; Cururu uses that installation's read token for the pinned config fetch.</p><p class="note">Pin the base to a full commit SHA in the trusted consumer `.cururu.toml`.</p></div>
         <pre><code>{"[config]\nbase = 'acme/engineering-standards'\nbase_ref = '0123456789abcdef0123456789abcdef01234567'\nbase_path = 'configs/cururu/base.toml'"}</code></pre>
       </section>
 
