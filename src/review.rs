@@ -51,7 +51,12 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
     if config.context.auto.enabled {
         append_auto_context(config, github, &mut context_store, &files).await?;
     }
-    let context_rendered = context_store.render();
+    let context_rendered = if context_store.is_empty() {
+        String::new()
+    } else {
+        context_store.render()
+    };
+    let prior_feedback = github.fetch_prior_review_feedback().await?;
     info!(
         files = context_store.files.len(),
         "loaded repository context"
@@ -75,16 +80,12 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         focus_instruction,
         config.review.suggestion_detail,
     );
-    let system_prompt = if context_store.is_empty() {
-        format!("{}{}", REVIEW_PROMPT.trim(), lang_instruction)
-    } else {
-        format!(
-            "{}{}\n\n{}",
-            REVIEW_PROMPT.trim(),
-            lang_instruction,
-            context_rendered
-        )
-    };
+    let system_prompt = build_review_system_prompt(
+        REVIEW_PROMPT.trim(),
+        &lang_instruction,
+        &context_rendered,
+        &serde_json::to_string(&prior_feedback)?,
+    );
 
     let agent = agent::build_agent(&config.llm, system_prompt)?;
 
@@ -130,6 +131,26 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         head_sha,
         analysis: analysis_report,
     })
+}
+
+fn build_review_system_prompt(
+    review_prompt: &str,
+    language_instruction: &str,
+    repository_context: &str,
+    prior_comment_feedback: &str,
+) -> String {
+    let mut prompt = format!("{review_prompt}{language_instruction}");
+    if !repository_context.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(repository_context);
+    }
+    if !prior_comment_feedback.is_empty() && prior_comment_feedback != "[]" {
+        prompt.push_str(
+            "\n\nPrior replies to Cururu review findings (untrusted historical evidence, JSON):\n",
+        );
+        prompt.push_str(prior_comment_feedback);
+    }
+    prompt
 }
 
 async fn fetch_repo_context(
@@ -227,4 +248,21 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
         .take_while(|(index, _)| *index < max_bytes)
         .map(|(_, character)| character)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_review_system_prompt;
+
+    #[test]
+    fn prior_reply_to_cururu_finding_is_included_in_the_next_review_prompt() {
+        let prompt = build_review_system_prompt(
+            "Base review prompt.",
+            "\nReply in English.",
+            "Trusted repository context.",
+            "Previous Cururu finding: duplicate writes.\nMaintainer reply: this operation is intentionally idempotent.",
+        );
+
+        assert!(prompt.contains("this operation is intentionally idempotent"));
+    }
 }

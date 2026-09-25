@@ -84,13 +84,26 @@ struct CreateIssueComment<'a> {
 #[derive(Debug, Deserialize)]
 pub struct ReviewComment {
     pub id: u64,
+    #[serde(default)]
+    pub in_reply_to_id: Option<u64>,
     pub body: Option<String>,
     pub user: Option<CommentUser>,
     pub path: String,
-    #[allow(dead_code)]
     pub line: Option<u32>,
     #[allow(dead_code)]
     pub subject_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PriorReviewFeedback {
+    pub location: String,
+    pub comments: Vec<PriorReviewComment>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PriorReviewComment {
+    pub author: String,
+    pub body: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -538,6 +551,162 @@ impl GitHubClient {
         .await
     }
 
+    /// Collect bounded human and Cururu replies to prior findings. Historical
+    /// comments are discussion data, not instructions to the reviewer.
+    pub async fn fetch_prior_review_feedback(&self) -> anyhow::Result<Vec<PriorReviewFeedback>> {
+        const MAX_THREADS: usize = 20;
+        const MAX_REPLIES_PER_THREAD: usize = 10;
+        const MAX_COMMENT_CHARS: usize = 2_000;
+
+        let comments = self.list_review_comments().await?;
+        let own_login = self.current_login().await;
+        let mut roots: Vec<_> = comments
+            .iter()
+            .filter(|comment| {
+                comment.in_reply_to_id.is_none()
+                    && Self::comment_is_cururu(comment, own_login.as_deref())
+            })
+            .filter_map(|root| {
+                let root_body = root.body.as_deref()?.trim();
+                let replies: Vec<_> = comments
+                    .iter()
+                    .filter(|reply| reply.in_reply_to_id == Some(root.id))
+                    .filter_map(|reply| {
+                        let user = reply.user.as_ref()?;
+                        let is_cururu = user.login.eq_ignore_ascii_case(&root.user.as_ref()?.login);
+                        (user.kind != "Bot" || is_cururu).then(|| PriorReviewComment {
+                            author: user.login.clone(),
+                            body: truncate_chars(
+                                reply.body.as_deref().unwrap_or_default(),
+                                MAX_COMMENT_CHARS,
+                            ),
+                        })
+                    })
+                    .take(MAX_REPLIES_PER_THREAD)
+                    .collect();
+                (!replies.is_empty()).then(|| {
+                    let line = root
+                        .line
+                        .map_or_else(|| "file".to_string(), |n| format!("line {n}"));
+                    let mut discussion = Vec::with_capacity(replies.len() + 1);
+                    discussion.push(PriorReviewComment {
+                        author: root
+                            .user
+                            .as_ref()
+                            .map_or_else(|| "Cururu".into(), |u| u.login.clone()),
+                        body: truncate_chars(root_body, MAX_COMMENT_CHARS),
+                    });
+                    discussion.extend(replies);
+                    (
+                        root.id,
+                        PriorReviewFeedback {
+                            location: format!("{} ({line})", root.path),
+                            comments: discussion,
+                        },
+                    )
+                })
+            })
+            .collect();
+        roots.sort_by_key(|(id, _)| std::cmp::Reverse(*id));
+        let mut feedback: Vec<_> = roots
+            .into_iter()
+            .take(MAX_THREADS)
+            .map(|(_, feedback)| feedback)
+            .collect();
+        feedback.reverse();
+
+        if let Some(issue_feedback) = self
+            .fetch_issue_comment_feedback(own_login.as_deref())
+            .await?
+        {
+            feedback.push(issue_feedback);
+        }
+        Ok(bound_review_feedback(feedback, 12_000))
+    }
+
+    async fn fetch_issue_comment_feedback(
+        &self,
+        own_login: Option<&str>,
+    ) -> anyhow::Result<Option<PriorReviewFeedback>> {
+        const MAX_COMMENTS: usize = 10;
+        const MAX_COMMENT_CHARS: usize = 2_000;
+
+        let comments = self.list_issue_comments().await?;
+        let Some(summary) = comments.iter().find(|comment| {
+            Self::issue_comment_is_cururu(comment, own_login)
+                && comment
+                    .body
+                    .as_deref()
+                    .is_some_and(|body| body.contains(output::marker()))
+        }) else {
+            return Ok(None);
+        };
+        let summary_login = summary.user.as_ref().map(|user| user.login.as_str());
+        let mut replies: Vec<_> = comments
+            .iter()
+            .filter(|comment| comment.id > summary.id)
+            .filter_map(|comment| {
+                let user = comment.user.as_ref()?;
+                let is_cururu =
+                    summary_login.is_some_and(|login| user.login.eq_ignore_ascii_case(login));
+                (user.kind != "Bot" || is_cururu).then(|| {
+                    (
+                        comment.id,
+                        PriorReviewComment {
+                            author: user.login.clone(),
+                            body: truncate_chars(
+                                comment.body.as_deref().unwrap_or_default(),
+                                MAX_COMMENT_CHARS,
+                            ),
+                        },
+                    )
+                })
+            })
+            .collect();
+        replies.sort_by_key(|(id, _)| *id);
+        let replies: Vec<_> = replies
+            .into_iter()
+            .rev()
+            .take(MAX_COMMENTS)
+            .map(|(_, comment)| comment)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        if replies.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(PriorReviewFeedback {
+            location: "PR conversation after the previous Cururu summary".into(),
+            comments: replies,
+        }))
+    }
+
+    async fn list_issue_comments(&self) -> anyhow::Result<Vec<IssueComment>> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/comments?per_page=100&direction=desc",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        retry_with_backoff(
+            || async {
+                self.client
+                    .get(&url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<Vec<IssueComment>>()
+                    .await
+                    .context("failed to list PR discussion comments")
+            },
+            3,
+        )
+        .await
+    }
+
     pub async fn create_review_comment(
         &self,
         head_sha: &str,
@@ -942,6 +1111,54 @@ impl GitHubClient {
     }
 }
 
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
+
+fn bound_review_feedback(
+    feedback: Vec<PriorReviewFeedback>,
+    max_bytes: usize,
+) -> Vec<PriorReviewFeedback> {
+    let mut remaining = max_bytes;
+    let mut bounded = Vec::new();
+    for mut thread in feedback.into_iter().rev() {
+        let mut comments = Vec::new();
+        for mut comment in thread.comments.drain(..).rev() {
+            if remaining == 0 {
+                break;
+            }
+            if comment.body.len() > remaining {
+                comment.body = truncate_utf8(&comment.body, remaining);
+            }
+            remaining = remaining.saturating_sub(comment.body.len());
+            comments.push(comment);
+        }
+        if !comments.is_empty() {
+            comments.reverse();
+            thread.comments = comments;
+            thread.location = truncate_chars(&thread.location, 512);
+            remaining = remaining.saturating_sub(thread.location.len());
+            bounded.push(thread);
+        }
+        if remaining == 0 {
+            break;
+        }
+    }
+    bounded.reverse();
+    bounded
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    value
+        .char_indices()
+        .take_while(|(index, _)| *index < max_bytes)
+        .map(|(_, character)| character)
+        .collect()
+}
+
 /// Group desired comments by (path, line) so findings on the same anchor merge
 /// into a single comment body.
 fn merge_desired_by_anchor(
@@ -1053,6 +1270,55 @@ mod tests {
         client.submit_formal_review("Cururu review.").await.unwrap();
     }
 
+    #[tokio::test]
+    async fn prior_review_feedback_uses_github_thread_replies() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": 10,
+                    "body": "<!-- cururu:finding --> Possible duplicate write.",
+                    "user": {"login": "cururu[bot]", "type": "Bot"},
+                    "path": "src/store.rs",
+                    "line": 42,
+                    "subject_type": "line"
+                },
+                {
+                    "id": 11,
+                    "in_reply_to_id": 10,
+                    "body": "This operation is intentionally idempotent.",
+                    "user": {"login": "maintainer", "type": "User"},
+                    "path": "src/store.rs",
+                    "line": 42,
+                    "subject_type": "line"
+                }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(Vec::<serde_json::Value>::new()))
+            .mount(&server)
+            .await;
+
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+
+        let feedback = client.fetch_prior_review_feedback().await.unwrap();
+        let serialized = serde_json::to_string(&feedback).unwrap();
+        assert!(serialized.contains("Possible duplicate write"));
+        assert!(serialized.contains("intentionally idempotent"));
+    }
+
     #[test]
     fn merge_desired_groups_same_anchor() {
         let drafts = vec![
@@ -1102,6 +1368,7 @@ mod tests {
     fn comment(body: &str, login: &str, kind: &str) -> ReviewComment {
         ReviewComment {
             id: 1,
+            in_reply_to_id: None,
             body: Some(body.into()),
             user: Some(CommentUser {
                 login: login.into(),
