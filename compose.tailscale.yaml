@@ -6,4 +6,4 @@ services:
       - "${CURURU_TAILSCALE_IP:?Set CURURU_TAILSCALE_IP in .env}:${CURURU_PORT:-8080}:8080"
   nginx:
     ports:
-      - "${CURURU_TAILSCALE_IP:?Set CURURU_TAILSCALE_IP in .env}:18082:80"
+      - "${CURURU_TAILSCALE_IP:?Set CURURU_TAILSCALE_IP in .env}:18083:80"

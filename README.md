@@ -481,6 +481,11 @@ collaborators can request an explicit review with:
 /cururu review --full
 ```
 
+Automatic reviews run for `opened`, `synchronize`, `reopened`, and
+`ready_for_review`. Draft PRs are intentionally skipped during draft pushes and
+reviewed when changed to ready; authorized collaborators can still request a
+manual review with `/cururu review`.
+
 Only exact commands are accepted. The commenter must have `write`, `maintain`,
 or `admin` permission, and comment text cannot change the model, endpoint,
 prompt, or secrets.
