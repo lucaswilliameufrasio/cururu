@@ -61,7 +61,8 @@ CURURU_TAILSCALE_IP="$(tailscale ip -4)" \
 ```
 
 The operator can then validate Cururu privately at
-`http://<CURURU_TAILSCALE_IP>:<CURURU_PORT>/health`. Nginx proxies the versioned webhook
+`http://<CURURU_TAILSCALE_IP>:<CURURU_PORT>/health` and the Nginx proxy at
+`http://<CURURU_TAILSCALE_IP>:18082/health`. Nginx proxies the versioned webhook
 path `/v1/webhooks/github` to the backend. **Tailscale is for operator access;
 GitHub's hosted webhook sender cannot reach a tailnet-private address.**
 
