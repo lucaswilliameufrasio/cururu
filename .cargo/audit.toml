@@ -1,0 +1,6 @@
+# SQLx Postgres includes RSA only for an optional authentication feature that
+# Cururu does not enable. `cargo tree -e features -i rsa` confirms there is no
+# active dependency path; the advisory currently has no patched upstream release.
+# Revisit this exception when SQLx removes or replaces that optional dependency.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]

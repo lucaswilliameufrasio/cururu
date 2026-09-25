@@ -1,0 +1,9 @@
+# Optional overlay for private operator access. It keeps the loopback mapping
+# from the base Compose file and adds a second binding on the Tailscale IP.
+services:
+  cururu:
+    ports:
+      - "${CURURU_TAILSCALE_IP:?Set CURURU_TAILSCALE_IP in .env}:${CURURU_PORT:-8080}:8080"
+  nginx:
+    ports:
+      - "${CURURU_TAILSCALE_IP:?Set CURURU_TAILSCALE_IP in .env}:18083:80"

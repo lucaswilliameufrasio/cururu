@@ -2,14 +2,22 @@
 
 > See also: [Glossary](glossary.md) for terms like anchor, base commit, and quality gate, and the [Security Policy](../SECURITY.md) for the trust model.
 
-Cururu is a **stateless** GitHub Actions PR review bot. One Docker run reviews
-one PR and exits; there is no database, cache, or background worker.
+Cururu has two execution modes. The GitHub Action is **stateless**: one Docker
+run reviews one PR and exits. The optional self-hosted GitHub App server persists
+webhook deliveries in PostgreSQL or SQLite and runs reviews asynchronously.
 
 ## Review pipeline
 
 ```
+serve (CLI: self-hosted GitHub App)
+  -> app.rs         verify HMAC, dedupe X-GitHub-Delivery, enqueue payload
+  -> app/db.rs      durable queue, retries, recovery and retention
+  -> app/github_app.rs  sign App JWT, mint installation tokens
+  -> app.rs worker  route PR events and authorized conversation triggers
+  -> review pipeline below (shared with the Action mode)
+
 commands.rs (CLI: review)
-  -> config/        env vars + .cururu.toml (base commit) merged into AppConfig
+  -> config/        env vars + optional shared TOML + local TOML -> AppConfig
   -> github.rs      fetch PR diff, review comments, context files via GitHub API
   -> diff.rs        parse unified diff, chunk by bytes, anchor validation
   -> context.rs     maintainer context (conventions/specs/skills) + auto-context
@@ -20,9 +28,9 @@ commands.rs (CLI: review)
   -> github.rs      post + reconcile inline review comments
 ```
 
-## Statelessness and reconciliation
+## Execution state and reconciliation
 
-Because every run is fresh, comment management is **reconciling**:
+Both modes use the same comment reconciliation:
 `reconcile_review_comments` (github.rs) lists the PR's existing Cururu comments,
 then updates, deletes, or creates so the PR converges to the desired set for
 the current head SHA. A stale comment never needs a "please delete me" step —
@@ -36,6 +44,12 @@ the next run fixes it.
   and never trusted as instructions. Details in [SECURITY.md](../SECURITY.md).
 - Credentials enter only through GitHub Actions secrets, never through
   repository files.
+- The App server validates GitHub's HMAC-SHA256 signature before queueing any
+  event. Installation tokens are short-lived and generated from the App private
+  key at runtime; credentials are not stored in queue payloads or TOML.
+- The durable queue stores bounded webhook payloads for idempotency and retry,
+  then prunes completed/failed rows after seven days. Treat stored comment and
+  PR text as untrusted input.
 
 ## Configuration layering
 
@@ -45,5 +59,12 @@ the next run fixes it.
 (env-var helpers). Precedence, most to least specific:
 
 1. Environment variables (workflow inputs)
-2. `.cururu.toml` sections, applied field-by-field
-3. Profile defaults (`balanced`, `strict`, `security`, `minimal`)
+2. Local `.cururu.toml` values (from trusted PR base), applied over shared base
+3. Shared config from a pinned full commit SHA, when declared
+4. Profile defaults (`balanced`, `strict`, `security`, `minimal`)
+
+Local scalars override shared scalars. Review ignore patterns, focus rules,
+context paths, and automatic-context inclusion/exclusion lists combine uniquely,
+base first then local. Other arrays replace rather than append. `cururu init`
+scaffolds a local config and workflow; `cururu print-config` can inspect the
+effective config locally (a GitHub token is needed to read a shared source).

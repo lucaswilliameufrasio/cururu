@@ -39,17 +39,20 @@ by digest for supply-chain security.
    - `action.yml` image pointing at the new version tag (digest pinned after
      the image is published)
 5. Review and merge the PR.
-6. Create and push the tag — this triggers the Release workflow, which builds
-   amd64/arm64 images, merges them into a multi-arch manifest, then
-   **automatically** pins the manifest digest in `action.yml` on `main`,
-   moves the major git tag (`v4`), and creates the GitHub Release:
+6. Create and push the tag — the Container Release workflow builds amd64/arm64
+   images, merges them into a multi-arch manifest, then **automatically** pins
+   the manifest digest in `action.yml` on `main` and moves the major git tag
+   (`v4`). The cargo-dist Release workflow builds CLI binaries and shell / PowerShell
+   installers for the targets in `dist-workspace.toml`, then creates the GitHub
+   Release with checksums and installation assets:
 
    ```bash
    git checkout main && git pull --rebase
    git tag v4.6.0 && git push origin v4.6.0
    ```
 
-7. **Verify** the action works in a downstream repository (cururu-demo):
+7. **Verify** the GitHub Release contains the CLI binaries, installers and
+   checksums, then verify the Action in a downstream repository (cururu-demo):
    re-review an open PR with a `/cururu review` comment and confirm the run
    pulls the new digest.
 
@@ -64,14 +67,15 @@ If the automation is unavailable, the equivalent steps are:
 4. Regenerate the changelog: `git cliff --bump --tag "vX.Y.Z" -o CHANGELOG.md`.
 5. Commit and push `main`.
 6. Tag and push (`git tag -a vX.Y.Z -m "release vX.Y.Z"`).
-7. Wait for the Release workflow (~5 min), then capture the manifest digest
+7. Wait for the Container Release workflow (~5 min), then capture the manifest digest
    from the workflow summary.
 8. Pin the digest in `action.yml` and commit to `main`.
-9. Move the major tag (`git tag -f v4 main && git push -f origin v4`) and
-   create the GitHub Release (`gh release create vX.Y.Z --generate-notes`).
-10. Verify in a downstream repository.
+9. Move the major tag (`git tag -f v4 main && git push -f origin v4`).
+10. Run the cargo-dist Release workflow for the same tag to build and publish
+    CLI assets, then verify the release and a downstream Action installation.
 
-The Release workflow performs steps 8–9 automatically when run from a tag; the
+The Container Release workflow handles the image digest and major tag. The
+cargo-dist Release workflow publishes the CLI installers and archives. The
 manual fallback exists for exceptional cases (e.g., retrying a failed pin).
 
 ## Branching

@@ -23,6 +23,9 @@ pub struct ReviewConfig {
     pub chunk_bytes: usize,
     pub ignore: GlobSet,
     pub language: String,
+    pub tone: String,
+    pub technical_level: String,
+    pub suggestion_detail: String,
     pub comment_mode: CommentMode,
     pub policy: ReviewPolicy,
 }

@@ -5,7 +5,7 @@ version = 1
 # OpenAI-compatible provider used for review requests.
 name = "openrouter"
 # Model identifier. Choose this after checking project risk and budget.
-model = "openai/gpt-5.6-luna"
+model = "openai/gpt-6-luna"
 # Low temperature keeps findings deterministic and reduces review drift.
 temperature = 0.1
 # Maximum completion tokens per LLM call; higher values can increase cost.
@@ -25,6 +25,12 @@ ignore = [
 ]
 # Language used in findings and summary comments.
 language = "pt-BR"
+# Voice for findings: neutral, direct, or didactic.
+tone = "neutral"
+# Intended reader: beginner, intermediate, or expert.
+technical_level = "intermediate"
+# Context and rationale to include in each recommendation: concise, standard, detailed.
+suggestion_detail = "detailed"
 # Inline comments are anchored to changed lines; use "summary" for one PR comment.
 comment_mode = "inline"
 
@@ -92,6 +98,8 @@ exclude = ["**/generated/**", "**/*.min.js"]
 show_cost = true
 # Show prompt, completion, cached, and reasoning token usage.
 show_usage = true
+# Optional public HTTPS image, shown instead of the ASCII frog in the main PR summary only.
+# logo_url = "https://raw.githubusercontent.com/lucaswilliameufrasio/cururu/main/assets/cururu-logo.svg"
 
 [analysis]
 # External analyzer evidence is opt-in; enable this only when CI produces the files.

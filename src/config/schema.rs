@@ -6,6 +6,8 @@ use serde::Deserialize;
 pub(super) struct CururuToml {
     pub version: u32,
     #[serde(default)]
+    pub(super) config: Option<ConfigToml>,
+    #[serde(default)]
     pub(super) provider: Option<ProviderToml>,
     #[serde(default)]
     pub(super) review: Option<ReviewToml>,
@@ -17,6 +19,16 @@ pub(super) struct CururuToml {
     pub(super) summary: Option<SummaryToml>,
     #[serde(default)]
     pub(super) analysis: Option<AnalysisToml>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ConfigToml {
+    #[serde(default)]
+    pub(super) base: Option<String>,
+    #[serde(default)]
+    pub(super) base_ref: Option<String>,
+    #[serde(default)]
+    pub(super) base_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +55,12 @@ pub(super) struct ReviewToml {
     pub(super) ignore: Option<Vec<String>>,
     #[serde(default)]
     pub(super) language: Option<String>,
+    #[serde(default)]
+    pub(super) tone: Option<String>,
+    #[serde(default)]
+    pub(super) technical_level: Option<String>,
+    #[serde(default)]
+    pub(super) suggestion_detail: Option<String>,
     #[serde(default)]
     pub(super) comment_mode: Option<String>,
     #[serde(default)]
@@ -107,6 +125,8 @@ pub(super) struct SummaryToml {
     pub(super) show_cost: Option<bool>,
     #[serde(default)]
     pub(super) show_usage: Option<bool>,
+    #[serde(default)]
+    pub(super) logo_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

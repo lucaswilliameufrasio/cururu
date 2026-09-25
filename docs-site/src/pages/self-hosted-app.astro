@@ -1,0 +1,78 @@
+---
+import "../styles/global.css";
+
+const title = "Self-host the Cururu GitHub App";
+const description = "Install and operate Cururu's GitHub App on your own infrastructure, with PostgreSQL or SQLite.";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#101713" />
+    <link rel="icon" type="image/svg+xml" href="/cururu-logo.svg" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <main class="shell guide">
+      <nav class="nav" aria-label="Main navigation">
+        <a class="brand" href="/"><img src="/cururu-logo.svg" alt="" /><span>cururu</span></a>
+        <div class="nav-links"><a href="/#configure">Configuration</a><a href="https://github.com/lucaswilliameufrasio/cururu">GitHub</a></div>
+      </nav>
+      <header class="guide-hero">
+        <a class="back" href="/">← Back to Cururu</a>
+        <p class="eyebrow">OPERATE YOUR OWN REVIEWER</p>
+        <h1>Install the App.<br /><em>Keep the keys.</em></h1>
+        <p class="lede">The Cururu GitHub App runs on your infrastructure. GitHub delivers signed webhooks; Cururu verifies, queues and processes them without a hosted Cururu service.</p>
+      </header>
+
+      <section class="guide-section">
+        <p class="eyebrow">01 / GITHUB APP SETUP</p><h2>Create the installation.</h2>
+        <p>Each operator creates their own GitHub App for their own Cururu deployment; there is no shared central App. Configure its webhook URL as <code>https://your-hostname/v1/webhooks/github</code> and set a unique webhook secret.</p>
+        <div class="permission-grid"><article><b>Contents</b><span>Read repository config, context and diffs.</span></article><article><b>Pull requests</b><span>Read PRs; write formal reviews and inline comments.</span></article><article><b>Issues</b><span>Write summary comments and mention replies.</span></article><article><b>Events</b><span>Pull request, issue comment and pull request review comment.</span></article></div>
+        <p class="note">Metadata read is granted automatically. Add only the repositories where Cururu should operate.</p>
+      </section>
+
+      <section class="guide-section split">
+        <div><p class="eyebrow">02 / PRIVATE BASE CONFIG</p><h2>Access follows your installation.</h2><p>Install your App on both consumer and shared-config repositories. An all-repositories installation can read new bases in that organization without per-repository changes. Selective installations require an admin to add each repository. For a base in another organization, install your App there too; Cururu uses that installation's read token for the pinned config fetch.</p><p class="note">Pin the base to a full commit SHA in the trusted consumer `.cururu.toml`.</p></div>
+        <pre><code>{"[config]\nbase = 'acme/engineering-standards'\nbase_ref = '0123456789abcdef0123456789abcdef01234567'\nbase_path = 'configs/cururu/base.toml'"}</code></pre>
+      </section>
+
+      <section class="guide-section">
+        <p class="eyebrow">03 / DEPLOY</p><h2>Choose the storage you already trust.</h2>
+        <p>Copy the environment template, place the GitHub App PEM key in the ignored `secrets/` directory, set the LLM and webhook secrets, then select a Compose file.</p>
+        <pre><code>{"cp .env.example .env\n# edit .env and place the private key at the configured file path\ndocker compose up -d --build\n\n# or use SQLite with a persistent volume\ndocker compose --env-file .env -f compose.sqlite.yaml up -d --build"}</code></pre>
+        <div class="permission-grid"><article><b>PostgreSQL</b><span>Durable queue for deployments that already run Postgres or need database separation.</span></article><article><b>SQLite</b><span>Single-instance setup with WAL mode and an online backup command.</span></article></div>
+        <p class="note">SQLite online backup: <code>cururu backup-sqlite /data/cururu-backup.db</code>. Litestream can replicate the mounted database file when configured as a sidecar.</p>
+      </section>
+
+      <section class="guide-section split">
+        <div><p class="eyebrow">04 / INTERACTIONS</p><h2>Reviews and replies.</h2><p>Cururu submits a formal advisory review and attempts to request its bot identity as a reviewer. GitHub may reject bot reviewer requests; the formal review still identifies Cururu. Write-authorized collaborators can run `/cururu review`, mention `@cururu`, or reply directly to a Cururu suggestion.</p></div>
+        <pre><code>{"/cururu review\n/cururu review --full\n\n@cururu Why is this change needed?"}</code></pre>
+      </section>
+
+      <section class="app-roadmap"><span class="roadmap-tag">SECURITY BOUNDARY</span><h2>Webhook text is still untrusted.</h2><p>Cururu verifies HMAC signatures before parsing or queueing, uses short-lived installation tokens, never checks out PR-head code, and treats diffs and comments as data. Put secrets in the deployment's secret manager, not `.cururu.toml`.</p><a class="text-link" href="https://github.com/lucaswilliameufrasio/cururu/blob/main/docs/deployment/github-app.md">Full deployment and operations guide →</a></section>
+      <footer><span>Cururu / self-hosted GitHub App</span><span>Operate it. Own the data.</span></footer>
+    </main>
+  </body>
+</html>
+
+<style>
+  .guide { max-width: 980px; }
+  .guide-hero { padding: 86px 0 68px; border-bottom: 1px solid var(--edge); }
+  .back { display: inline-block; margin-bottom: 55px; color: var(--muted); font: 11px ui-monospace,monospace; }
+  .back:hover { color: var(--frog); }
+  .guide-hero h1 { margin: 18px 0; font-size: clamp(54px,8vw,84px); }
+  .guide-hero h1 em { color: var(--frog); font-style: normal; }
+  .guide-section { padding: 65px 0; border-bottom: 1px solid var(--edge); }
+  .guide-section h2 { margin: 12px 0 18px; font-size: 34px; letter-spacing: -.06em; }
+  .guide-section > p:not(.eyebrow) { max-width: 740px; color: var(--muted); font-size: 14px; line-height: 1.8; }
+  .guide-section code { color: var(--frog); font: 12px ui-monospace,monospace; }
+  .permission-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 1px; margin: 25px 0; background: var(--edge); border: 1px solid var(--edge); }
+  .permission-grid article { display: grid; gap: 7px; padding: 19px; background: #141b16; }.permission-grid b { color: var(--paper); font-size: 13px; }.permission-grid span { color: var(--muted); font-size: 12px; line-height: 1.55; }
+  .guide-section pre { margin: 25px 0; padding: 20px; overflow-x: auto; border: 1px solid #364238; border-radius: 7px; background: #141b16; color: #deead7; font: 11px/1.9 ui-monospace,monospace; }
+  .guide-section .note { color: #86927e; font-size: 11px; }.split { display: grid; grid-template-columns: 1fr 1fr; align-items: center; gap: 36px; }
+  @media(max-width:700px) { .guide-hero { padding: 65px 0 50px; }.guide-hero h1 { font-size: 56px; }.guide-section { padding: 48px 0; }.split { grid-template-columns: 1fr; gap: 18px; }.permission-grid { grid-template-columns: 1fr; } }
+</style>

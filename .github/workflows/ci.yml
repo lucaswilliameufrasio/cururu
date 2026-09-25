@@ -15,8 +15,23 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: cururu
+          POSTGRES_PASSWORD: cururu
+          POSTGRES_DB: cururu
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cururu -d cururu"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       SCCACHE_GHA_ENABLED: "true"
+      CURURU_TEST_POSTGRES_URL: postgres://cururu:cururu@localhost:5432/cururu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
