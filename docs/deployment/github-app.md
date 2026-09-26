@@ -129,10 +129,11 @@ rejects the App bot, Cururu logs that outcome and still submits a formal
 `COMMENT` review under its App identity. Comments and review events remain
 advisory and do not approve, block, or merge the PR.
 
-`CURURU_DB_PASSWORD` is passed raw to PostgreSQL. If it contains URL-reserved
-characters, set `CURURU_DB_PASSWORD_URLENCODED` to its percent-encoded form for
-the application connection URL. For URL-safe passwords, both variables can use
-the same value; the Compose file defaults the encoded value to the raw password.
+`CURURU_DB_PASSWORD` is passed raw to PostgreSQL. Set
+`CURURU_DB_PASSWORD_URLENCODED` to the percent-encoded password component used
+in the application connection URL. For URL-safe passwords, both variables can
+use the same value. The Compose file requires this variable explicitly to avoid
+misparsing reserved URL characters.
 
 ## Delivery processing
 

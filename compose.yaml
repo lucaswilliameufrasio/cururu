@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
     environment:
       PORT: "8080"
-      CURURU_DATABASE_URL: postgresql://cururu:${CURURU_DB_PASSWORD_URLENCODED:-${CURURU_DB_PASSWORD:?Set CURURU_DB_PASSWORD in .env}}@postgres:5432/cururu
+      CURURU_DATABASE_URL: postgresql://cururu:${CURURU_DB_PASSWORD_URLENCODED:?Set CURURU_DB_PASSWORD_URLENCODED in .env}@postgres:5432/cururu
       GITHUB_APP_ID: ${GITHUB_APP_ID:?Set GITHUB_APP_ID in .env}
       GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:?Set GITHUB_APP_SLUG in .env}
       GITHUB_APP_PRIVATE_KEY_PATH: /run/secrets/github_app_private_key
