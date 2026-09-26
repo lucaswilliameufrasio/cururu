@@ -1249,6 +1249,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_review_reconciliation_deletes_previous_cururu_inline_comments() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": 7,
+                    "body": "<!-- cururu:finding --> Old inline finding.",
+                    "user": {"login": "cururu[bot]", "type": "Bot"},
+                    "path": "src/lib.rs",
+                    "line": 12,
+                    "subject_type": "line"
+                }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/owner/repo/pulls/comments/7"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+
+        client
+            .reconcile_review_comments("head-sha", &[])
+            .await
+            .unwrap();
+        server.verify().await;
+    }
+
+    #[tokio::test]
     async fn fetches_shared_config_from_another_repository_with_token() {
         let server = MockServer::start().await;
         let commit = "0123456789abcdef0123456789abcdef01234567";

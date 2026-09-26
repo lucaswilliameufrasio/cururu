@@ -318,7 +318,11 @@ async fn run_pull_request_review(
                 .reconcile_review_comments(&result.head_sha, &build_inline_drafts(&result))
                 .await?;
         }
-        CommentMode::Summary => {}
+        CommentMode::Summary => {
+            github
+                .reconcile_review_comments(&result.head_sha, &[])
+                .await?;
+        }
     }
     let bot_login = format!("{}[bot]", state.app_slug);
     let marker = format!("<!-- cururu:formal-review:v1 head={} -->", result.head_sha);

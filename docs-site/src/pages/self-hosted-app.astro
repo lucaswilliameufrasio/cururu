@@ -31,7 +31,7 @@ const description = "Install and operate Cururu's GitHub App on your own infrast
       <section class="guide-section">
         <p class="eyebrow">01 / GITHUB APP SETUP</p><h2>Create the installation.</h2>
         <p>Each operator creates their own GitHub App for their own Cururu deployment; there is no shared central App. Configure its webhook URL as <code>https://your-hostname/v1/webhooks/github</code> and set a unique webhook secret.</p>
-        <div class="permission-grid"><article><b>Contents</b><span>Read repository config, context and diffs.</span></article><article><b>Pull requests</b><span>Read PRs; write formal reviews and inline comments.</span></article><article><b>Issues</b><span>Write summary comments and mention replies.</span></article><article><b>Events</b><span>Pull request, issue comment and pull request review comment.</span></article></div>
+        <div class="permission-grid"><article><b>Contents</b><span>Read repository config, context and diffs.</span></article><article><b>Checks</b><span>Read Check Run annotations when analyzer evidence is enabled.</span></article><article><b>Pull requests</b><span>Read PRs; write formal reviews and inline comments.</span></article><article><b>Issues</b><span>Write summary comments and mention replies.</span></article><article><b>Events</b><span>Pull request, issue comment and pull request review comment.</span></article></div>
         <p class="note">Metadata read is granted automatically. Add only the repositories where Cururu should operate.</p>
       </section>
 
