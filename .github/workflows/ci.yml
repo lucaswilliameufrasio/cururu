@@ -103,9 +103,9 @@ jobs:
       - name: Guard the disabled RSA dependency
         shell: bash
         run: |
-          active_rsa="$(cargo tree --locked --target all --edges normal,build,dev --invert rsa)"
-          if [[ -n "$active_rsa" ]]; then
-            printf '%s\n' "$active_rsa"
+          active_dependencies="$(cargo tree --locked --target all --edges normal,build,dev --prefix none --format '{p}')"
+          if [[ $'\n'"$active_dependencies"$'\n' == *$'\nrsa v'* ]]; then
+            printf '%s\n' "$active_dependencies"
             echo "RSA is active; review the RUSTSEC-2023-0071 exception in .cargo/audit.toml."
             exit 1
           fi
