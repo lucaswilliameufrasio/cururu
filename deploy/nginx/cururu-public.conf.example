@@ -20,7 +20,7 @@ server {
 
     ssl_certificate /etc/letsencrypt/live/cururu.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/cururu.example.com/privkey.pem;
-    client_max_body_size 1m;
+    client_max_body_size 25m;
     resolver 127.0.0.11 ipv6=off valid=30s;
 
     location = /health {

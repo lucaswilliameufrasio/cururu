@@ -31,6 +31,7 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         .fetch_pr_diff()
         .await
         .context("failed to fetch PR diff")?;
+    ensure_review_head_unchanged(&head_sha, &github.fetch_head_sha().await?)?;
 
     if raw_diff.len() > config.review.max_diff_bytes * 2 {
         warn!(
@@ -153,6 +154,14 @@ fn build_review_system_prompt(
     prompt
 }
 
+pub fn ensure_review_head_unchanged(expected: &str, current: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        expected == current,
+        "PR head changed during review (started at {expected}, now {current}); refusing to publish stale findings"
+    );
+    Ok(())
+}
+
 async fn fetch_repo_context(
     config: &AppConfig,
     github: &GitHubClient,
@@ -252,7 +261,18 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::build_review_system_prompt;
+    use super::{build_review_system_prompt, ensure_review_head_unchanged};
+
+    #[test]
+    fn rejects_review_results_when_pull_request_head_changed() {
+        assert!(ensure_review_head_unchanged("abc", "abc").is_ok());
+        let error = ensure_review_head_unchanged("abc", "def").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to publish stale findings")
+        );
+    }
 
     #[test]
     fn prior_reply_to_cururu_finding_is_included_in_the_next_review_prompt() {

@@ -1,13 +1,13 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:18.6-alpine3.24@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
     restart: unless-stopped
     environment:
       POSTGRES_USER: cururu
       POSTGRES_PASSWORD: ${CURURU_DB_PASSWORD:?Set CURURU_DB_PASSWORD in .env}
       POSTGRES_DB: cururu
     volumes:
-      - cururu-postgres:/var/lib/postgresql/data
+      - cururu-postgres:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cururu -d cururu"]
       interval: 10s
@@ -35,7 +35,7 @@ services:
         condition: service_healthy
 
   nginx:
-    image: nginx:1.30.4-alpine
+    image: nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
     restart: unless-stopped
     ports:
       - "127.0.0.1:18082:80"

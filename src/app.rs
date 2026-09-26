@@ -27,6 +27,7 @@ use tracing::{info, warn};
 type HmacSha256 = Hmac<Sha256>;
 pub const GITHUB_WEBHOOK_PATH: &str = "/v1/webhooks/github";
 const MAX_MENTION_DIFF_BYTES: usize = 80_000;
+const MAX_WEBHOOK_BODY_BYTES: usize = 25_000_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -63,7 +64,7 @@ pub async fn serve() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route(GITHUB_WEBHOOK_PATH, post(receive_webhook))
-        .layer(DefaultBodyLimit::max(1_000_000))
+        .layer(DefaultBodyLimit::max(MAX_WEBHOOK_BODY_BYTES))
         .with_state(state);
     let host = std::env::var("CURURU_HOST").unwrap_or_else(|_| "0.0.0.0".into());
     let port = std::env::var("PORT")
@@ -309,18 +310,18 @@ async fn run_pull_request_review(
     }
 
     let result = review::run_review(config, github).await?;
+    review::ensure_review_head_unchanged(&result.head_sha, &github.fetch_head_sha().await?)?;
     let report = quality::evaluate(&result.review, config.review.policy.fail_on);
     match config.review.comment_mode {
         CommentMode::Inline => {
-            let head = github.fetch_head_sha().await?;
             github
-                .reconcile_review_comments(&head, &build_inline_drafts(&result))
+                .reconcile_review_comments(&result.head_sha, &build_inline_drafts(&result))
                 .await?;
         }
         CommentMode::Summary => {}
     }
     let bot_login = format!("{}[bot]", state.app_slug);
-    let marker = format!("<!-- cururu:formal-review:v1 head={head_sha} -->");
+    let marker = format!("<!-- cururu:formal-review:v1 head={} -->", result.head_sha);
     if !github.formal_review_exists(&marker, &bot_login).await? {
         github
             .submit_formal_review(&format!(

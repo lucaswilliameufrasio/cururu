@@ -60,6 +60,23 @@ CURURU_TAILSCALE_IP="$(tailscale ip -4)" \
   docker compose --env-file .env -f compose.yaml -f compose.tailscale.yaml up -d --build
 ```
 
+The Compose stack pins PostgreSQL 18.6 and stores its data under
+`/var/lib/postgresql`. PostgreSQL 17 data volumes need a major-version migration;
+do not simply point PostgreSQL 18 at the old data directory. A dump/restore path
+is:
+
+```sh
+docker compose exec -T postgres pg_dump -U cururu -Fc cururu > cururu-v17.dump
+docker compose down
+# Update the Compose image/volume configuration to PostgreSQL 18, then:
+docker compose up -d --wait postgres
+docker compose exec -T postgres pg_restore -U cururu -d cururu \
+  --clean --if-exists --no-owner --no-privileges < cururu-v17.dump
+docker compose up -d --build
+```
+
+Keep the dump until Cururu starts and the migrated data has been checked.
+
 The operator can then validate Cururu privately at
 `http://<CURURU_TAILSCALE_IP>:<CURURU_PORT>/health` and the Nginx proxy at
 `http://<CURURU_TAILSCALE_IP>:18083/health`. Nginx proxies the versioned webhook

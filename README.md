@@ -433,26 +433,46 @@ cargo run -- print-config
 
 ### Using the CLI in a consuming repository
 
-Starting with the first release after the CLI distribution workflow is merged,
-install the prebuilt CLI from the latest GitHub Release:
+For the v4.7.0 CLI release, download a platform archive and verify its published
+SHA-256 checksum before installing it. Example for Linux x86_64:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/lucaswilliameufrasio/cururu/releases/latest/download/cururu-installer.sh | sh
+VERSION=v4.7.0
+ASSET=cururu-x86_64-unknown-linux-gnu.tar.xz
+BASE="https://github.com/lucaswilliameufrasio/cururu/releases/download/$VERSION"
+curl --fail --location "$BASE/$ASSET" --output "$ASSET"
+curl --fail --location "$BASE/$ASSET.sha256" --output "$ASSET.sha256"
+sha256sum --check "$ASSET.sha256"
+mkdir -p "$HOME/.local/bin"
+tar -xJf "$ASSET" --strip-components=1 -C "$HOME/.local/bin"
+export PATH="$HOME/.local/bin:$PATH"
+cururu init
 ```
 
-On Windows, run the generated PowerShell installer:
+On Windows, verify the matching archive checksum before extracting:
 
 ```powershell
-irm https://github.com/lucaswilliameufrasio/cururu/releases/latest/download/cururu-installer.ps1 | iex
+$Version = "v4.7.0"
+$Asset = "cururu-x86_64-pc-windows-msvc.zip"
+$Base = "https://github.com/lucaswilliameufrasio/cururu/releases/download/$Version"
+Invoke-WebRequest "$Base/$Asset" -OutFile $Asset
+Invoke-WebRequest "$Base/$Asset.sha256" -OutFile "$Asset.sha256"
+$Expected = ((Get-Content "$Asset.sha256" -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+$Actual = (Get-FileHash $Asset -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($Actual -ne $Expected) { throw "Checksum verification failed for $Asset" }
+Expand-Archive -Path $Asset -DestinationPath ".\cururu-cli" -Force
+$Exe = Get-ChildItem ".\cururu-cli" -Filter "cururu.exe" -Recurse | Select-Object -First 1
+if (-not $Exe) { throw "cururu.exe was not found in the verified archive" }
+& $Exe.FullName init
 ```
 
-Each new release includes per-platform archives and SHA-256 checksums. The
-current latest release predates these assets; until the next version is
-published, build from source with Rust/Cargo installed:
+Each release includes per-platform archives and SHA-256 checksums. To use a
+different version or architecture, select the matching archive from that
+release's assets and update `VERSION`/`ASSET` above. To build the tagged source
+instead, with Rust/Cargo installed:
 
 ```bash
-cargo install --git https://github.com/lucaswilliameufrasio/cururu
+cargo install --git https://github.com/lucaswilliameufrasio/cururu --tag v4.7.0 --locked
 cururu init
 ```
 

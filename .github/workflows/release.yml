@@ -131,15 +131,47 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - name: Install Rust non-interactively if not already installed
+      - name: Install pinned Rust toolchain
         if: ${{ matrix.container }}
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master @ 2026-06-30
+        with:
+          toolchain: 1.97.0
+      - name: Download and verify cargo-dist for Unix
+        if: runner.os != 'Windows'
+        env:
+          CARGO_DIST_VERSION: v0.32.0
+          CARGO_DIST_HOST: ${{ matrix.host }}
+        shell: bash
         run: |
-          if ! command -v cargo > /dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          fi
-      - name: Install dist
-        run: ${{ matrix.install_dist.run }}
+          asset="cargo-dist-$CARGO_DIST_HOST.tar.xz"
+          archive="$RUNNER_TEMP/$asset"
+          install_dir="$RUNNER_TEMP/cargo-dist"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            "https://github.com/axodotdev/cargo-dist/releases/download/$CARGO_DIST_VERSION/$asset" \
+            --output "$archive"
+          gh attestation verify "$archive" --repo axodotdev/cargo-dist
+          mkdir -p "$install_dir" "$HOME/.cargo/bin"
+          tar -xJf "$archive" --strip-components=1 -C "$install_dir"
+          install "$install_dir/dist" "$HOME/.cargo/bin/dist"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Download and verify cargo-dist for Windows
+        if: runner.os == 'Windows'
+        env:
+          CARGO_DIST_VERSION: v0.32.0
+          CARGO_DIST_HOST: ${{ matrix.host }}
+        shell: pwsh
+        run: |
+          $asset = "cargo-dist-$($env:CARGO_DIST_HOST).zip"
+          $archive = Join-Path $env:RUNNER_TEMP $asset
+          $installDir = Join-Path $env:RUNNER_TEMP "cargo-dist"
+          $binDir = Join-Path $env:USERPROFILE ".cargo\bin"
+          $url = "https://github.com/axodotdev/cargo-dist/releases/download/$($env:CARGO_DIST_VERSION)/$asset"
+          curl.exe --fail --location --proto '=https' --tlsv1.2 $url --output "$archive"
+          gh attestation verify "$archive" --repo axodotdev/cargo-dist
+          Expand-Archive -Path $archive -DestinationPath $installDir -Force
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          Copy-Item (Join-Path $installDir "dist.exe") (Join-Path $binDir "dist.exe") -Force
+          Add-Content -Path $env:GITHUB_PATH -Value $binDir
       # Get the dist-manifest
       - name: Fetch local artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
