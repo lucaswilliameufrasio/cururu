@@ -45,8 +45,8 @@ obtains that installation's read token for the pinned config fetch.
 
 ```sh
 cp .env.example .env
-# Set the App ID/slug, private-key file, webhook secret, LLM key, and a strong
-# CURURU_DB_PASSWORD in .env. Keep .env and the key out of source control.
+# Set the App ID/slug, private-key file, webhook secret, LLM key, and both DB
+# password variables in .env. Keep .env and the key out of source control.
 docker compose up -d --build
 ```
 
@@ -136,6 +136,8 @@ for a single Cururu worker.
 | `GITHUB_WEBHOOK_SECRET` | yes | HMAC-SHA256 webhook signature verification |
 | `LLM_API_KEY` | yes | Provider credential, supplied only as a deployment secret |
 | `CURURU_DATABASE_URL` | yes | `postgres://...` / `postgresql://...` or `sqlite:///...` |
+| `CURURU_DB_PASSWORD` | PostgreSQL Compose | Raw password passed to the Postgres container |
+| `CURURU_DB_PASSWORD_URLENCODED` | PostgreSQL Compose | Percent-encoded password component in `CURURU_DATABASE_URL` |
 | `GITHUB_API_URL` | no | GitHub Enterprise API base URL; defaults to `https://api.github.com` |
 | `GITHUB_SERVER_URL` | no | GitHub Enterprise web URL; defaults to `https://github.com` |
 | `CURURU_HOST`, `PORT` | no | Bind host and HTTP port; defaults `0.0.0.0:8080` |
