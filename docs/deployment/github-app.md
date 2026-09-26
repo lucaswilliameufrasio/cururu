@@ -164,4 +164,4 @@ collaborators, and comment/diff text remains untrusted prompt data.
 The same worker reviews PR open/update events, accepts exact `/cururu review`
 and `/cururu review --full` commands, answers `@cururu` / `@cururu[bot]` mentions,
 and replies in a review-comment thread when a collaborator responds to a Cururu
-finding.
+finding. Answers are limited to five per collaborator per pull request per hour.

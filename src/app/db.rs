@@ -62,6 +62,19 @@ impl DeliveryStore {
             .execute(&pool)
             .await
             .context("failed to index webhook delivery queue")?;
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS github_mention_limits (
+                repository TEXT NOT NULL,
+                pr_number BIGINT NOT NULL,
+                user_login TEXT NOT NULL,
+                window_started_at BIGINT NOT NULL,
+                request_count BIGINT NOT NULL,
+                PRIMARY KEY (repository, pr_number, user_login)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .context("failed to initialize GitHub mention rate limits")?;
 
         let now = epoch_seconds();
         let recover_query = if sqlite {
@@ -189,7 +202,65 @@ impl DeliveryStore {
             .execute(&self.pool)
             .await
             .context("failed to prune old webhook deliveries")?;
+        let mention_prune_query = self.sql(
+            "DELETE FROM github_mention_limits WHERE window_started_at < ?",
+            "DELETE FROM github_mention_limits WHERE window_started_at < $1",
+        );
+        sqlx::query(mention_prune_query)
+            .bind(epoch_seconds() - 30 * 24 * 60 * 60)
+            .execute(&self.pool)
+            .await
+            .context("failed to prune old GitHub mention rate limits")?;
         Ok(result.rows_affected())
+    }
+
+    pub async fn allow_mention(
+        &self,
+        repository: &str,
+        pr_number: u64,
+        user_login: &str,
+        window_secs: i64,
+        max_requests: i64,
+    ) -> anyhow::Result<bool> {
+        self.allow_mention_at(
+            repository,
+            pr_number,
+            user_login,
+            epoch_seconds(),
+            window_secs,
+            max_requests,
+        )
+        .await
+    }
+
+    async fn allow_mention_at(
+        &self,
+        repository: &str,
+        pr_number: u64,
+        user_login: &str,
+        now: i64,
+        window_secs: i64,
+        max_requests: i64,
+    ) -> anyhow::Result<bool> {
+        let cutoff = now.saturating_sub(window_secs);
+        let query = self.sql(
+            "INSERT INTO github_mention_limits (repository, pr_number, user_login, window_started_at, request_count) VALUES (?, ?, ?, ?, 1) ON CONFLICT(repository, pr_number, user_login) DO UPDATE SET window_started_at = CASE WHEN github_mention_limits.window_started_at <= ? THEN ? ELSE github_mention_limits.window_started_at END, request_count = CASE WHEN github_mention_limits.window_started_at <= ? THEN 1 ELSE github_mention_limits.request_count + 1 END WHERE github_mention_limits.window_started_at <= ? OR github_mention_limits.request_count < ?",
+            "INSERT INTO github_mention_limits (repository, pr_number, user_login, window_started_at, request_count) VALUES ($1, $2, $3, $4, 1) ON CONFLICT(repository, pr_number, user_login) DO UPDATE SET window_started_at = CASE WHEN github_mention_limits.window_started_at <= $5 THEN $6 ELSE github_mention_limits.window_started_at END, request_count = CASE WHEN github_mention_limits.window_started_at <= $7 THEN 1 ELSE github_mention_limits.request_count + 1 END WHERE github_mention_limits.window_started_at <= $8 OR github_mention_limits.request_count < $9",
+        );
+        let result = sqlx::query(query)
+            .bind(repository)
+            .bind(i64::try_from(pr_number).unwrap_or(i64::MAX))
+            .bind(user_login.to_ascii_lowercase())
+            .bind(now)
+            .bind(cutoff)
+            .bind(now)
+            .bind(cutoff)
+            .bind(cutoff)
+            .bind(max_requests)
+            .execute(&self.pool)
+            .await
+            .context("failed to apply GitHub mention rate limit")?;
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn backup_sqlite(&self, destination: &str) -> anyhow::Result<()> {
@@ -254,6 +325,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlite_mention_limit_is_scoped_to_user_and_pull_request() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("cururu.db");
+        let url = format!("sqlite://{}?mode=rwc", db_path.display());
+        let store = DeliveryStore::connect(&url).await.unwrap();
+
+        for _ in 0..5 {
+            assert!(
+                store
+                    .allow_mention_at("owner/repo", 7, "alice", 1_000, 3_600, 5)
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(
+            !store
+                .allow_mention_at("owner/repo", 7, "alice", 1_001, 3_600, 5)
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .allow_mention_at("owner/repo", 8, "alice", 1_001, 3_600, 5)
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .allow_mention_at("owner/repo", 7, "bob", 1_001, 3_600, 5)
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .allow_mention_at("owner/repo", 7, "alice", 4_600, 3_600, 5)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
     async fn sqlite_online_backup_creates_a_consistent_database_copy() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("cururu.db");
@@ -308,6 +420,50 @@ mod tests {
             "DELETE FROM github_deliveries WHERE delivery_id = $1",
         ))
         .bind(&delivery.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_mention_limit_enforces_the_per_user_window_when_configured() {
+        let Ok(database_url) = std::env::var("CURURU_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let store = DeliveryStore::connect(&database_url).await.unwrap();
+        let repository = format!(
+            "mention-limit-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        for _ in 0..5 {
+            assert!(
+                store
+                    .allow_mention_at(&repository, 42, "alice", 1_000, 3_600, 5)
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(
+            !store
+                .allow_mention_at(&repository, 42, "alice", 1_001, 3_600, 5)
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .allow_mention_at(&repository, 42, "alice", 4_600, 3_600, 5)
+                .await
+                .unwrap()
+        );
+
+        sqlx::query(store.sql(
+            "DELETE FROM github_mention_limits WHERE repository = ?",
+            "DELETE FROM github_mention_limits WHERE repository = $1",
+        ))
+        .bind(repository)
         .execute(&store.pool)
         .await
         .unwrap();

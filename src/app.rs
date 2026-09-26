@@ -28,6 +28,8 @@ type HmacSha256 = Hmac<Sha256>;
 pub const GITHUB_WEBHOOK_PATH: &str = "/v1/webhooks/github";
 const MAX_MENTION_DIFF_BYTES: usize = 80_000;
 const MAX_WEBHOOK_BODY_BYTES: usize = 25_000_000;
+const MENTION_RATE_WINDOW_SECS: i64 = 3_600;
+const MAX_MENTIONS_PER_USER_PER_PR: i64 = 5;
 
 #[derive(Clone)]
 struct AppState {
@@ -35,6 +37,14 @@ struct AppState {
     auth: github_app::GitHubAppAuth,
     webhook_secret: Arc<Vec<u8>>,
     app_slug: Arc<String>,
+}
+
+struct MentionRequest<'a> {
+    body: &'a str,
+    pr_number: u64,
+    reply_to: Option<u64>,
+    mention_login: Option<&'a str>,
+    actor_login: &'a str,
 }
 
 pub async fn serve() -> anyhow::Result<()> {
@@ -371,7 +381,19 @@ async fn process_issue_comment(state: &AppState, payload: &Value) -> anyhow::Res
     let number = payload["issue"]["number"]
         .as_u64()
         .context("issue comment has no PR number")?;
-    answer_mention(&github, &config, &body, number, None, Some(&login)).await
+    answer_mention(
+        state,
+        &github,
+        &config,
+        MentionRequest {
+            body: &body,
+            pr_number: number,
+            reply_to: None,
+            mention_login: Some(&login),
+            actor_login: &login,
+        },
+    )
+    .await
 }
 
 async fn process_review_comment(state: &AppState, payload: &Value) -> anyhow::Result<()> {
@@ -412,17 +434,45 @@ async fn process_review_comment(state: &AppState, payload: &Value) -> anyhow::Re
         "Review thread at {path}:{}\n{body}",
         line.map_or_else(|| "file".into(), |n| n.to_string())
     );
-    answer_mention(&github, &config, &question, number, parent_id, None).await
+    answer_mention(
+        state,
+        &github,
+        &config,
+        MentionRequest {
+            body: &question,
+            pr_number: number,
+            reply_to: parent_id,
+            mention_login: None,
+            actor_login: &login,
+        },
+    )
+    .await
 }
 
 async fn answer_mention(
+    state: &AppState,
     github: &GitHubClient,
     config: &AppConfig,
-    body: &str,
-    pr_number: u64,
-    reply_to: Option<u64>,
-    mention_login: Option<&str>,
+    request: MentionRequest<'_>,
 ) -> anyhow::Result<()> {
+    if !state
+        .store
+        .allow_mention(
+            &config.github.repository,
+            request.pr_number,
+            request.actor_login,
+            MENTION_RATE_WINDOW_SECS,
+            MAX_MENTIONS_PER_USER_PER_PR,
+        )
+        .await?
+    {
+        info!(
+            actor_login = %request.actor_login,
+            pr_number = request.pr_number,
+            "Cururu mention rate limit reached for this user and PR"
+        );
+        return Ok(());
+    }
     let diff = github.fetch_pr_diff_bounded(MAX_MENTION_DIFF_BYTES).await?;
     let base_sha = github.fetch_base_sha().await?;
     let context_files = crate::context::fetch_context(
@@ -435,25 +485,27 @@ async fn answer_mention(
     )
     .await?;
     let context = format!(
-        "Pull request #{pr_number}\n\nUntrusted PR diff (stream-limited to {MAX_MENTION_DIFF_BYTES} bytes):\n{diff}\n\nTrusted base-commit context:\n{}",
+        "Pull request #{}\n\nUntrusted PR diff (stream-limited to {MAX_MENTION_DIFF_BYTES} bytes):\n{diff}\n\nTrusted base-commit context:\n{}",
+        request.pr_number,
         context_files.render()
     );
     let answer = agent::answer_question(
         &config.llm,
         &config.review.tone,
         &config.review.technical_level,
-        body,
+        request.body,
         &context,
     )
     .await?;
     if answer.is_empty() {
         return Ok(());
     }
-    if let Some(comment_id) = reply_to {
+    if let Some(comment_id) = request.reply_to {
         github.reply_review_comment(comment_id, &answer).await
     } else {
-        let response =
-            mention_login.map_or_else(|| answer.clone(), |login| format!("@{login} {answer}"));
+        let response = request
+            .mention_login
+            .map_or_else(|| answer.clone(), |login| format!("@{login} {answer}"));
         github.create_issue_comment(&response).await
     }
 }
