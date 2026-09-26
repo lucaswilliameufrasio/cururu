@@ -1,4 +1,6 @@
 /target
 .env
+/secrets/
+/deploy/nginx/cururu-public.conf
 review.json
 .DS_Store

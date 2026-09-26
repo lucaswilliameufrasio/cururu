@@ -4,22 +4,29 @@ version = "4.6.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
-description = "Stateless GitHub Actions PR review bot powered by Rust and LLMs"
+description = "Self-service AI code review for GitHub pull requests"
+repository = "https://github.com/lucaswilliameufrasio/cururu"
 
 [dependencies]
 anyhow = "1.0"
+axum = "0.8"
 async-trait = "0.1"
 clap = { version = "4.5", features = ["derive", "env"] }
 dotenvy = "0.15"
+hex = "0.4"
 globset = "0.4"
+jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
+hmac = "0.12"
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli", "zstd"] }
 schemars = { version = "1.0", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_path_to_error = "0.1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "any", "postgres", "sqlite"] }
 thiserror = "2.0"
-tokio = { version = "1.46", features = ["macros", "rt-multi-thread", "fs", "time"] }
+tokio = { version = "1.46", features = ["macros", "rt-multi-thread", "fs", "net", "signal", "time"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
@@ -35,6 +42,11 @@ wiremock = "0.6"
 strip = true
 lto = true
 codegen-units = 1
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
 
 [lints.rust]
 unsafe_code = "forbid"

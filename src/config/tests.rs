@@ -21,7 +21,7 @@ fn base_config() -> AppConfig {
             provider: LlmProvider::OpenRouter,
             base_url: "https://openrouter.ai/api/v1".into(),
             api_key: "sk-test".into(),
-            model: "openai/gpt-5.6-luna".into(),
+            model: "openai/gpt-6-luna".into(),
             temperature: 0.1,
             max_output_tokens: 4000,
         },
@@ -30,6 +30,9 @@ fn base_config() -> AppConfig {
             chunk_bytes: 45_000,
             ignore: GlobSetBuilder::new().build().unwrap(),
             language: "pt-BR".into(),
+            tone: "neutral".into(),
+            technical_level: "intermediate".into(),
+            suggestion_detail: "detailed".into(),
             comment_mode: CommentMode::Inline,
             policy: ReviewPolicy::default(),
         },
@@ -37,6 +40,112 @@ fn base_config() -> AppConfig {
         summary: SummaryConfig::default(),
         analysis: AnalysisConfig::default(),
     }
+}
+
+#[test]
+fn loads_review_tone_and_suggestion_detail() {
+    let mut cfg = base_config();
+    cfg.merge_toml_str(
+        "version = 1\n[review]\ntone = \"didactic\"\ntechnical_level = \"beginner\"\nsuggestion_detail = \"standard\"\n",
+    )
+    .unwrap();
+    assert_eq!(cfg.review.tone, "didactic");
+    assert_eq!(cfg.review.technical_level, "beginner");
+    assert_eq!(cfg.review.suggestion_detail, "standard");
+}
+
+#[test]
+fn rejects_invalid_review_suggestion_detail() {
+    let mut cfg = base_config();
+    let err = cfg
+        .merge_toml_str("version = 1\n[review]\nsuggestion_detail = \"vague\"\n")
+        .unwrap_err();
+    assert!(err.to_string().contains("review.suggestion_detail"));
+}
+
+#[test]
+fn summary_logo_is_opt_in_and_requires_https() {
+    let mut cfg = base_config();
+    assert!(cfg.summary.logo_url.is_none());
+    cfg.merge_toml_str("version = 1\n[summary]\nlogo_url = \"https://example.test/cururu.svg\"\n")
+        .unwrap();
+    assert_eq!(
+        cfg.summary.logo_url.as_deref(),
+        Some("https://example.test/cururu.svg")
+    );
+    cfg.merge_toml_str("version = 1\n[summary]\nlogo_url = \"\"\n")
+        .unwrap();
+    assert!(cfg.summary.logo_url.is_none());
+
+    let err = cfg
+        .merge_toml_str("version = 1\n[summary]\nlogo_url = \"http://example.test/frog.svg\"\n")
+        .unwrap_err();
+    assert!(err.to_string().contains("HTTPS URL"));
+}
+
+#[test]
+fn parses_pinned_shared_base_source() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let config = AppConfig::shared_base_from_toml(&format!(
+        "version = 1\n[config]\nbase = \"acme/standards\"\nbase_ref = \"{sha}\"\nbase_path = \"configs/cururu/base.toml\"\n"
+    ))
+    .unwrap()
+    .unwrap();
+    assert_eq!(config.repository, "acme/standards");
+    assert_eq!(config.commit, sha);
+    assert_eq!(config.path, "configs/cururu/base.toml");
+}
+
+#[test]
+fn rejects_incomplete_or_unpinned_shared_base_source() {
+    let err = AppConfig::shared_base_from_toml(
+        "version = 1\n[config]\nbase = \"acme/standards\"\nbase_path = \"base.toml\"\n",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("base_ref"));
+
+    let err = AppConfig::shared_base_from_toml(
+        "version = 1\n[config]\nbase = \"acme/standards\"\nbase_ref = \"main\"\nbase_path = \"base.toml\"\n",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("40-character commit SHA"));
+}
+
+#[test]
+fn rejects_shared_config_path_traversal() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let err = AppConfig::shared_base_from_toml(&format!(
+        "version = 1\n[config]\nbase = \"acme/standards\"\nbase_ref = \"{sha}\"\nbase_path = \"../private.toml\"\n"
+    ))
+    .unwrap_err();
+    assert!(err.to_string().contains("repository-relative path"));
+}
+
+#[test]
+fn rejects_shared_config_repository_with_url_delimiters() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let err = AppConfig::shared_base_from_toml(&format!(
+        "version = 1\n[config]\nbase = \"acme/standards?ref=main\"\nbase_ref = \"{sha}\"\nbase_path = \"config.toml\"\n"
+    ))
+    .unwrap_err();
+    assert!(err.to_string().contains("owner/repository"));
+}
+
+#[test]
+fn local_config_overrides_base_and_cumulative_arrays_merge() {
+    let effective = AppConfig::compose_toml(
+        "version = 1\n[review]\nlanguage = \"en-US\"\nignore = [\"dist/**\", \"build/**\"]\n[policy]\nfocus = [\"security\"]\nallowed_severities = [\"high\"]\n",
+        "version = 1\n[review]\nlanguage = \"pt-BR\"\nignore = [\"build/**\", \"vendor/**\"]\n[policy]\nfocus = [\"correctness\"]\nallowed_severities = [\"medium\"]\n",
+    )
+    .unwrap();
+    let parsed: toml::Value = toml::from_str(&effective).unwrap();
+    assert_eq!(parsed["review"]["language"].as_str(), Some("pt-BR"));
+    assert_eq!(parsed["review"]["ignore"].as_array().unwrap().len(), 3);
+    assert_eq!(parsed["policy"]["focus"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        parsed["policy"]["allowed_severities"][0].as_str(),
+        Some("medium")
+    );
 }
 
 #[test]
@@ -64,15 +173,12 @@ fn provider_defaults() {
         LlmProvider::OpenAI.default_base_url(),
         "https://api.openai.com/v1"
     );
-    assert_eq!(LlmProvider::OpenAI.default_model(), "gpt-5.6-luna");
+    assert_eq!(LlmProvider::OpenAI.default_model(), "gpt-6-luna");
     assert_eq!(
         LlmProvider::OpenRouter.default_base_url(),
         "https://openrouter.ai/api/v1"
     );
-    assert_eq!(
-        LlmProvider::OpenRouter.default_model(),
-        "openai/gpt-5.6-luna"
-    );
+    assert_eq!(LlmProvider::OpenRouter.default_model(), "openai/gpt-6-luna");
     assert_eq!(
         LlmProvider::Groq.default_base_url(),
         "https://api.groq.com/openai/v1"
@@ -113,7 +219,7 @@ fn overrides_provider() {
 fn provider_change_updates_default_model() {
     let _guard = ENV_LOCK.lock().unwrap();
     let mut cfg = base_config();
-    assert_eq!(cfg.llm.model, "openai/gpt-5.6-luna");
+    assert_eq!(cfg.llm.model, "openai/gpt-6-luna");
     cfg.merge_toml_str("version = 1\n[provider]\nname = \"groq\"\n")
         .unwrap();
     assert_eq!(cfg.llm.provider, LlmProvider::Groq);

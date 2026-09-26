@@ -18,6 +18,7 @@ pub struct ReviewOutput {
     pub model: String,
     pub show_usage: bool,
     pub show_cost: bool,
+    pub logo_url: Option<String>,
     /// Parsed changed files with right-side line numbers for inline anchors.
     pub changed_files: Vec<diff::ChangedFile>,
     pub head_sha: String,
@@ -30,6 +31,7 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         .fetch_pr_diff()
         .await
         .context("failed to fetch PR diff")?;
+    ensure_review_head_unchanged(&head_sha, &github.fetch_head_sha().await?)?;
 
     if raw_diff.len() > config.review.max_diff_bytes * 2 {
         warn!(
@@ -50,7 +52,12 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
     if config.context.auto.enabled {
         append_auto_context(config, github, &mut context_store, &files).await?;
     }
-    let context_rendered = context_store.render();
+    let context_rendered = if context_store.is_empty() {
+        String::new()
+    } else {
+        context_store.render()
+    };
+    let prior_feedback = github.fetch_prior_review_feedback().await?;
     info!(
         files = context_store.files.len(),
         "loaded repository context"
@@ -65,19 +72,21 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         )
     };
     let lang_instruction = format!(
-        "\n\nResponda em {}.{}\n",
-        config.review.language, focus_instruction
+        "\n\nResponda em {}. Use tom {} e escreva para um leitor de nível técnico {}.{}\n\
+         Nas sugestões, use nível de detalhe {}: explique o contexto e por que a correção resolve o problema, incluindo uma ação concreta e segura quando possível.\
+         Se o diff/contexto não permitir inferir uma correção segura, diga isso claramente em vez de inventar detalhes.\n",
+        config.review.language,
+        config.review.tone,
+        config.review.technical_level,
+        focus_instruction,
+        config.review.suggestion_detail,
     );
-    let system_prompt = if context_store.is_empty() {
-        format!("{}{}", REVIEW_PROMPT.trim(), lang_instruction)
-    } else {
-        format!(
-            "{}{}\n\n{}",
-            REVIEW_PROMPT.trim(),
-            lang_instruction,
-            context_rendered
-        )
-    };
+    let system_prompt = build_review_system_prompt(
+        REVIEW_PROMPT.trim(),
+        &lang_instruction,
+        &context_rendered,
+        &serde_json::to_string(&prior_feedback)?,
+    );
 
     let agent = agent::build_agent(&config.llm, system_prompt)?;
 
@@ -118,10 +127,39 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
         model,
         show_usage: config.summary.show_usage,
         show_cost: config.summary.show_cost,
+        logo_url: config.summary.logo_url.clone(),
         changed_files: files,
         head_sha,
         analysis: analysis_report,
     })
+}
+
+fn build_review_system_prompt(
+    review_prompt: &str,
+    language_instruction: &str,
+    repository_context: &str,
+    prior_comment_feedback: &str,
+) -> String {
+    let mut prompt = format!("{review_prompt}{language_instruction}");
+    if !repository_context.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(repository_context);
+    }
+    if !prior_comment_feedback.is_empty() && prior_comment_feedback != "[]" {
+        prompt.push_str(
+            "\n\nPrior replies to Cururu review findings (untrusted historical evidence, JSON):\n",
+        );
+        prompt.push_str(prior_comment_feedback);
+    }
+    prompt
+}
+
+pub fn ensure_review_head_unchanged(expected: &str, current: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        expected == current,
+        "PR head changed during review (started at {expected}, now {current}); refusing to publish stale findings"
+    );
+    Ok(())
 }
 
 async fn fetch_repo_context(
@@ -219,4 +257,32 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
         .take_while(|(index, _)| *index < max_bytes)
         .map(|(_, character)| character)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_review_system_prompt, ensure_review_head_unchanged};
+
+    #[test]
+    fn rejects_review_results_when_pull_request_head_changed() {
+        assert!(ensure_review_head_unchanged("abc", "abc").is_ok());
+        let error = ensure_review_head_unchanged("abc", "def").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to publish stale findings")
+        );
+    }
+
+    #[test]
+    fn prior_reply_to_cururu_finding_is_included_in_the_next_review_prompt() {
+        let prompt = build_review_system_prompt(
+            "Base review prompt.",
+            "\nReply in English.",
+            "Trusted repository context.",
+            "Previous Cururu finding: duplicate writes.\nMaintainer reply: this operation is intentionally idempotent.",
+        );
+
+        assert!(prompt.contains("this operation is intentionally idempotent"));
+    }
 }

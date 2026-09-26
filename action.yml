@@ -1,5 +1,5 @@
 name: "Cururu PR Review"
-description: "Stateless LLM-powered PR review bot for GitHub Actions"
+description: "Stateless LLM-powered PR review for GitHub Actions"
 author: "Lucas Eufrasio"
 
 branding:
@@ -11,6 +11,9 @@ inputs:
     description: "GitHub token for API access"
     required: false
     default: ${{ github.token }}
+  shared_config_token:
+    description: "Optional token with read access to a shared config repository in another GitHub App installation"
+    required: false
   llm_api_key:
     description: "LLM provider API key"
     required: true
@@ -72,6 +75,7 @@ runs:
     - review
   env:
     GITHUB_TOKEN: ${{ inputs.github_token }}
+    CURURU_SHARED_CONFIG_TOKEN: ${{ inputs.shared_config_token }}
     LLM_API_KEY: ${{ inputs.llm_api_key }}
     LLM_BASE_URL: ${{ inputs.llm_base_url }}
     LLM_MODEL: ${{ inputs.llm_model }}

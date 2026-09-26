@@ -25,7 +25,13 @@ concurrency:
 
 jobs:
   review:
-    if: (github.event_name == 'issue_comment' || github.event.pull_request.draft == false) && github.actor != 'dependabot[bot]'
+    # Draft PRs are reviewed on ready_for_review, not on each draft push.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      (
+        (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false) ||
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

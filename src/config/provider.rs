@@ -16,8 +16,8 @@ impl LlmProvider {
 
     pub const fn default_model(&self) -> &str {
         match self {
-            Self::OpenAI => "gpt-5.6-luna",
-            Self::OpenRouter => "openai/gpt-5.6-luna",
+            Self::OpenAI => "gpt-6-luna",
+            Self::OpenRouter => "openai/gpt-6-luna",
             Self::Groq => "openai/gpt-oss-120b",
         }
     }

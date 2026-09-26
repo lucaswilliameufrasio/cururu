@@ -13,10 +13,46 @@ permissions:
   contents: read
 
 jobs:
+  docs-site:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.5.3
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.13.0
+
+      - name: Install docs dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: docs-site
+
+      - name: Build docs site
+        run: pnpm build
+        working-directory: docs-site
+
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.6-alpine3.24@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+        env:
+          POSTGRES_USER: cururu
+          POSTGRES_PASSWORD: cururu
+          POSTGRES_DB: cururu
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cururu -d cururu"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       SCCACHE_GHA_ENABLED: "true"
+      CURURU_TEST_POSTGRES_URL: postgres://cururu:cururu@localhost:5432/cururu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -63,6 +99,16 @@ jobs:
 
       - name: Run Docker smoke test
         run: docker run --rm --workdir /github/workspace cururu:ci --version
+
+      - name: Guard the disabled RSA dependency
+        shell: bash
+        run: |
+          active_dependencies="$(cargo tree --locked --target all --edges normal,build,dev --prefix none --format '{p}')"
+          if [[ $'\n'"$active_dependencies"$'\n' == *$'\nrsa v'* ]]; then
+            printf '%s\n' "$active_dependencies"
+            echo "RSA is active; review the RUSTSEC-2023-0071 exception in .cargo/audit.toml."
+            exit 1
+          fi
 
       - name: Audit
         run: |

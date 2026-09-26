@@ -8,10 +8,15 @@ is sensitive.
 
 ## Trust model
 
-- **Credentials** (`LLM_API_KEY`, `GITHUB_TOKEN`) are always supplied through
-  GitHub Actions secrets, never through repository configuration.
+- **Credentials** (`LLM_API_KEY`, GitHub tokens, App private key, webhook secret)
+  are supplied through GitHub Actions secrets or the self-hosting platform's
+  secret manager, never through repository configuration.
 - **Repository configuration** (`.cururu.toml`) is read from the PR's base
   commit, not from the contributor-controlled head branch.
+- **Shared configuration** is selected only by that trusted base-commit file
+  and fetched from its explicitly pinned commit SHA. A private base requires a
+  GitHub token with read access to both repositories. The shared file is
+  maintainer-controlled input; recursive base references are rejected.
 - **The diff** is treated as untrusted input and sent to the configured LLM
   provider. Do not review PRs containing secrets.
 - **Context files** (conventions, specifications, skills) are read from the base
@@ -20,6 +25,12 @@ is sensitive.
   is bounded by file and byte limits.
 - **Custom LLM endpoints** receive the configured API key; only enable
   `base_url` for an endpoint controlled and trusted by the repository owner.
+- **Summary logos** are optional and must use an absolute HTTPS URL. The URL is
+  configuration data, not a source of review instructions.
+- **Self-hosted App webhooks** are authenticated by constant-time HMAC-SHA256
+  signature verification before payload parsing or queueing. Delivery IDs are
+  deduplicated; queue payloads are retained for bounded time and remain
+  untrusted input.
 
 ## Safe Action usage
 
