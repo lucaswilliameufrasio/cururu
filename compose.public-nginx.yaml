@@ -6,6 +6,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
+      # Example host path: change the left side to your customized config file.
       - ./deploy/nginx/cururu-public.conf:/etc/nginx/conf.d/default.conf:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/www/letsencrypt:/var/www/letsencrypt:ro

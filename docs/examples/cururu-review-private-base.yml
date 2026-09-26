@@ -30,6 +30,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
           permission-contents: read
+          permission-checks: read
           permission-pull-requests: write
           permission-issues: write
 

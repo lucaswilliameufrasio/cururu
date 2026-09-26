@@ -26,6 +26,7 @@ use tracing::{info, warn};
 
 type HmacSha256 = Hmac<Sha256>;
 pub const GITHUB_WEBHOOK_PATH: &str = "/v1/webhooks/github";
+const MAX_MENTION_DIFF_BYTES: usize = 80_000;
 
 #[derive(Clone)]
 struct AppState {
@@ -417,7 +418,7 @@ async fn answer_mention(
     reply_to: Option<u64>,
     mention_login: Option<&str>,
 ) -> anyhow::Result<()> {
-    let diff = github.fetch_pr_diff().await?;
+    let diff = github.fetch_pr_diff_bounded(MAX_MENTION_DIFF_BYTES).await?;
     let base_sha = github.fetch_base_sha().await?;
     let context_files = crate::context::fetch_context(
         &config.context,
@@ -429,7 +430,7 @@ async fn answer_mention(
     )
     .await?;
     let context = format!(
-        "Pull request #{pr_number}\n\nUntrusted PR diff:\n{diff}\n\nTrusted base-commit context:\n{}",
+        "Pull request #{pr_number}\n\nUntrusted PR diff (stream-limited to {MAX_MENTION_DIFF_BYTES} bytes):\n{diff}\n\nTrusted base-commit context:\n{}",
         context_files.render()
     );
     let answer = agent::answer_question(

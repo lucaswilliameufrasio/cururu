@@ -21,10 +21,10 @@ account/organization that owns the installation:
 - **Webhook URL:** `https://cururu.example.com/v1/webhooks/github`
 - **Webhook secret:** generate a unique random value and set it as
   `GITHUB_WEBHOOK_SECRET` in the deployment.
-- **Repository permissions:** Metadata (read, automatic), Contents (read), Pull
-  requests (write), Issues (write). Cururu reads repository config/context and
-  diffs, writes reviews/comments, and answers comments/mentions.
-- Add Checks (read) only when enabling analyzer evidence from GitHub Check Runs.
+- **Repository permissions:** Metadata (read, automatic), Contents (read), Checks
+  (read), Pull requests (write), Issues (write). Cururu reads repository
+  config/context, diffs, and optional Check Run evidence; it writes
+  reviews/comments and answers comments/mentions.
 - **Subscribe to events:** Pull request (`opened`, `synchronize`, `reopened`,
   `ready_for_review`), Issue comment (`created`), Pull request review comment
   (`created`).

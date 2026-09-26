@@ -207,6 +207,47 @@ impl GitHubClient {
         .await
     }
 
+    pub async fn fetch_pr_diff_bounded(&self, max_bytes: usize) -> anyhow::Result<String> {
+        if max_bytes == 0 {
+            return Ok(String::new());
+        }
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        retry_with_backoff(
+            || async {
+                let mut response = self
+                    .client
+                    .get(&url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github.v3.diff")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()
+                    .context("GitHub rejected the PR diff request")?;
+
+                let mut diff = Vec::with_capacity(max_bytes.min(64 * 1024));
+                while diff.len() < max_bytes {
+                    let Some(chunk) = response.chunk().await.context("failed to stream PR diff")?
+                    else {
+                        break;
+                    };
+                    let copy_len = (max_bytes - diff.len()).min(chunk.len());
+                    diff.extend_from_slice(&chunk[..copy_len]);
+                    if copy_len < chunk.len() {
+                        break;
+                    }
+                }
+                Ok(String::from_utf8_lossy(&diff).into_owned())
+            },
+            3,
+        )
+        .await
+    }
+
     pub async fn fetch_base_sha(&self) -> anyhow::Result<String> {
         let pr_url = format!(
             "{}/repos/{}/{}/pulls/{}",
@@ -1183,6 +1224,29 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
         matchers::{header, method, path, query_param},
     };
+
+    #[tokio::test]
+    async fn bounded_pr_diff_stops_reading_at_the_byte_limit() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("0123456789".repeat(100)))
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+
+        let diff = client.fetch_pr_diff_bounded(32).await.unwrap();
+        assert_eq!(diff, "0123456789".repeat(3) + "01");
+    }
 
     #[tokio::test]
     async fn fetches_shared_config_from_another_repository_with_token() {
