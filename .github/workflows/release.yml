@@ -67,6 +67,7 @@ jobs:
           archive="$RUNNER_TEMP/$CARGO_DIST_ASSET"
           install_dir="$RUNNER_TEMP/cargo-dist"
           curl --fail --location --proto '=https' --tlsv1.2 \
+            --connect-timeout 10 --max-time 300 --retry 3 --retry-all-errors \
             "https://github.com/axodotdev/cargo-dist/releases/download/$CARGO_DIST_VERSION/$CARGO_DIST_ASSET" \
             --output "$archive"
           gh attestation verify "$archive" --repo axodotdev/cargo-dist
@@ -147,6 +148,7 @@ jobs:
           archive="$RUNNER_TEMP/$asset"
           install_dir="$RUNNER_TEMP/cargo-dist"
           curl --fail --location --proto '=https' --tlsv1.2 \
+            --connect-timeout 10 --max-time 300 --retry 3 --retry-all-errors \
             "https://github.com/axodotdev/cargo-dist/releases/download/$CARGO_DIST_VERSION/$asset" \
             --output "$archive"
           gh attestation verify "$archive" --repo axodotdev/cargo-dist
@@ -166,7 +168,7 @@ jobs:
           $installDir = Join-Path $env:RUNNER_TEMP "cargo-dist"
           $binDir = Join-Path $env:USERPROFILE ".cargo\bin"
           $url = "https://github.com/axodotdev/cargo-dist/releases/download/$($env:CARGO_DIST_VERSION)/$asset"
-          curl.exe --fail --location --proto '=https' --tlsv1.2 $url --output "$archive"
+          curl.exe --fail --location --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 300 --retry 3 --retry-all-errors $url --output "$archive"
           gh attestation verify "$archive" --repo axodotdev/cargo-dist
           Expand-Archive -Path $archive -DestinationPath $installDir -Force
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
