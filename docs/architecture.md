@@ -42,8 +42,10 @@ the next run fixes it.
   prompt (`prompts/review.md`) come from there.
 - The **PR head branch** is untrusted input: diff text is data, never executed
   and never trusted as instructions. Details in [SECURITY.md](../SECURITY.md).
-- Credentials enter only through GitHub Actions secrets, never through
-  repository files.
+- GitHub Actions mode receives credentials through Actions secrets. Self-hosted
+  mode reads credentials from protected deployment environment variables or
+  mounted Docker secrets. Never store credential values or key files in the
+  repository.
 - The App server validates GitHub's HMAC-SHA256 signature before queueing any
   event. Installation tokens are short-lived and generated from the App private
   key at runtime; credentials are not stored in queue payloads or TOML.
