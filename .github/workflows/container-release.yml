@@ -9,6 +9,10 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: cururu-container-release
+  queue: max
+
 jobs:
   build:
     strategy:
