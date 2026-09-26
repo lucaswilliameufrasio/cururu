@@ -3,7 +3,7 @@ name: Container Release
 on:
   push:
     tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]*.[0-9]*.[0-9]*"
 
 permissions:
   contents: read
@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ !contains(github.ref_name, '-') && !contains(github.ref_name, '+') }}
     strategy:
       matrix:
         include:
@@ -28,6 +29,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Validate stable SemVer tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported container release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
@@ -40,8 +50,12 @@ jobs:
 
       - name: Generate platform tags
         id: tags
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          PLATFORM_SUFFIX: ${{ matrix.suffix }}
         run: |
-          TAG="ghcr.io/${{ github.repository }}:${{ github.ref_name }}-${{ matrix.suffix }}"
+          TAG="$IMAGE:$RELEASE_TAG-$PLATFORM_SUFFIX"
           echo "tags=$TAG" >> "$GITHUB_STEP_SUMMARY"
           echo "tags=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -66,18 +80,34 @@ jobs:
           sbom: true
 
       - name: Smoke test
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          PLATFORM_SUFFIX: ${{ matrix.suffix }}
         run: |
           docker run --rm --workdir /github/workspace \
-            "ghcr.io/${{ github.repository }}:${{ github.ref_name }}-${{ matrix.suffix }}" \
+            "$IMAGE:$RELEASE_TAG-$PLATFORM_SUFFIX" \
             --version
 
   merge:
     needs: build
+    if: ${{ !contains(github.ref_name, '-') && !contains(github.ref_name, '+') }}
     permissions:
       contents: write
       packages: write
     runs-on: ubuntu-24.04
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
     steps:
+      - name: Validate stable SemVer tag
+        shell: bash
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported container release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
@@ -90,36 +120,32 @@ jobs:
 
       - name: Create multiarch manifest
         run: |
-          IMG="ghcr.io/${{ github.repository }}"
-          TAG="${{ github.ref_name }}"
-          MAJOR="v$(echo $TAG | sed 's/v\([0-9]*\).*/\1/')"
+          MAJOR="${RELEASE_TAG%%.*}"
           docker buildx imagetools create \
-            -t "$IMG:$TAG" \
-            -t "$IMG:$MAJOR" \
-            -t "$IMG:latest" \
-            "$IMG:$TAG-amd64" \
-            "$IMG:$TAG-arm64"
+            -t "$IMAGE:$RELEASE_TAG" \
+            -t "$IMAGE:$MAJOR" \
+            -t "$IMAGE:latest" \
+            "$IMAGE:$RELEASE_TAG-amd64" \
+            "$IMAGE:$RELEASE_TAG-arm64"
 
       - name: Image summary
         run: |
-          IMG="ghcr.io/${{ github.repository }}"
-          TAG="${{ github.ref_name }}"
-          DIGEST=$(docker buildx imagetools inspect "$IMG:$TAG" --format '{{.Manifest.Digest}}')
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{.Manifest.Digest}}')
           {
             echo "## Image released"
             echo ""
             echo "**Repository:** \`${{ github.repository }}\`"
-            echo "**Tags:** \`$TAG\`, \`v$(echo $TAG | sed 's/v\([0-9]*\).*/\1/')\`, \`latest\`"
+            echo "**Tags:** \`$RELEASE_TAG\`, \`${RELEASE_TAG%%.*}\`, \`latest\`"
             echo "**Manifest digest:** \`$DIGEST\`"
             echo ""
             echo "### Platforms"
             echo '```'
-            docker manifest inspect "$IMG:$TAG" --verbose 2>/dev/null
+            docker manifest inspect "$IMAGE:$RELEASE_TAG" --verbose 2>/dev/null
             echo '```'
             echo ""
             echo "Pin this digest in \`action.yml\`:"
             echo "\`\`\`yaml"
-            echo "image: docker://$IMG@$DIGEST"
+            echo "image: docker://$IMAGE@$DIGEST"
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -130,11 +156,11 @@ jobs:
 
       - name: Pin digest in action.yml and move major tag
         env:
-          TAG: ${{ github.ref_name }}
-          IMG: ghcr.io/${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          IMAGE: ghcr.io/${{ github.repository }}
         run: |
-          DIGEST=$(docker buildx imagetools inspect "$IMG:$TAG" --format '{{.Manifest.Digest}}')
-          sed -i "s#image: docker://$IMG[@:].*#image: docker://$IMG@$DIGEST#" action.yml
+          DIGEST=$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{.Manifest.Digest}}')
+          sed -i "s#image: docker://$IMAGE[@:].*#image: docker://$IMAGE@$DIGEST#" action.yml
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -142,10 +168,10 @@ jobs:
           if git diff --quiet; then
             echo "action.yml already pinned to this digest"
           else
-            git commit -am "chore: pin $TAG OCI digest"
+            git commit -am "chore: pin $RELEASE_TAG OCI digest"
             git push origin main
           fi
 
-          MAJOR="v$(echo $TAG | sed 's/v\([0-9]*\).*/\1/')"
+          MAJOR="${RELEASE_TAG%%.*}"
           git tag -f "$MAJOR" HEAD
           git push -f origin "$MAJOR"
