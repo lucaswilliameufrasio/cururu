@@ -242,9 +242,6 @@ async fn github_context(
         .context("webhook is missing pull request number")?;
     let token = state.auth.installation_token(installation_id).await?;
     let mut config = AppConfig::from_local_env()?;
-    if config.llm.api_key.is_empty() {
-        bail!("LLM_API_KEY is required by the Cururu GitHub App worker");
-    }
     config.github = GitHubConfig {
         token,
         repository,
@@ -271,6 +268,24 @@ async fn app_config_for_event(
     {
         return Ok(None);
     }
+    require_llm_api_key(&config)?;
+    merge_shared_repository_config(state, &mut config, &github, consumer_installation).await?;
+    Ok(Some((config, github)))
+}
+
+fn require_llm_api_key(config: &AppConfig) -> anyhow::Result<()> {
+    if config.llm.api_key.is_empty() {
+        bail!("LLM_API_KEY is required by the Cururu GitHub App worker");
+    }
+    Ok(())
+}
+
+async fn merge_shared_repository_config(
+    state: &AppState,
+    config: &mut AppConfig,
+    github: &GitHubClient,
+    consumer_installation: u64,
+) -> anyhow::Result<()> {
     let base_sha = github.fetch_base_sha().await?;
     let shared_token = if let Some(local_config) = github.fetch_config_toml(&base_sha).await? {
         if let Some(shared) = AppConfig::shared_base_from_toml(&local_config)? {
@@ -290,9 +305,9 @@ async fn app_config_for_event(
     } else {
         None
     };
-    super::merge_repository_config_with_shared_token(&mut config, &github, shared_token.as_deref())
+    super::merge_repository_config_with_shared_token(config, github, shared_token.as_deref())
         .await?;
-    Ok(Some((config, github)))
+    Ok(())
 }
 
 async fn run_pull_request_review(
@@ -406,10 +421,12 @@ async fn process_review_comment(state: &AppState, payload: &Value) -> anyhow::Re
     if kind == "Bot" || login.ends_with("[bot]") {
         return Ok(());
     }
-    let Some((config, github)) = app_config_for_event(state, payload, Some(&login)).await? else {
-        return Ok(());
-    };
+    let mention = mentions_cururu(&body, &state.app_slug);
     let parent_id = payload["comment"]["in_reply_to_id"].as_u64();
+    if !mention && parent_id.is_none() {
+        return Ok(());
+    }
+    let (mut config, github, consumer_installation) = github_context(state, payload).await?;
     let is_reply_to_cururu = if let Some(parent_id) = parent_id {
         github
             .list_review_comments()
@@ -422,9 +439,14 @@ async fn process_review_comment(state: &AppState, payload: &Value) -> anyhow::Re
     } else {
         false
     };
-    if !is_reply_to_cururu && !mentions_cururu(&body, &state.app_slug) {
+    if !is_reply_to_cururu && !mention {
         return Ok(());
     }
+    if !github.user_can_review(&login).await? {
+        return Ok(());
+    }
+    require_llm_api_key(&config)?;
+    merge_shared_repository_config(state, &mut config, &github, consumer_installation).await?;
     let number = payload["pull_request"]["number"]
         .as_u64()
         .context("review comment has no PR number")?;

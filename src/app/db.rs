@@ -423,14 +423,6 @@ mod tests {
         .execute(&store.pool)
         .await
         .unwrap();
-    }
-
-    #[tokio::test]
-    async fn postgres_mention_limit_enforces_the_per_user_window_when_configured() {
-        let Ok(database_url) = std::env::var("CURURU_TEST_POSTGRES_URL") else {
-            return;
-        };
-        let store = DeliveryStore::connect(&database_url).await.unwrap();
         let repository = format!(
             "mention-limit-test-{}",
             SystemTime::now()
