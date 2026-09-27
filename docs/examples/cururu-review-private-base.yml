@@ -55,7 +55,7 @@ jobs:
           permission-contents: read
 
       - name: Review PR
-        uses: lucaswilliameufrasio/cururu@4762b27fdd686c368bd09ea98e580a6abfebb49b # v4.8.0
+        uses: lucaswilliameufrasio/cururu@601b4e125b7dd865c6adab289d2d8948f1e5c841 # v4.8.0
         with:
           github_token: ${{ steps.consumer-token.outputs.token }}
           shared_config_token: ${{ steps.base-token.outputs.token }}
