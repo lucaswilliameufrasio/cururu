@@ -132,6 +132,18 @@ struct CreateReviewComment<'a> {
 #[derive(Debug, Serialize)]
 struct PullRequestReviewBody<'a> {
     body: &'a str,
+    commit_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event: Option<&'a str>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreatedPullRequestReview {
+    id: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct SubmitPullRequestReview<'a> {
     event: &'a str,
 }
 
@@ -795,9 +807,41 @@ impl GitHubClient {
         .await
     }
 
-    pub async fn submit_formal_review(&self, body: &str) -> anyhow::Result<()> {
+    pub async fn create_pending_formal_review(
+        &self,
+        head_sha: &str,
+        body: &str,
+    ) -> anyhow::Result<u64> {
         let url = format!(
             "{}/repos/{}/{}/pulls/{}/reviews",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        let review: CreatedPullRequestReview = self
+            .client
+            .post(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .json(&PullRequestReviewBody {
+                body,
+                commit_id: head_sha,
+                event: None,
+            })
+            .send()
+            .await
+            .context("failed to create pending Cururu review")?
+            .error_for_status()
+            .context("GitHub rejected the pending pull request review")?
+            .json()
+            .await
+            .context("invalid pending pull request review response")?;
+        Ok(review.id)
+    }
+
+    pub async fn submit_formal_review(&self, review_id: u64) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/reviews/{review_id}/events",
             self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
         );
         self.client
@@ -806,15 +850,31 @@ impl GitHubClient {
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2026-03-10")
             .bearer_auth(&self.cfg.token)
-            .json(&PullRequestReviewBody {
-                body,
-                event: "COMMENT",
-            })
+            .json(&SubmitPullRequestReview { event: "COMMENT" })
             .send()
             .await
-            .context("failed to submit formal Cururu review")?
+            .context("failed to submit pending Cururu review")?
             .error_for_status()
             .context("GitHub rejected the formal pull request review")?;
+        Ok(())
+    }
+
+    pub async fn delete_pending_formal_review(&self, review_id: u64) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}/reviews/{review_id}",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        self.client
+            .delete(&url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .send()
+            .await
+            .context("failed to discard pending Cururu review")?
+            .error_for_status()
+            .context("GitHub rejected pending review deletion")?;
         Ok(())
     }
 
@@ -1222,7 +1282,7 @@ mod tests {
     use super::*;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{header, method, path, query_param},
+        matchers::{body_json, header, method, path, query_param},
     };
 
     #[tokio::test]
@@ -1353,7 +1413,19 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/repos/owner/repo/pulls/1/reviews"))
+            .and(body_json(serde_json::json!({
+                "body": "Cururu review.",
+                "commit_id": "abc"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": 42})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/pulls/1/reviews/42/events"))
+            .and(body_json(serde_json::json!({"event": "COMMENT"})))
             .respond_with(ResponseTemplate::new(200))
+            .expect(1)
             .mount(&server)
             .await;
         let client = GitHubClient::new(&GitHubConfig {
@@ -1372,7 +1444,11 @@ mod tests {
                 .await
                 .unwrap()
         );
-        client.submit_formal_review("Cururu review.").await.unwrap();
+        let review_id = client
+            .create_pending_formal_review("abc", "Cururu review.")
+            .await
+            .unwrap();
+        client.submit_formal_review(review_id).await.unwrap();
     }
 
     #[tokio::test]

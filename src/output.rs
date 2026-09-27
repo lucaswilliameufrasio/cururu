@@ -105,7 +105,7 @@ pub fn render_inline_finding(f: &ReviewFinding) -> String {
     let mut out = String::new();
     out.push_str(FINDING_MARKER);
     out.push_str("\n\n");
-    let _ = write!(out, "**{}:** {title}", f.severity.to_uppercase());
+    let _ = write!(out, "**{}**: {title}", f.severity.to_uppercase());
     out.push('\n');
     let message = f.message.trim().replace('\n', " ");
     let suggestion = f.suggestion.trim().replace('\n', " ");
@@ -190,8 +190,8 @@ mod tests {
     fn inline_finding_contains_marker_and_fields() {
         let body = render_inline_finding(&finding());
         assert!(body.contains("<!-- cururu:finding -->"));
-        assert!(body.starts_with("<!-- cururu:finding -->\n\n**CRITICAL:**"));
-        assert!(body.contains("**CRITICAL:** Command injection"));
+        assert!(body.starts_with("<!-- cururu:finding -->\n\n**CRITICAL**:"));
+        assert!(body.contains("**CRITICAL**: Command injection"));
         assert!(body.contains("Query is interpolated"));
         assert!(body.contains("**Sugestão:** Use Command::new"));
     }
@@ -201,7 +201,7 @@ mod tests {
         let mut f = finding();
         f.title = String::new();
         let body = render_inline_finding(&f);
-        assert!(body.contains("**CRITICAL:** Finding"));
+        assert!(body.contains("**CRITICAL**: Finding"));
     }
 
     #[test]

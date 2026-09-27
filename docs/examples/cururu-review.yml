@@ -52,6 +52,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}
+          expected_head_sha: ${{ github.event.pull_request.head.sha || '' }}
           cururu_language: pt-BR
           cururu_profile: balanced
           cururu_fail_on: off

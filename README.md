@@ -50,6 +50,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}
+          expected_head_sha: ${{ github.event.pull_request.head.sha || '' }}
           cururu_language: pt-BR
           cururu_profile: balanced
           cururu_fail_on: off
@@ -397,6 +398,12 @@ through repository configuration.
 | `CURURU_LANGUAGE` | no | `pt-BR` | Review language (overrides TOML) |
 | `CURURU_PROFILE` | no | `balanced` | Review profile |
 | `CURURU_FAIL_ON` | no | `off` | Fail the action at a severity threshold |
+
+The optional Action input `expected_head_sha` pins a run to the head SHA from
+its triggering event. Cururu refuses to publish if that SHA no longer matches
+the reviewed PR head. The generated workflow sets this input automatically;
+other workflows should pass
+`${{ github.event.pull_request.head.sha || '' }}` when available.
 
 ## Self-hosted GitHub App
 
