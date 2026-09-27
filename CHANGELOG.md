@@ -2,12 +2,55 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.7.0] - 2026-09-27
+
+### Bug Fixes
+
+- Deduplicate Cururu review workflow
+- Version webhook path and add Tailscale access
+- Isolate Tailscale and public Nginx ingress
+- Explain responses without choices
+- Address Cururu review findings
+- Address remaining Cururu findings
+- Harden release and proxy behavior
+- Address remaining Cururu review findings
+- Guard the inactive RSA dependency
+- Bound verified artifact downloads
+- Clear stale inline comments in summary mode
+- Rate-limit collaborator mentions
+- Avoid loading context for unrelated replies
+- Restrict issue comments to pull requests
+- Serialize container publishing
+- Skip Dependabot private-base reviews
+- Validate stable tags and use glob filters
+
+### CI / Build
+
+- Scope optional RSA advisory exception
+
+### Chores
+
+- Pin v4.6.0 OCI digest
+- Bump taiki-e/install-action in the all-actions group
+
+### Documentation
+
+- Clarify private Tailscale validation path
+- Explain draft review trigger policy
+- Clarify credential sources by deployment mode
+
+### Features
+
+- Add self-hosted Cururu GitHub App and CLI
+- Include GitHub discussion in follow-up reviews
 ## [4.6.0] - 2026-09-17
 
 ### Bug Fixes
 
 - Refresh Cargo.lock to replace yanked chacha20 0.10.1
 - Update rustls security patch
+- Make analyzer evidence opt-in
+- Make analyzer evidence opt-in
 
 ### CI / Build
 
@@ -18,6 +61,7 @@ All notable changes to this project will be documented in this file.
 
 - Pin v4.5.0 OCI digest
 - Sync Cargo.lock with v4.5.0
+- Prepare for v4.6.0
 
 ### Documentation
 
