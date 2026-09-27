@@ -187,6 +187,12 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&result.review)?);
         }
         Command::Review => {
+            let expected_head_sha = std::env::var("EXPECTED_HEAD_SHA")
+                .ok()
+                .filter(|sha| !sha.trim().is_empty());
+            if let Some(expected) = &expected_head_sha {
+                review::ensure_review_head_unchanged(expected, &github.fetch_head_sha().await?)?;
+            }
             if config.review.policy.incremental {
                 let head_sha = github.fetch_head_sha().await?;
                 if github.summary_has_head(&head_sha).await? {
@@ -195,24 +201,44 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             let result = review::run_review(&config, &github).await?;
+            if let Some(expected) = &expected_head_sha {
+                review::ensure_review_head_unchanged(expected, &result.head_sha)?;
+            }
             let report = quality::evaluate(&result.review, config.review.policy.fail_on);
             write_action_outputs(&report)?;
             write_analysis_outputs(&result.analysis)?;
 
             match config.review.comment_mode {
                 CommentMode::Inline => {
-                    let head_sha = github.fetch_head_sha().await?;
+                    review::ensure_review_head_unchanged(
+                        &result.head_sha,
+                        &github.fetch_head_sha().await?,
+                    )?;
                     let drafts = build_inline_drafts(&result);
-                    github.reconcile_review_comments(&head_sha, &drafts).await?;
+                    github
+                        .reconcile_review_comments(&result.head_sha, &drafts)
+                        .await?;
                     // Keep a compact summary in the PR conversation as well.
+                    review::ensure_review_head_unchanged(
+                        &result.head_sha,
+                        &github.fetch_head_sha().await?,
+                    )?;
                     let body = output::render_summary_comment(&result);
                     github.upsert_summary_comment(&body).await?;
                 }
                 CommentMode::Summary => {
+                    review::ensure_review_head_unchanged(
+                        &result.head_sha,
+                        &github.fetch_head_sha().await?,
+                    )?;
                     let body = output::render_summary_comment(&result);
                     github.upsert_summary_comment(&body).await?;
                 }
             }
+            review::ensure_review_head_unchanged(
+                &result.head_sha,
+                &github.fetch_head_sha().await?,
+            )?;
 
             println!("{}", serde_json::to_string_pretty(&result.review)?);
             if !report.passed {

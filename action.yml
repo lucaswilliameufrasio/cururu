@@ -30,6 +30,9 @@ inputs:
     description: "Pull request number"
     required: false
     default: ${{ github.event.pull_request.number || github.event.issue.number }}
+  expected_head_sha:
+    description: "Expected pull request head commit SHA; publication is skipped if the PR has moved"
+    required: false
   cururu_language:
     description: "Review language (e.g. pt-BR, en-US)"
     required: false
@@ -81,6 +84,7 @@ runs:
     LLM_MODEL: ${{ inputs.llm_model }}
     CURURU_PROVIDER: ${{ inputs.cururu_provider }}
     PR_NUMBER: ${{ inputs.pr_number }}
+    EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
     CURURU_LANGUAGE: ${{ inputs.cururu_language }}
     CURURU_PROFILE: ${{ inputs.cururu_profile }}
     CURURU_FAIL_ON: ${{ inputs.cururu_fail_on }}

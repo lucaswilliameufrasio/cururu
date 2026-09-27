@@ -352,12 +352,28 @@ async fn run_pull_request_review(
     let bot_login = format!("{}[bot]", state.app_slug);
     let marker = format!("<!-- cururu:formal-review:v1 head={} -->", result.head_sha);
     if !github.formal_review_exists(&marker, &bot_login).await? {
-        github
-            .submit_formal_review(&format!(
-                "{marker}\n\nCururu has completed an automated review. See the Cururu summary and inline findings in the conversation. This review is advisory and does not replace human review."
-            ))
+        let review_id = github
+            .create_pending_formal_review(
+                &result.head_sha,
+                &format!(
+                    "{marker}\n\nCururu has completed an automated review. See the Cururu summary and inline findings in the conversation. This review is advisory and does not replace human review."
+                ),
+            )
             .await?;
+        let current_head = match github.fetch_head_sha().await {
+            Ok(head) => head,
+            Err(error) => {
+                github.delete_pending_formal_review(review_id).await?;
+                return Err(error).context("failed to verify PR head before submitting review");
+            }
+        };
+        if let Err(error) = review::ensure_review_head_unchanged(&result.head_sha, &current_head) {
+            github.delete_pending_formal_review(review_id).await?;
+            return Err(error);
+        }
+        github.submit_formal_review(review_id).await?;
     }
+    review::ensure_review_head_unchanged(&result.head_sha, &github.fetch_head_sha().await?)?;
     let summary = output::render_summary_comment(&result);
     github.upsert_summary_comment(&summary).await?;
     info!(
