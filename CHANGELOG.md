@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.8.0] - 2026-09-27
+
+### Bug Fixes
+
+- Recover artifacts for an existing tag
+- Discard pending review on submit failure
+
+### Chores
+
+- Pin v4.7.0 OCI digest
+
+### Features
+
+- Bind publishing to analyzed head SHA
 ## [4.7.0] - 2026-09-27
 
 ### Bug Fixes
@@ -32,6 +46,7 @@ All notable changes to this project will be documented in this file.
 
 - Pin v4.6.0 OCI digest
 - Bump taiki-e/install-action in the all-actions group
+- Prepare for v4.7.0
 
 ### Documentation
 
