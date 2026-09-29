@@ -87,10 +87,12 @@ fn render_header(output: &ReviewOutput, out: &mut String) {
         }
     }
 
-    if output.show_usage
-        && let Some(ref usage) = output.usage
-    {
-        render_usage(usage, output.show_cost, out);
+    if let Some(ref usage) = output.usage {
+        if output.show_usage {
+            render_usage(usage, output.show_cost, out);
+        } else if output.show_cost {
+            render_cost(usage.cost, out);
+        }
     }
 }
 
@@ -144,8 +146,17 @@ fn render_usage(usage: &ProviderUsage, show_cost: bool, out: &mut String) {
     }
     out.push_str("  \n");
 
-    if show_cost && let Some(cost) = usage.cost {
-        let _ = write!(out, "**Cost:** `${cost:.6}`\n\n");
+    if show_cost {
+        render_cost(usage.cost, out);
+    }
+}
+
+fn render_cost(cost: Option<f64>, out: &mut String) {
+    match cost {
+        Some(cost) => {
+            let _ = write!(out, "**Provider-reported cost:** `${cost:.6}`\n\n");
+        }
+        None => out.push_str("**Cost:** unavailable from the LLM provider.\n\n"),
     }
 }
 
@@ -285,5 +296,45 @@ mod tests {
         assert!(body.contains("_Cururu_"));
         assert!(body.contains("![Cururu](<https://example.test/cururu.svg>)"));
         assert!(!body.contains("(o)_(o)"));
+    }
+
+    #[test]
+    fn cost_is_rendered_even_when_token_usage_is_disabled() {
+        let mut output = crate::review::ReviewOutput {
+            review: crate::agent::ReviewResult {
+                model: "m".into(),
+                files_reviewed: 1,
+                summary: "s".into(),
+                findings: vec![],
+            },
+            usage: Some(ProviderUsage {
+                prompt_tokens: 1,
+                completion_tokens: 2,
+                total_tokens: 3,
+                cached_tokens: 0,
+                reasoning_tokens: 0,
+                cost: Some(0.123_456),
+            }),
+            context_files: vec![],
+            model: "m".into(),
+            show_usage: false,
+            show_cost: true,
+            logo_url: None,
+            changed_files: vec![],
+            head_sha: "head".into(),
+            analysis: crate::analysis::AnalysisReport {
+                status: "disabled".into(),
+                tools: vec![],
+                findings: vec![],
+            },
+        };
+        let body = render_summary_comment(&output);
+        assert!(body.contains("Provider-reported cost"));
+        assert!(body.contains("0.123456"));
+        assert!(!body.contains("**Tokens:**"));
+
+        output.usage.as_mut().unwrap().cost = None;
+        let body = render_summary_comment(&output);
+        assert!(body.contains("Cost:** unavailable from the LLM provider"));
     }
 }

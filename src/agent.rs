@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReviewResult {
@@ -253,15 +254,10 @@ impl ReviewAgent for OpenAiCompatibleAgent {
         )
         .await?;
 
-        let content = response
-            .first_choice("LLM returned no choices")?
-            .message
-            .content
-            .trim()
-            .to_string();
-
-        let mut review: ReviewResult = serde_json::from_str(&content)
-            .with_context(|| format!("invalid LLM JSON: {content}"))?;
+        let choice = response.first_choice("LLM returned no choices")?;
+        let content = choice.message.content.trim();
+        let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
+        let mut review = parse_review_json(content, finish_reason)?;
         review.model.clone_from(&self.config.model);
 
         let meta = response.extract_metadata();
@@ -271,6 +267,19 @@ impl ReviewAgent for OpenAiCompatibleAgent {
             usage: meta.usage,
         })
     }
+}
+
+fn parse_review_json(content: &str, finish_reason: &str) -> anyhow::Result<ReviewResult> {
+    if let Ok(review) = serde_json::from_str(content) {
+        return Ok(review);
+    }
+    warn!(
+        response_bytes = content.len(),
+        finish_reason, "LLM returned invalid or incomplete review JSON"
+    );
+    anyhow::bail!(
+        "LLM returned invalid or incomplete review JSON (finish reason: {finish_reason}); reduce diff/context size or increase the configured output-token limit"
+    );
 }
 
 pub fn merge_results(
@@ -379,6 +388,19 @@ fn severity_rank(severity: &str) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncated_model_json_fails_without_echoing_private_response_content() {
+        let truncated = r#"{"findings":[{"path":"private/source.rs","message":"private source""#;
+
+        let error = parse_review_json(truncated, "length")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("finish reason: length"));
+        assert!(!error.contains("private/source.rs"));
+        assert!(!error.contains("private source"));
+    }
 
     #[test]
     fn suggested_change_accepts_legacy_string_and_canonical_object() {
