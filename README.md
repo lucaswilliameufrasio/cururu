@@ -105,6 +105,7 @@ language = "pt-BR"
 tone = "neutral"
 technical_level = "intermediate"
 suggestion_detail = "detailed"
+recommendations = false # Optional extra LLM guidance after recognized output truncation; may add provider cost.
 comment_mode = "inline"
 
 [policy]
@@ -291,6 +292,7 @@ post inline comments and the summary comment respectively.
 ### Summary
 
 | `show_cost` | Show provider-reported cost |
+| `review.recommendations` | Opt in to one additional LLM configuration recommendation after recognized output truncation; may incur extra provider cost. Defaults to `false`. |
 | `show_usage` | Show token counts (prompt, completion, cached, reasoning) |
 
 ### Policy and profiles

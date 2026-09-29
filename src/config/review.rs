@@ -27,6 +27,7 @@ pub struct ReviewConfig {
     pub technical_level: String,
     pub suggestion_detail: String,
     pub comment_mode: CommentMode,
+    pub recommendations: bool,
     pub policy: ReviewPolicy,
 }
 

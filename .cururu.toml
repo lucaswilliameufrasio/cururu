@@ -33,6 +33,9 @@ technical_level = "intermediate"
 suggestion_detail = "detailed"
 # Inline comments are anchored to changed lines; use "summary" for one PR comment.
 comment_mode = "inline"
+# Ask the LLM for one additional configuration recommendation when review output
+# is truncated. This is opt-in and may incur extra provider charges.
+recommendations = false
 
 [policy]
 # Retain only findings above this confidence threshold.

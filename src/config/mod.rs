@@ -111,6 +111,7 @@ impl AppConfig {
                 technical_level: "intermediate".into(),
                 suggestion_detail: "detailed".into(),
                 comment_mode: CommentMode::Inline,
+                recommendations: false,
                 policy,
             },
             context: ContextConfig::default(),
@@ -303,6 +304,9 @@ impl AppConfig {
                 && let Some(m) = CommentMode::from_name(&mode)
             {
                 self.review.comment_mode = m;
+            }
+            if let Some(recommendations) = tr.recommendations {
+                self.review.recommendations = recommendations;
             }
 
             if env::env_optional("CURURU_PROFILE").is_none()

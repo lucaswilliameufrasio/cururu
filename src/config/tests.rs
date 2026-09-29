@@ -33,6 +33,7 @@ fn base_config() -> AppConfig {
             technical_level: "intermediate".into(),
             suggestion_detail: "detailed".into(),
             comment_mode: CommentMode::Inline,
+            recommendations: false,
             policy: ReviewPolicy::default(),
         },
         context: ContextConfig::default(),
@@ -51,6 +52,15 @@ fn loads_review_tone_and_suggestion_detail() {
     assert_eq!(cfg.review.tone, "didactic");
     assert_eq!(cfg.review.technical_level, "beginner");
     assert_eq!(cfg.review.suggestion_detail, "standard");
+}
+
+#[test]
+fn recommendations_are_opt_in_and_can_be_enabled_in_toml() {
+    let mut cfg = base_config();
+    assert!(!cfg.review.recommendations);
+    cfg.merge_toml_str("version = 1\n[review]\nrecommendations = true\n")
+        .unwrap();
+    assert!(cfg.review.recommendations);
 }
 
 #[test]
