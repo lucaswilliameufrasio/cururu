@@ -3,9 +3,12 @@ mod github_app;
 
 use crate::{
     agent, build_inline_drafts,
-    config::{AppConfig, CommentMode, GitHubConfig},
+    config::{AppConfig, CommentMode},
     github::GitHubClient,
-    output, quality, review,
+    output, quality,
+    repository::{RepositoryIdentity, github_host_urls},
+    review,
+    scm::ScmProvider,
 };
 use anyhow::{Context, bail};
 use axum::{
@@ -231,29 +234,23 @@ async fn github_context(
         .context("webhook is missing installation.id")?;
     let repository = string_at(payload, &["repository", "full_name"])
         .context("webhook is missing repository.full_name")?;
-    let (owner, repo) = repository
-        .split_once('/')
-        .context("repository.full_name must be owner/repo")?;
-    let owner = owner.to_string();
-    let repo = repo.to_string();
     let pr_number = payload["pull_request"]["number"]
         .as_u64()
         .or_else(|| payload["issue"]["number"].as_u64())
         .context("webhook is missing pull request number")?;
     let token = state.auth.installation_token(installation_id).await?;
     let mut config = AppConfig::from_local_env()?;
-    config.github = GitHubConfig {
+    let identity = RepositoryIdentity::parse(&repository)?;
+    let (api_url, web_url) = github_host_urls(&identity);
+    config.source_control = crate::config::ScmConfig {
+        provider: "github".into(),
         token,
         repository,
-        owner,
-        repo,
-        pr_number,
-        api_url: std::env::var("GITHUB_API_URL")
-            .unwrap_or_else(|_| "https://api.github.com".to_string()),
-        server_url: std::env::var("GITHUB_SERVER_URL")
-            .unwrap_or_else(|_| "https://github.com".to_string()),
+        change_request_number: pr_number,
+        api_url,
+        web_url,
     };
-    let github = GitHubClient::new(&config.github)?;
+    let github = GitHubClient::from_scm_config(&config.source_control)?;
     Ok((config, github, installation_id))
 }
 
@@ -283,76 +280,87 @@ fn require_llm_api_key(config: &AppConfig) -> anyhow::Result<()> {
 async fn merge_shared_repository_config(
     state: &AppState,
     config: &mut AppConfig,
-    github: &GitHubClient,
+    source_control: &dyn ScmProvider,
     consumer_installation: u64,
 ) -> anyhow::Result<()> {
-    let base_sha = github.fetch_base_sha().await?;
-    let shared_token = if let Some(local_config) = github.fetch_config_toml(&base_sha).await? {
-        if let Some(shared) = AppConfig::shared_base_from_toml(&local_config)? {
-            match state
-                .auth
-                .installation_for_repository(&shared.repository)
-                .await?
-            {
-                Some(base_installation) if base_installation != consumer_installation => {
-                    Some(state.auth.installation_token(base_installation).await?)
+    let base_sha = source_control.fetch_base_sha().await?;
+    let shared_token =
+        if let Some(local_config) = source_control.fetch_config_toml(&base_sha).await? {
+            if let Some(shared) = AppConfig::shared_base_from_toml(&local_config)? {
+                match state
+                    .auth
+                    .installation_for_repository(&shared.repository)
+                    .await?
+                {
+                    Some(base_installation) if base_installation != consumer_installation => {
+                        Some(state.auth.installation_token(base_installation).await?)
+                    }
+                    _ => None,
                 }
-                _ => None,
+            } else {
+                None
             }
         } else {
             None
-        }
-    } else {
-        None
-    };
-    super::merge_repository_config_with_shared_token(config, github, shared_token.as_deref())
-        .await?;
+        };
+    super::merge_repository_config_with_shared_token(
+        config,
+        source_control,
+        shared_token.as_deref(),
+    )
+    .await?;
     Ok(())
 }
 
 async fn run_pull_request_review(
     state: &AppState,
     config: &AppConfig,
-    github: &GitHubClient,
+    source_control: &dyn ScmProvider,
     request_reviewer: bool,
     force: bool,
 ) -> anyhow::Result<()> {
-    let head_sha = github.fetch_head_sha().await?;
-    if !force && github.summary_has_head(&head_sha).await? {
+    let head_sha = source_control.fetch_head_sha().await?;
+    if !force && source_control.has_summary_for_revision(&head_sha).await? {
         return Ok(());
     }
     if request_reviewer {
         let login = format!("{}[bot]", state.app_slug);
-        match github.request_app_reviewer(&login).await {
-            Ok(true) => info!(%login, "GitHub accepted Cururu as a requested reviewer"),
+        match source_control.request_cururu_as_reviewer(&login).await {
+            Ok(true) => info!("SCM provider accepted Cururu as a requested reviewer"),
             Ok(false) => {
-                info!(%login, "GitHub does not accept this App bot as a requested reviewer");
+                info!("SCM provider does not accept Cururu as a requested reviewer");
             }
-            Err(error) => {
-                warn!(%error, "could not request Cururu as a reviewer; continuing with formal review");
+            Err(_) => {
+                warn!("could not request Cururu as a reviewer; continuing with formal review");
             }
         }
     }
 
-    let result = review::run_review(config, github).await?;
-    review::ensure_review_head_unchanged(&result.head_sha, &github.fetch_head_sha().await?)?;
+    let result = review::run_review(config, source_control).await?;
+    review::ensure_review_head_unchanged(
+        &result.head_sha,
+        &source_control.fetch_head_sha().await?,
+    )?;
     let report = quality::evaluate(&result.review, config.review.policy.fail_on);
     match config.review.comment_mode {
         CommentMode::Inline => {
-            github
+            source_control
                 .reconcile_review_comments(&result.head_sha, &build_inline_drafts(&result))
                 .await?;
         }
         CommentMode::Summary => {
-            github
+            source_control
                 .reconcile_review_comments(&result.head_sha, &[])
                 .await?;
         }
     }
     let bot_login = format!("{}[bot]", state.app_slug);
     let marker = format!("<!-- cururu:formal-review:v1 head={} -->", result.head_sha);
-    if !github.formal_review_exists(&marker, &bot_login).await? {
-        let review_id = github
+    if !source_control
+        .formal_review_exists(&marker, &bot_login)
+        .await?
+    {
+        let review_id = source_control
             .create_pending_formal_review(
                 &result.head_sha,
                 &format!(
@@ -360,22 +368,29 @@ async fn run_pull_request_review(
                 ),
             )
             .await?;
-        let current_head = match github.fetch_head_sha().await {
+        let current_head = match source_control.fetch_head_sha().await {
             Ok(head) => head,
             Err(error) => {
-                github.delete_pending_formal_review(review_id).await?;
+                source_control
+                    .delete_pending_formal_review(review_id)
+                    .await?;
                 return Err(error).context("failed to verify PR head before submitting review");
             }
         };
         if let Err(error) = review::ensure_review_head_unchanged(&result.head_sha, &current_head) {
-            github.delete_pending_formal_review(review_id).await?;
+            source_control
+                .delete_pending_formal_review(review_id)
+                .await?;
             return Err(error);
         }
-        github.submit_formal_review(review_id).await?;
+        source_control.submit_formal_review(review_id).await?;
     }
-    review::ensure_review_head_unchanged(&result.head_sha, &github.fetch_head_sha().await?)?;
+    review::ensure_review_head_unchanged(
+        &result.head_sha,
+        &source_control.fetch_head_sha().await?,
+    )?;
     let summary = output::render_summary_comment(&result);
-    github.upsert_summary_comment(&summary).await?;
+    source_control.upsert_summary_comment(&summary).await?;
     info!(
         findings = result.review.findings.len(),
         gate_passed = report.passed,
@@ -443,14 +458,16 @@ async fn process_review_comment(state: &AppState, payload: &Value) -> anyhow::Re
         return Ok(());
     }
     let (mut config, github, consumer_installation) = github_context(state, payload).await?;
+    let source_control: &dyn ScmProvider = &github;
     let is_reply_to_cururu = if let Some(parent_id) = parent_id {
-        github
+        source_control
             .list_review_comments()
             .await?
             .into_iter()
             .find(|comment| comment.id == parent_id)
             .is_some_and(|comment| {
-                GitHubClient::comment_is_cururu(&comment, Some(&format!("{}[bot]", state.app_slug)))
+                source_control
+                    .is_cururu_review_comment(&comment, Some(&format!("{}[bot]", state.app_slug)))
             })
     } else {
         false
@@ -458,11 +475,12 @@ async fn process_review_comment(state: &AppState, payload: &Value) -> anyhow::Re
     if !is_reply_to_cururu && !mention {
         return Ok(());
     }
-    if !github.user_can_review(&login).await? {
+    if !source_control.user_can_review(&login).await? {
         return Ok(());
     }
     require_llm_api_key(&config)?;
-    merge_shared_repository_config(state, &mut config, &github, consumer_installation).await?;
+    merge_shared_repository_config(state, &mut config, source_control, consumer_installation)
+        .await?;
     let number = payload["pull_request"]["number"]
         .as_u64()
         .context("review comment has no PR number")?;
@@ -474,7 +492,7 @@ async fn process_review_comment(state: &AppState, payload: &Value) -> anyhow::Re
     );
     answer_mention(
         state,
-        &github,
+        source_control,
         &config,
         MentionRequest {
             body: &question,
@@ -489,14 +507,14 @@ async fn process_review_comment(state: &AppState, payload: &Value) -> anyhow::Re
 
 async fn answer_mention(
     state: &AppState,
-    github: &GitHubClient,
+    source_control: &dyn ScmProvider,
     config: &AppConfig,
     request: MentionRequest<'_>,
 ) -> anyhow::Result<()> {
     if !state
         .store
         .allow_mention(
-            &config.github.repository,
+            &config.source_control.repository,
             request.pr_number,
             request.actor_login,
             MENTION_RATE_WINDOW_SECS,
@@ -504,30 +522,25 @@ async fn answer_mention(
         )
         .await?
     {
-        info!(
-            actor_login = %request.actor_login,
-            pr_number = request.pr_number,
-            "Cururu mention rate limit reached for this user and PR"
-        );
+        info!("Cururu mention rate limit reached");
         return Ok(());
     }
-    let diff = github.fetch_pr_diff_bounded(MAX_MENTION_DIFF_BYTES).await?;
-    let base_sha = github.fetch_base_sha().await?;
-    let context_files = crate::context::fetch_context(
-        &config.context,
-        &config.github.api_url,
-        &config.github.token,
-        &config.github.owner,
-        &config.github.repo,
-        &base_sha,
-    )
-    .await?;
+    let (diff, diff_truncated) = source_control
+        .fetch_diff_with_limit(MAX_MENTION_DIFF_BYTES)
+        .await?;
+    let base_sha = source_control.fetch_base_sha().await?;
+    let context_files =
+        crate::context::fetch_context(&config.context, source_control, &base_sha).await?;
+    let completeness_note = if diff_truncated {
+        "The diff excerpt is truncated; base the answer only on supplied evidence.\n\n"
+    } else {
+        ""
+    };
     let context = format!(
-        "Pull request #{}\n\nUntrusted PR diff (stream-limited to {MAX_MENTION_DIFF_BYTES} bytes):\n{diff}\n\nTrusted base-commit context:\n{}",
-        request.pr_number,
+        "Untrusted change-request diff (stream-limited to {MAX_MENTION_DIFF_BYTES} bytes):\n{completeness_note}{diff}\n\nTrusted base-revision context:\n{}",
         context_files.render()
     );
-    let answer = agent::answer_question(
+    let answer = agent::answer_conversation(
         &config.llm,
         &config.review.tone,
         &config.review.technical_level,
@@ -539,12 +552,14 @@ async fn answer_mention(
         return Ok(());
     }
     if let Some(comment_id) = request.reply_to {
-        github.reply_review_comment(comment_id, &answer).await
+        source_control
+            .reply_review_comment(comment_id, &answer)
+            .await
     } else {
         let response = request
             .mention_login
             .map_or_else(|| answer.clone(), |login| format!("@{login} {answer}"));
-        github.create_issue_comment(&response).await
+        source_control.create_issue_comment(&response).await
     }
 }
 

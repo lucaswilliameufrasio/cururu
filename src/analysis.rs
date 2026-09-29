@@ -1,5 +1,8 @@
 use crate::{
-    agent::ReviewFinding, config::AnalysisConfig, diff::ChangedFile, github::GitHubClient,
+    agent::ReviewFinding,
+    config::AnalysisConfig,
+    diff::ChangedFile,
+    scm::{FindingAnnotation, ScmProvider},
 };
 use anyhow::Context;
 use globset::{Glob, GlobSetBuilder};
@@ -109,7 +112,7 @@ pub async fn load_evidence(
     config: &AnalysisConfig,
     changed_files: &[ChangedFile],
     expected_head: &str,
-    github: &GitHubClient,
+    source_control: &dyn ScmProvider,
 ) -> anyhow::Result<AnalysisReport> {
     if !config.enabled {
         return Ok(AnalysisReport {
@@ -159,8 +162,8 @@ pub async fn load_evidence(
 
     let mut findings = load_sarif_paths(&sarif_paths, changed_files, config.max_findings)?;
     if config.check_runs {
-        let annotations = github
-            .list_check_annotations(expected_head, &config.check_run_names)
+        let annotations = source_control
+            .list_finding_annotations(expected_head, &config.check_run_names)
             .await?;
         let mut check_findings = annotations_to_findings(&annotations, changed_files);
         check_findings.truncate(config.max_findings.saturating_sub(findings.len()));
@@ -195,7 +198,7 @@ pub async fn load_evidence(
 }
 
 fn annotations_to_findings(
-    annotations: &[crate::github::CheckAnnotation],
+    annotations: &[FindingAnnotation],
     changed_files: &[ChangedFile],
 ) -> Vec<ReviewFinding> {
     let mut findings = Vec::new();
@@ -204,21 +207,18 @@ fn annotations_to_findings(
         if !changed_files.iter().any(|file| file.path == path) {
             continue;
         }
-        let line = annotation.start_line.or(annotation.end_line);
+        let line = annotation.line;
         let rule = annotation
             .title
             .clone()
             .unwrap_or_else(|| "check-run".into());
-        let severity = match annotation.annotation_level.as_str() {
+        let severity = match annotation.severity.as_str() {
             "failure" => "high",
             "warning" => "medium",
             _ => "low",
         };
         let message = if annotation.message.is_empty() {
-            annotation
-                .raw_details
-                .clone()
-                .unwrap_or_else(|| rule.clone())
+            annotation.details.clone().unwrap_or_else(|| rule.clone())
         } else {
             annotation.message.clone()
         };
@@ -358,6 +358,7 @@ fn collect_files(
 mod tests {
     use super::*;
     use crate::config::GitHubConfig;
+    use crate::github::GitHubClient;
     use tempfile::tempdir;
 
     fn dummy_github() -> GitHubClient {
@@ -442,23 +443,21 @@ mod tests {
     #[test]
     fn annotations_are_filtered_to_changed_files() {
         let annotations = vec![
-            crate::github::CheckAnnotation {
+            crate::scm::FindingAnnotation {
                 path: "src/main.rs".into(),
-                start_line: Some(3),
-                end_line: Some(3),
-                annotation_level: "failure".into(),
+                line: Some(3),
+                severity: "failure".into(),
                 message: "panic".into(),
                 title: Some("unwrap".into()),
-                raw_details: None,
+                details: None,
             },
-            crate::github::CheckAnnotation {
+            crate::scm::FindingAnnotation {
                 path: "src/other.rs".into(),
-                start_line: Some(1),
-                end_line: Some(1),
-                annotation_level: "warning".into(),
+                line: Some(1),
+                severity: "warning".into(),
                 message: "x".into(),
                 title: Some("clippy".into()),
-                raw_details: None,
+                details: None,
             },
         ];
         let changed = vec![ChangedFile {

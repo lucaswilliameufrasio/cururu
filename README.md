@@ -4,9 +4,10 @@
 
 ![cururu-github](https://the-counter.lucaswilliameufrasio.com/v1/badges/cururu-github?label=Visualiza%C3%A7%C3%B5es&label_color=%23555&color=%2350c700)
 
-A self-service Rust code reviewer for GitHub pull requests. Use the Action or CLI,
-or run the installable GitHub App yourself. Each repository controls its policy,
-model and context; secrets remain with the Action owner or App operator.
+Cururu is a self-service Rust reviewer for hosted change requests. Its core uses
+pluggable source-control and LLM interfaces; the current release ships GitHub
+Action, CLI, and installable GitHub App adapters. Each repository controls its
+policy, model and context; secrets remain with the Action owner or App operator.
 
 ```text
 pull_request event
@@ -275,13 +276,14 @@ to disable a URL inherited from a shared base.
 
 **`inline` (default)** — one review comment anchored to each finding's diff
 line, like a normal human review. Comments carry the severity, finding, and
-suggestion, with line-level highlights on the changed lines. On subsequent
-pushes Cururu updates comments that remain relevant and removes those that are
-no longer flagged, keeping the review in sync.
+suggestion, with line-level highlights on the changed lines. Previously
+published findings remain as history. On later reviews Cururu avoids posting a
+finding again when the same file and normalized finding content were already
+commented on, even if the line moved; new findings receive new comments.
 
-**`summary`** — a single compact comment in the PR conversation with a findings
-table, tokens, and cost. This is the previous behavior; it updates in place via
-a marker instead of duplicating.
+**`summary`** — a single compact comment in the change-request conversation
+with a findings table, tokens, and cost. It updates in place via a marker and
+does not remove historical inline comments.
 
 The action requires `pull-requests: write` and `issues: write` permissions to
 post inline comments and the summary comment respectively.
@@ -427,16 +429,27 @@ through the GitHub API and never executes code from the PR branch.
 ## Local development
 
 ```bash
-export GITHUB_TOKEN=ghp_xxx
-export GITHUB_REPOSITORY=owner/repo
-export PR_NUMBER=123
+export CURURU_SCM_TOKEN=token_xxx
+export CURURU_CHANGE_REQUEST_NUMBER=123
 export LLM_API_KEY=sk_xxx
 
+# If this checkout's origin remote does not identify the target repository:
+export CURURU_REPOSITORY=owner/repo
 cargo run -- print-diff
 cargo run -- dry-run
 cargo run -- review
 cargo run -- print-config
 ```
+
+The CLI resolves the repository from `CURURU_REPOSITORY` first, then from the
+checkout's `origin` remote. `GITHUB_REPOSITORY` remains supported for existing
+GitHub Actions workflows. `CURURU_CHANGE_REQUEST_NUMBER` and `CURURU_SCM_TOKEN`
+are the provider-neutral names; `PR_NUMBER` and `GITHUB_TOKEN` remain compatible
+aliases. When no change-request number is supplied, the GitHub adapter can
+resolve it with an authenticated `gh pr view` in the current checkout. This
+release ships the GitHub adapter; the core uses SCM and LLM
+provider interfaces so other adapters can be added without rewriting review
+logic.
 
 ### Using the CLI in a consuming repository
 
@@ -492,9 +505,9 @@ workflow permissions before enabling it.
 |---|---|---|
 | `cururu init` | Scaffold the config and Action workflow | Run in the consumer repository |
 | `cururu print-config` | Print merged local config without secrets | Local `.cururu.toml`; `GITHUB_TOKEN` or `CURURU_SHARED_CONFIG_TOKEN` for a shared remote base |
-| `cururu print-diff` | Print the current PR diff | `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `PR_NUMBER` |
-| `cururu dry-run` | Review a PR and print JSON without posting comments | GitHub PR context plus `LLM_API_KEY` |
-| `cururu review` | Review a PR and post/update comments | GitHub PR context plus `LLM_API_KEY` and write permissions |
+| `cururu print-diff` | Print the current change-request diff | SCM access token, active change-request context, and a repository identity from `CURURU_REPOSITORY` or the Git `origin` remote |
+| `cururu dry-run` | Review a change request and print JSON without posting comments | SCM context plus `LLM_API_KEY` |
+| `cururu review` | Review a change request and publish comments | SCM context plus `LLM_API_KEY` and write permissions |
 | `cururu serve` | Run the self-hosted GitHub App webhook service | GitHub App settings, `LLM_API_KEY`, and `CURURU_DATABASE_URL` |
 | `cururu backup-sqlite <path>` | Make an online SQLite backup | SQLite `CURURU_DATABASE_URL` and a new destination path |
 
@@ -521,7 +534,7 @@ prompt, or secrets.
 
 ```
 cururu init           Add a starter .cururu.toml and GitHub Actions workflow
-cururu print-diff     Print the PR diff
+  cururu print-diff     Print the change-request diff
 cururu dry-run        Review and print JSON, do not post comment
 cururu review         Review and post summary comment
 cururu print-config   Print merged configuration

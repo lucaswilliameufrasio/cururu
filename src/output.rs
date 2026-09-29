@@ -1,8 +1,8 @@
 use std::fmt::Write;
 
-use crate::agent::ReviewFinding;
 use crate::provider::ProviderUsage;
 use crate::review::ReviewOutput;
+use crate::{agent::ReviewFinding, config::Severity};
 
 const MARKER: &str = "<!-- cururu:summary -->";
 const FINDING_MARKER: &str = "<!-- cururu:finding -->";
@@ -15,8 +15,8 @@ pub const fn finding_marker() -> &'static str {
     FINDING_MARKER
 }
 
-/// Branded footer appended to every Cururu comment so the bot is recognizable
-/// regardless of which GitHub identity runs the workflow.
+/// Branded footer appended to every Cururu comment so the automation is recognizable
+/// regardless of which provider identity publishes it.
 pub fn render_signature(logo_url: Option<&str>) -> String {
     let mut out = String::new();
     out.push_str("\n\n---\n\n");
@@ -105,7 +105,11 @@ pub fn render_inline_finding(f: &ReviewFinding) -> String {
     let mut out = String::new();
     out.push_str(FINDING_MARKER);
     out.push_str("\n\n");
-    let _ = write!(out, "**{}**: {title}", f.severity.to_uppercase());
+    let severity = Severity::from_name(&f.severity).map_or_else(
+        || "Finding".to_string(),
+        |severity| severity.as_str().to_uppercase(),
+    );
+    let _ = write!(out, "**{severity}**: {title}");
     out.push('\n');
     let message = f.message.trim().replace('\n', " ");
     let suggestion = f.suggestion.trim().replace('\n', " ");
@@ -154,7 +158,7 @@ fn render_finding_row(f: &ReviewFinding) -> String {
     };
     format!(
         "| {} | `{}` | {} | {} | {} |\n",
-        escape_md(&f.severity),
+        escape_md(Severity::from_name(&f.severity).map_or("finding", Severity::as_str)),
         escape_md(&f.path),
         line_str,
         escape_md(&title),
@@ -194,6 +198,28 @@ mod tests {
         assert!(body.contains("**CRITICAL**: Command injection"));
         assert!(body.contains("Query is interpolated"));
         assert!(body.contains("**Sugestão:** Use Command::new"));
+    }
+
+    #[test]
+    fn inline_finding_does_not_publish_untrusted_severity_placeholder() {
+        let mut finding = finding();
+        finding.severity = "<LEVEL>".into();
+
+        let body = render_inline_finding(&finding);
+
+        assert!(!body.contains("<LEVEL>"));
+        assert!(body.contains("**Finding**: Command injection"));
+    }
+
+    #[test]
+    fn summary_row_does_not_publish_untrusted_severity_placeholder() {
+        let mut finding = finding();
+        finding.severity = "<LEVEL>".into();
+
+        let row = render_finding_row(&finding);
+
+        assert!(!row.contains("<LEVEL>"));
+        assert!(row.starts_with("| finding |"));
     }
 
     #[test]
@@ -255,6 +281,7 @@ mod tests {
             },
         };
         let body = render_summary_comment(&output);
+        assert!(body.contains("<!-- cururu:state:v1 head=head -->"));
         assert!(body.contains("_Cururu_"));
         assert!(body.contains("![Cururu](<https://example.test/cururu.svg>)"));
         assert!(!body.contains("(o)_(o)"));

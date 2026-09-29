@@ -119,6 +119,15 @@ impl Severity {
         }
     }
 
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Critical => "critical",
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+
     pub fn all() -> Vec<Self> {
         vec![Self::Critical, Self::High, Self::Medium, Self::Low]
     }

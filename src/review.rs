@@ -2,12 +2,11 @@ use crate::{
     agent, analysis,
     config::AppConfig,
     context::{self, ContextFile, ContextStore},
-    diff,
-    github::GitHubClient,
-    provider,
+    diff, provider,
+    scm::ScmProvider,
 };
 use anyhow::Context;
-use tracing::{info, warn};
+use tracing::info;
 
 const REVIEW_PROMPT: &str = include_str!("../prompts/review.md");
 
@@ -25,39 +24,50 @@ pub struct ReviewOutput {
     pub analysis: analysis::AnalysisReport,
 }
 
-pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Result<ReviewOutput> {
-    let head_sha = github.fetch_head_sha().await?;
-    let raw_diff = github
-        .fetch_pr_diff()
+#[allow(clippy::too_many_lines)]
+pub async fn run_review(
+    config: &AppConfig,
+    source_control: &dyn ScmProvider,
+) -> anyhow::Result<ReviewOutput> {
+    let head_sha = source_control.fetch_head_sha().await?;
+    let max_download_bytes = config.review.max_diff_bytes.saturating_mul(2);
+    let (raw_diff, truncated) = source_control
+        .fetch_diff_with_limit(max_download_bytes)
         .await
-        .context("failed to fetch PR diff")?;
-    ensure_review_head_unchanged(&head_sha, &github.fetch_head_sha().await?)?;
-
-    if raw_diff.len() > config.review.max_diff_bytes * 2 {
-        warn!(
-            bytes = raw_diff.len(),
-            "very large diff; will truncate after filtering/chunking"
-        );
-    }
+        .context("failed to fetch change-request diff")?;
+    anyhow::ensure!(
+        !truncated,
+        "change-request diff exceeds the configured review download limit; increase review.max_diff_bytes or split the change"
+    );
+    ensure_review_head_unchanged(&head_sha, &source_control.fetch_head_sha().await?)?;
 
     let files = diff::filter_ignored(diff::parse_unified_diff(&raw_diff), &config.review.ignore);
+    ensure_review_diff_limits(
+        &files,
+        config.review.chunk_bytes,
+        config.review.max_diff_bytes,
+    )?;
     let chunks = diff::chunk_files(
         &files,
         config.review.chunk_bytes,
         config.review.max_diff_bytes,
     );
-    info!(files = files.len(), chunks = chunks.len(), pr = %github.pr_url(), "reviewing PR diff");
+    info!(
+        files = files.len(),
+        chunks = chunks.len(),
+        "reviewing change-request diff"
+    );
 
-    let mut context_store = fetch_repo_context(config, github).await?;
+    let mut context_store = fetch_repo_context(config, source_control).await?;
     if config.context.auto.enabled {
-        append_auto_context(config, github, &mut context_store, &files).await?;
+        append_auto_context(config, source_control, &mut context_store, &files).await?;
     }
     let context_rendered = if context_store.is_empty() {
         String::new()
     } else {
         context_store.render()
     };
-    let prior_feedback = github.fetch_prior_review_feedback().await?;
+    let prior_feedback = source_control.fetch_prior_review_feedback().await?;
     info!(
         files = context_store.files.len(),
         "loaded repository context"
@@ -99,7 +109,7 @@ pub async fn run_review(config: &AppConfig, github: &GitHubClient) -> anyhow::Re
     let model = config.llm.model.clone();
     let usage = provider::merge_usage(&chunk_results);
     let analysis_report =
-        analysis::load_evidence(&config.analysis, &files, &head_sha, github).await?;
+        analysis::load_evidence(&config.analysis, &files, &head_sha, source_control).await?;
     let review = agent::merge_results(
         model.clone(),
         files.len(),
@@ -157,14 +167,34 @@ fn build_review_system_prompt(
 pub fn ensure_review_head_unchanged(expected: &str, current: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         expected == current,
-        "PR head changed during review (started at {expected}, now {current}); refusing to publish stale findings"
+        "PR head changed during review; any already-published findings remain anchored to the analyzed revision, and a fresh review is required"
+    );
+    Ok(())
+}
+
+fn ensure_review_diff_limits(
+    files: &[diff::ChangedFile],
+    chunk_bytes: usize,
+    max_diff_bytes: usize,
+) -> anyhow::Result<()> {
+    let total_bytes = files
+        .iter()
+        .map(|file| file.patch.len())
+        .fold(0usize, usize::saturating_add);
+    anyhow::ensure!(
+        total_bytes <= max_diff_bytes,
+        "filtered change-request diff exceeds review.max_diff_bytes; increase the limit or split the change"
+    );
+    anyhow::ensure!(
+        files.iter().all(|file| file.patch.len() <= chunk_bytes),
+        "a changed file exceeds review.chunk_bytes; increase the chunk size or split the change"
     );
     Ok(())
 }
 
 async fn fetch_repo_context(
     config: &AppConfig,
-    github: &GitHubClient,
+    source_control: &dyn ScmProvider,
 ) -> anyhow::Result<context::ContextStore> {
     if config.context.conventions.is_empty()
         && config.context.specifications.is_empty()
@@ -178,30 +208,23 @@ async fn fetch_repo_context(
         });
     }
 
-    let base_sha = github
+    let base_sha = source_control
         .fetch_base_sha()
         .await
         .context("failed to fetch base commit SHA for context resolution")?;
 
-    context::fetch_context(
-        &config.context,
-        &config.github.api_url,
-        &config.github.token,
-        &config.github.owner,
-        &config.github.repo,
-        &base_sha,
-    )
-    .await
-    .context("failed to fetch repository context")
+    context::fetch_context(&config.context, source_control, &base_sha)
+        .await
+        .context("failed to fetch repository context")
 }
 
 async fn append_auto_context(
     config: &AppConfig,
-    github: &GitHubClient,
+    source_control: &dyn ScmProvider,
     store: &mut ContextStore,
     files: &[diff::ChangedFile],
 ) -> anyhow::Result<()> {
-    let base_sha = github.fetch_base_sha().await?;
+    let base_sha = source_control.fetch_base_sha().await?;
     let auto = &config.context.auto;
     let include = compile_globs(&auto.include)?;
     let exclude = compile_globs(&auto.exclude)?;
@@ -221,7 +244,10 @@ async fn append_auto_context(
             continue;
         }
 
-        let Ok(content) = github.fetch_file_at_ref(&changed.path, &base_sha).await else {
+        let Ok(content) = source_control
+            .fetch_file_at_ref(&changed.path, &base_sha)
+            .await
+        else {
             continue;
         };
         let remaining = auto.max_bytes.saturating_sub(total);
@@ -264,13 +290,34 @@ mod tests {
     use super::{build_review_system_prompt, ensure_review_head_unchanged};
 
     #[test]
+    fn rejects_review_inputs_that_would_be_silently_truncated() {
+        let files = vec![crate::diff::ChangedFile {
+            path: "src/a.rs".into(),
+            patch: "a patch longer than limits".into(),
+            right_lines: vec![1],
+        }];
+        assert!(
+            super::ensure_review_diff_limits(&files, 100, 10)
+                .unwrap_err()
+                .to_string()
+                .contains("max_diff_bytes")
+        );
+        assert!(
+            super::ensure_review_diff_limits(&files, 10, 100)
+                .unwrap_err()
+                .to_string()
+                .contains("chunk_bytes")
+        );
+    }
+
+    #[test]
     fn rejects_review_results_when_pull_request_head_changed() {
         assert!(ensure_review_head_unchanged("abc", "abc").is_ok());
         let error = ensure_review_head_unchanged("abc", "def").unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("refusing to publish stale findings")
+                .contains("already-published findings remain anchored")
         );
     }
 

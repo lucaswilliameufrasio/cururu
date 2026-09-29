@@ -79,9 +79,10 @@ guarantee. Assume a sufficiently crafted diff can influence the review text.
   validation (`is_valid_anchor` in `diff.rs`): a comment can only be created on
   a line that is actually changed in the diff. Injection cannot make the bot
   annotate arbitrary files or lines.
-- **No merge authority.** Cururu only creates, updates and deletes inline
-  review comments. It never submits approving or blocking review events, never
-  merges, and cannot dismiss human reviews. The quality gate
+- **No merge authority.** Cururu creates findings and summary comments and may
+  submit a non-approving `COMMENT` review event. It does not edit or delete
+  historical finding comments, never submits approving or blocking review
+  events, never merges, and cannot dismiss human reviews. The quality gate
   (`fail_on`, severity counts) is computed from the structured JSON the
   maintainer configured — not from free text.
 - **Advisory only.** Treat Cururu's comments as one reviewer's opinion. Do not
@@ -90,7 +91,8 @@ guarantee. Assume a sufficiently crafted diff can influence the review text.
 **Residual risk:** the review comment itself is LLM-generated text published on
 a public PR. A successful injection can produce a wrong, misleading, or
 embarrassing comment, and can suppress real findings. This is accepted risk:
-comments are advisory, reversible, and reconciled on the next run.
+comments are advisory and historical findings are preserved. A human maintainer
+may need to remove a comment that is wrong or inappropriate.
 
 ### Injection through repository context
 

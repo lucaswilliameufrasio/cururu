@@ -1,8 +1,7 @@
 use std::fmt::Write;
 
-use crate::config::ContextConfig;
+use crate::{config::ContextConfig, scm::ScmProvider};
 use anyhow::Context;
-use serde::Deserialize;
 use tracing::warn;
 
 #[derive(Debug, Clone)]
@@ -50,32 +49,15 @@ impl ContextStore {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct GitTree {
-    tree: Vec<TreeEntry>,
-    truncated: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct TreeEntry {
-    path: String,
-    #[serde(rename = "type")]
-    kind: String,
-}
-
 pub async fn fetch_context(
     config: &ContextConfig,
-    api_url: &str,
-    token: &str,
-    owner: &str,
-    repo: &str,
+    source_control: &dyn ScmProvider,
     base_sha: &str,
 ) -> anyhow::Result<ContextStore> {
-    let client = reqwest::Client::builder()
-        .user_agent("cururu/0.1")
-        .build()?;
-
-    let tree_paths = fetch_tree(&client, api_url, token, owner, repo, base_sha).await?;
+    let tree_paths = source_control
+        .list_repository_paths_at_revision(base_sha)
+        .await
+        .context("failed to list repository paths for context matching")?;
 
     let mut files = Vec::new();
     let mut truncated = Vec::new();
@@ -106,14 +88,10 @@ pub async fn fetch_context(
                     truncated.push((*p).clone());
                     continue;
                 }
-                let content =
-                    match fetch_raw(&client, api_url, token, owner, repo, base_sha, p).await {
-                        Ok(c) => c,
-                        Err(e) => {
-                            warn!(path = %p, error = %e, "failed to fetch context file");
-                            continue;
-                        }
-                    };
+                let Ok(content) = source_control.fetch_file_at_ref(p, base_sha).await else {
+                    warn!("failed to fetch a context file from the SCM provider");
+                    continue;
+                };
 
                 let remaining = config.max_bytes.saturating_sub(total_bytes);
                 if content.len() > remaining {
@@ -141,67 +119,6 @@ pub async fn fetch_context(
         truncated,
         skipped,
     })
-}
-
-async fn fetch_tree(
-    client: &reqwest::Client,
-    api_url: &str,
-    token: &str,
-    owner: &str,
-    repo: &str,
-    sha: &str,
-) -> anyhow::Result<Vec<String>> {
-    let url = format!("{api_url}/repos/{owner}/{repo}/git/trees/{sha}?recursive=1");
-    let resp: GitTree = client
-        .get(&url)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2026-03-10")
-        .bearer_auth(token)
-        .send()
-        .await
-        .with_context(|| "failed to fetch git tree")?
-        .error_for_status()
-        .with_context(|| "git tree API error")?
-        .json()
-        .await
-        .with_context(|| "failed to parse git tree")?;
-
-    if resp.truncated {
-        warn!("git tree response was truncated; context file resolution may be incomplete");
-    }
-
-    Ok(resp
-        .tree
-        .into_iter()
-        .filter(|e| e.kind == "blob")
-        .map(|e| e.path)
-        .collect())
-}
-
-async fn fetch_raw(
-    client: &reqwest::Client,
-    api_url: &str,
-    token: &str,
-    owner: &str,
-    repo: &str,
-    sha: &str,
-    path: &str,
-) -> anyhow::Result<String> {
-    let url = format!("{api_url}/repos/{owner}/{repo}/contents/{path}?ref={sha}");
-    let text = client
-        .get(&url)
-        .header("Accept", "application/vnd.github.raw")
-        .header("X-GitHub-Api-Version", "2026-03-10")
-        .bearer_auth(token)
-        .send()
-        .await
-        .with_context(|| "failed to fetch file content")?
-        .error_for_status()
-        .with_context(|| "file content API error")?
-        .text()
-        .await
-        .with_context(|| "failed to read file content")?;
-    Ok(text)
 }
 
 fn match_path(path: &str, pattern: &str) -> bool {

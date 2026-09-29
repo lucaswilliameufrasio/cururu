@@ -9,8 +9,10 @@ mod github;
 mod output;
 mod provider;
 mod quality;
+mod repository;
 mod retry;
 mod review;
+mod scm;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -22,7 +24,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 #[command(
     name = "cururu",
     version,
-    about = "Self-service code review for GitHub pull requests"
+    about = "Self-service code review for hosted change requests"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -40,11 +42,11 @@ enum Command {
         /// Destination path for the backup copy.
         destination: std::path::PathBuf,
     },
-    /// Review the current PR and post a GitHub summary comment.
+    /// Review the current change request and publish a summary comment.
     Review,
-    /// Review the PR and print the JSON result without posting to GitHub.
+    /// Review the change request and print JSON without publishing comments.
     DryRun,
-    /// Fetch and print the PR diff.
+    /// Fetch and print the change-request diff.
     PrintDiff,
     /// Print the merged configuration.
     PrintConfig,
@@ -85,15 +87,17 @@ async fn main() -> anyhow::Result<()> {
                     let shared_token = std::env::var("CURURU_SHARED_CONFIG_TOKEN")
                         .ok()
                         .filter(|token| !token.is_empty())
-                        .unwrap_or_else(|| config.github.token.clone());
+                        .unwrap_or_else(|| config.source_control.token.clone());
                     if shared_token.is_empty() {
                         anyhow::bail!(
                             "GITHUB_TOKEN or CURURU_SHARED_CONFIG_TOKEN is required to inspect a private or remote shared base"
                         );
                     }
-                    let mut shared_github_config = config.github.clone();
+                    let mut shared_github_config = config.source_control.clone();
                     shared_github_config.token = shared_token;
-                    let shared_github = github::GitHubClient::new(&shared_github_config)?;
+                    let shared_github: Box<dyn scm::ScmProvider> = Box::new(
+                        github::GitHubClient::from_scm_config(&shared_github_config)?,
+                    );
                     let shared_raw = shared_github
                         .fetch_repository_file_at_ref(
                             &shared.repository,
@@ -109,8 +113,7 @@ async fn main() -> anyhow::Result<()> {
                         .context("invalid shared base configuration")?;
                     config.merge_toml_str(&AppConfig::compose_toml(&shared_raw, &local_raw)?)?;
                     println!(
-                        "Merged shared configuration from {}/{} at {}.",
-                        shared.repository, shared.path, shared.commit
+                        "Merged shared configuration from the configured source-control base."
                     );
                 } else {
                     config.merge_toml_str(&local_raw)?;
@@ -139,9 +142,14 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let mut config = AppConfig::from_env().context("failed to load configuration")?;
-    let github = github::GitHubClient::new(&config.github)?;
+    if matches!(cli.command, Command::Review | Command::DryRun) {
+        config.require_llm_api_key()?;
+    }
+    let source_control: Box<dyn scm::ScmProvider> = Box::new(
+        github::GitHubClient::from_scm_config(&config.source_control)?,
+    );
     if let Some(command) = &issue_comment_command
-        && !github.user_can_review(&command.login).await?
+        && !source_control.user_can_review(&command.login).await?
     {
         return Ok(());
     }
@@ -150,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
         cli.command,
         Command::PrintConfig | Command::Review | Command::DryRun
     ) {
-        let loaded = merge_repository_config(&mut config, &github).await?;
+        let loaded = merge_repository_config(&mut config, source_control.as_ref()).await?;
         if matches!(cli.command, Command::PrintConfig) {
             if loaded {
                 println!("Merged configuration from trusted base commit:");
@@ -175,12 +183,16 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Init => unreachable!("handled before loading runtime configuration"),
         Command::PrintDiff => {
-            let diff = github.fetch_pr_diff().await?;
+            let (diff, truncated) = source_control.fetch_diff_with_limit(usize::MAX).await?;
+            anyhow::ensure!(
+                !truncated,
+                "change-request diff exceeded the maximum supported output size"
+            );
             println!("{diff}");
         }
         Command::PrintConfig => {}
         Command::DryRun => {
-            let result = review::run_review(&config, &github).await?;
+            let result = review::run_review(&config, source_control.as_ref()).await?;
             let report = quality::evaluate(&result.review, config.review.policy.fail_on);
             write_action_outputs(&report)?;
             write_analysis_outputs(&result.analysis)?;
@@ -191,16 +203,19 @@ async fn main() -> anyhow::Result<()> {
                 .ok()
                 .filter(|sha| !sha.trim().is_empty());
             if let Some(expected) = &expected_head_sha {
-                review::ensure_review_head_unchanged(expected, &github.fetch_head_sha().await?)?;
+                review::ensure_review_head_unchanged(
+                    expected,
+                    &source_control.fetch_head_sha().await?,
+                )?;
             }
             if config.review.policy.incremental {
-                let head_sha = github.fetch_head_sha().await?;
-                if github.summary_has_head(&head_sha).await? {
-                    println!("Cururu: review already exists for head {head_sha}");
+                let head_sha = source_control.fetch_head_sha().await?;
+                if source_control.has_summary_for_revision(&head_sha).await? {
+                    println!("Cururu: review already exists for the current revision");
                     return Ok(());
                 }
             }
-            let result = review::run_review(&config, &github).await?;
+            let result = review::run_review(&config, source_control.as_ref()).await?;
             if let Some(expected) = &expected_head_sha {
                 review::ensure_review_head_unchanged(expected, &result.head_sha)?;
             }
@@ -212,32 +227,32 @@ async fn main() -> anyhow::Result<()> {
                 CommentMode::Inline => {
                     review::ensure_review_head_unchanged(
                         &result.head_sha,
-                        &github.fetch_head_sha().await?,
+                        &source_control.fetch_head_sha().await?,
                     )?;
                     let drafts = build_inline_drafts(&result);
-                    github
+                    source_control
                         .reconcile_review_comments(&result.head_sha, &drafts)
                         .await?;
                     // Keep a compact summary in the PR conversation as well.
                     review::ensure_review_head_unchanged(
                         &result.head_sha,
-                        &github.fetch_head_sha().await?,
+                        &source_control.fetch_head_sha().await?,
                     )?;
                     let body = output::render_summary_comment(&result);
-                    github.upsert_summary_comment(&body).await?;
+                    source_control.upsert_summary_comment(&body).await?;
                 }
                 CommentMode::Summary => {
                     review::ensure_review_head_unchanged(
                         &result.head_sha,
-                        &github.fetch_head_sha().await?,
+                        &source_control.fetch_head_sha().await?,
                     )?;
                     let body = output::render_summary_comment(&result);
-                    github.upsert_summary_comment(&body).await?;
+                    source_control.upsert_summary_comment(&body).await?;
                 }
             }
             review::ensure_review_head_unchanged(
                 &result.head_sha,
-                &github.fetch_head_sha().await?,
+                &source_control.fetch_head_sha().await?,
             )?;
 
             println!("{}", serde_json::to_string_pretty(&result.review)?);
@@ -255,44 +270,41 @@ async fn main() -> anyhow::Result<()> {
 
 async fn merge_repository_config(
     config: &mut AppConfig,
-    github: &github::GitHubClient,
+    source_control: &dyn scm::ScmProvider,
 ) -> anyhow::Result<bool> {
     let shared_token = std::env::var("CURURU_SHARED_CONFIG_TOKEN")
         .ok()
         .filter(|token| !token.is_empty());
-    merge_repository_config_with_shared_token(config, github, shared_token.as_deref()).await
+    merge_repository_config_with_shared_token(config, source_control, shared_token.as_deref()).await
 }
 
 async fn merge_repository_config_with_shared_token(
     config: &mut AppConfig,
-    github: &github::GitHubClient,
+    source_control: &dyn scm::ScmProvider,
     shared_token: Option<&str>,
 ) -> anyhow::Result<bool> {
-    let base_sha = github
+    let base_sha = source_control
         .fetch_base_sha()
         .await
         .context("failed to resolve trusted PR base")?;
-    let Some(local_raw) = github.fetch_config_toml(&base_sha).await? else {
+    let Some(local_raw) = source_control.fetch_config_toml(&base_sha).await? else {
         return Ok(false);
     };
 
     let mut validation = config.clone();
     validation.merge_toml_str(&local_raw)?;
     if let Some(shared) = AppConfig::shared_base_from_toml(&local_raw)? {
-        let mut shared_github_config = config.github.clone();
+        let mut shared_github_config = config.source_control.clone();
         if let Some(token) = shared_token {
             shared_github_config.token = token.to_string();
         }
-        let shared_github = github::GitHubClient::new(&shared_github_config)?;
+        let shared_github: Box<dyn scm::ScmProvider> = Box::new(
+            github::GitHubClient::from_scm_config(&shared_github_config)?,
+        );
         let shared_raw = shared_github
             .fetch_repository_file_at_ref(&shared.repository, &shared.path, &shared.commit)
             .await
-            .with_context(|| {
-                format!(
-                    "failed to load shared config {}/{} at {} (verify GitHub installation access)",
-                    shared.repository, shared.path, shared.commit
-                )
-            })?;
+            .context("failed to load shared config; verify source-control access")?;
         if AppConfig::shared_base_from_toml(&shared_raw)?.is_some() {
             anyhow::bail!(
                 "shared configuration cannot extend another base (recursive references are disabled)"
@@ -421,8 +433,11 @@ fn print_redacted_config(config: &AppConfig) {
     println!("model: {}", config.llm.model);
     println!("temperature: {}", config.llm.temperature);
     println!("max_output_tokens: {}", config.llm.max_output_tokens);
-    println!("repository: {}", config.github.repository);
-    println!("pr_number: {}", config.github.pr_number);
+    println!("repository: {}", config.source_control.repository);
+    println!(
+        "change_request_number: {}",
+        config.source_control.change_request_number
+    );
     println!("review.max_diff_bytes: {}", config.review.max_diff_bytes);
     println!("review.chunk_bytes: {}", config.review.chunk_bytes);
     println!("review.language: {}", config.review.language);
@@ -441,7 +456,7 @@ fn print_redacted_config(config: &AppConfig) {
 
 /// Build review comment drafts from findings. Findings with a valid diff line
 /// are anchored inline; others fall back to a file-level comment.
-fn build_inline_drafts(result: &review::ReviewOutput) -> Vec<github::ReviewCommentDraft> {
+fn build_inline_drafts(result: &review::ReviewOutput) -> Vec<scm::ReviewCommentDraft> {
     result
         .review
         .findings
@@ -450,7 +465,7 @@ fn build_inline_drafts(result: &review::ReviewOutput) -> Vec<github::ReviewComme
             let line = f
                 .line
                 .filter(|line| diff::is_valid_anchor(&result.changed_files, &f.path, *line));
-            github::ReviewCommentDraft {
+            scm::ReviewCommentDraft {
                 path: f.path.clone(),
                 line,
                 body: output::render_inline_finding(f),

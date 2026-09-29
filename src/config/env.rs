@@ -2,6 +2,7 @@ use anyhow::anyhow;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use std::env;
 
+#[cfg(test)]
 pub(super) fn env_required(name: &str) -> anyhow::Result<String> {
     let val = env::var(name).map_err(|_| anyhow!("missing env var {name}"))?;
     if val.is_empty() {
