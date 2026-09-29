@@ -1,8 +1,15 @@
-use crate::config::GitHubConfig;
+use crate::config::{GitHubConfig, ScmConfig};
 use crate::output;
+use crate::repository::{RepositoryIdentity, validate_github_adapter};
 use crate::retry::retry_with_backoff;
+use crate::scm::{
+    FindingAnnotation, PriorReviewComment, PriorReviewFeedback, ReviewComment, ReviewCommentDraft,
+    ScmIdentity, ScmProvider,
+};
 use anyhow::Context;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::time::Duration;
 
 fn url_encode(value: &str) -> String {
@@ -30,6 +37,17 @@ struct PullRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct PullRequestFilePatch {
+    filename: String,
+    #[serde(default)]
+    previous_filename: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    patch: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct PullRef {
     sha: String,
     #[serde(rename = "ref")]
@@ -47,6 +65,19 @@ struct GitRefObject {
 }
 
 #[derive(Debug, Deserialize)]
+struct GitHubTree {
+    tree: Vec<GitHubTreeEntry>,
+    truncated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubTreeEntry {
+    path: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct CollaboratorPermission {
     permission: String,
 }
@@ -54,7 +85,7 @@ struct CollaboratorPermission {
 #[derive(Debug, Deserialize)]
 struct PullRequestReview {
     body: Option<String>,
-    user: Option<CommentUser>,
+    user: Option<ScmIdentity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -66,14 +97,7 @@ struct AuthenticatedUser {
 struct IssueComment {
     id: u64,
     body: Option<String>,
-    user: Option<CommentUser>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CommentUser {
-    pub login: String,
-    #[serde(rename = "type")]
-    pub kind: String,
+    user: Option<ScmIdentity>,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,41 +105,9 @@ struct CreateIssueComment<'a> {
     body: &'a str,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ReviewComment {
-    pub id: u64,
-    #[serde(default)]
-    pub in_reply_to_id: Option<u64>,
-    pub body: Option<String>,
-    pub user: Option<CommentUser>,
-    pub path: String,
-    pub line: Option<u32>,
-    #[allow(dead_code)]
-    pub subject_type: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PriorReviewFeedback {
-    pub location: String,
-    pub comments: Vec<PriorReviewComment>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PriorReviewComment {
-    pub author: String,
-    pub body: String,
-}
-
 #[derive(Debug, Serialize)]
 struct ReviewCommentBody<'a> {
     body: &'a str,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReviewCommentDraft {
-    pub path: String,
-    pub line: Option<u32>,
-    pub body: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,7 +145,7 @@ struct RequestReviewers<'a> {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct CheckAnnotation {
+struct GitHubCheckAnnotation {
     pub path: String,
     #[serde(rename = "start_line")]
     pub start_line: Option<u32>,
@@ -184,6 +176,26 @@ struct CheckRun {
 }
 
 impl GitHubClient {
+    pub fn from_scm_config(config: &ScmConfig) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            config.provider.eq_ignore_ascii_case("github"),
+            "the configured source-control provider is not implemented by this adapter"
+        );
+        let identity = RepositoryIdentity::parse(&config.repository)?;
+        validate_github_adapter(&identity, &config.provider)?;
+        let (owner, repo) = identity.owner_and_repository()?;
+        let adapter_config = GitHubConfig {
+            token: config.token.clone(),
+            repository: format!("{owner}/{repo}"),
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            pr_number: config.change_request_number,
+            api_url: config.api_url.clone(),
+            server_url: config.web_url.clone(),
+        };
+        Self::new(&adapter_config)
+    }
+
     pub fn new(cfg: &GitHubConfig) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .user_agent("cururu/0.1")
@@ -194,70 +206,207 @@ impl GitHubClient {
         })
     }
 
-    pub async fn fetch_pr_diff(&self) -> anyhow::Result<String> {
-        let url = format!(
-            "{}/repos/{}/{}/pulls/{}",
-            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
-        );
-        retry_with_backoff(
-            || async {
-                self.client
-                    .get(&url)
-                    .timeout(Duration::from_secs(15))
-                    .header("Accept", "application/vnd.github.v3.diff")
-                    .header("X-GitHub-Api-Version", "2026-03-10")
-                    .bearer_auth(&self.cfg.token)
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .text()
-                    .await
-                    .context("failed to fetch PR diff")
-            },
-            3,
-        )
-        .await
-    }
-
-    pub async fn fetch_pr_diff_bounded(&self, max_bytes: usize) -> anyhow::Result<String> {
+    pub async fn fetch_pr_diff_with_limit(
+        &self,
+        max_bytes: usize,
+    ) -> anyhow::Result<(String, bool)> {
         if max_bytes == 0 {
-            return Ok(String::new());
+            return Ok((String::new(), false));
         }
         let url = format!(
             "{}/repos/{}/{}/pulls/{}",
             self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
         );
-        retry_with_backoff(
+        let mut response = retry_with_backoff(
             || async {
-                let mut response = self
-                    .client
+                self.client
                     .get(&url)
                     .timeout(Duration::from_secs(15))
-                    .header("Accept", "application/vnd.github.v3.diff")
+                    .header("Accept", "application/vnd.github.diff")
                     .header("X-GitHub-Api-Version", "2026-03-10")
                     .bearer_auth(&self.cfg.token)
                     .send()
-                    .await?
-                    .error_for_status()
-                    .context("GitHub rejected the PR diff request")?;
-
-                let mut diff = Vec::with_capacity(max_bytes.min(64 * 1024));
-                while diff.len() < max_bytes {
-                    let Some(chunk) = response.chunk().await.context("failed to stream PR diff")?
-                    else {
-                        break;
-                    };
-                    let copy_len = (max_bytes - diff.len()).min(chunk.len());
-                    diff.extend_from_slice(&chunk[..copy_len]);
-                    if copy_len < chunk.len() {
-                        break;
-                    }
-                }
-                Ok(String::from_utf8_lossy(&diff).into_owned())
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("transport error while fetching pull request diff")
+                    })
             },
             3,
         )
-        .await
+        .await?;
+
+        if response.status() == reqwest::StatusCode::NOT_ACCEPTABLE {
+            return self.fetch_pr_diff_from_files(max_bytes).await;
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = read_response_prefix(&mut response, 4096).await;
+            let body = String::from_utf8_lossy(&body);
+            let detail = self.safe_provider_detail(&body);
+            anyhow::bail!(
+                "pull request diff request failed (HTTP {status}){}",
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                }
+            );
+        }
+
+        let read_limit = max_bytes.saturating_add(1);
+        let mut diff = Vec::with_capacity(read_limit.min(64 * 1024));
+        while diff.len() < read_limit {
+            let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|_| anyhow::anyhow!("failed while streaming pull request diff"))?
+            else {
+                break;
+            };
+            let copy_len = (read_limit - diff.len()).min(chunk.len());
+            diff.extend_from_slice(&chunk[..copy_len]);
+            if copy_len < chunk.len() {
+                break;
+            }
+        }
+        let truncated = diff.len() > max_bytes;
+        diff.truncate(max_bytes);
+        Ok((String::from_utf8_lossy(&diff).into_owned(), truncated))
+    }
+
+    async fn fetch_pr_diff_from_files(&self, max_bytes: usize) -> anyhow::Result<(String, bool)> {
+        const PAGE_SIZE: usize = 100;
+        const MAX_FILES: usize = 3_000;
+        let mut result = String::new();
+        let mut page = 1usize;
+        let mut file_count = 0usize;
+        let mut missing_patches = 0usize;
+        let mut truncated = false;
+
+        loop {
+            let url = format!(
+                "{}/repos/{}/{}/pulls/{}/files?per_page={PAGE_SIZE}&page={page}",
+                self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+            );
+            let mut response = retry_with_backoff(
+                || async {
+                    self.client
+                        .get(&url)
+                        .timeout(Duration::from_secs(30))
+                        .header("Accept", "application/vnd.github+json")
+                        .header("X-GitHub-Api-Version", "2026-03-10")
+                        .bearer_auth(&self.cfg.token)
+                        .send()
+                        .await
+                        .map_err(|_| {
+                            anyhow::anyhow!("transport error while fetching changed-file patches")
+                        })
+                },
+                3,
+            )
+            .await?;
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = read_response_prefix(&mut response, 4096).await;
+                let body = String::from_utf8_lossy(&body);
+                let detail = self.safe_provider_detail(&body);
+                anyhow::bail!(
+                    "changed-file patch request failed (HTTP {status}){}",
+                    if detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {detail}")
+                    }
+                );
+            }
+
+            let files: Vec<PullRequestFilePatch> = response
+                .json()
+                .await
+                .map_err(|_| anyhow::anyhow!("invalid changed-file patch response"))?;
+            let page_len = files.len();
+            for file in files {
+                file_count += 1;
+                if file_count > MAX_FILES {
+                    anyhow::bail!("changed-file patch fallback exceeded the supported file count");
+                }
+                let Some(patch) = file.patch else {
+                    missing_patches += 1;
+                    continue;
+                };
+                let old_path = file.previous_filename.as_deref().unwrap_or(&file.filename);
+                let mut file_diff = format!("diff --git a/{old_path} b/{}\n", file.filename);
+                match file.status.as_deref() {
+                    Some("added") => file_diff.push_str("--- /dev/null\n"),
+                    _ => {
+                        let _ = writeln!(file_diff, "--- a/{old_path}");
+                    }
+                }
+                match file.status.as_deref() {
+                    Some("removed") => file_diff.push_str("+++ /dev/null\n"),
+                    _ => {
+                        let _ = writeln!(file_diff, "+++ b/{}", file.filename);
+                    }
+                }
+                file_diff.push_str(&patch);
+                if !file_diff.ends_with('\n') {
+                    file_diff.push('\n');
+                }
+                if result.len().saturating_add(file_diff.len()) > max_bytes {
+                    truncated = true;
+                    break;
+                }
+                result.push_str(&file_diff);
+            }
+
+            if truncated || page_len < PAGE_SIZE {
+                break;
+            }
+            page += 1;
+        }
+
+        if missing_patches > 0 {
+            anyhow::bail!(
+                "the host omitted patches for {missing_patches} changed file(s); refusing to publish an incomplete review"
+            );
+        }
+        Ok((result, truncated))
+    }
+
+    fn safe_provider_detail(&self, body: &str) -> String {
+        let mut detail = serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| body.to_string());
+        let mut values = vec![
+            self.cfg.token.as_str(),
+            self.cfg.repository.as_str(),
+            self.cfg.owner.as_str(),
+            self.cfg.repo.as_str(),
+            self.cfg.api_url.as_str(),
+            self.cfg.server_url.as_str(),
+        ];
+        let encoded_repository = url_encode(&self.cfg.repository);
+        values.push(&encoded_repository);
+        let pull_number = self.cfg.pr_number.to_string();
+        values.push(&pull_number);
+        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        for value in values.into_iter().filter(|value| !value.is_empty()) {
+            if let Ok(pattern) = regex::RegexBuilder::new(&regex::escape(value))
+                .case_insensitive(true)
+                .build()
+            {
+                detail = pattern.replace_all(&detail, "[redacted]").into_owned();
+            }
+        }
+        detail.chars().take(500).collect()
     }
 
     pub async fn fetch_base_sha(&self) -> anyhow::Result<String> {
@@ -405,6 +554,45 @@ impl GitHubClient {
             .context("failed to read shared config")
     }
 
+    pub async fn list_repository_paths_at_revision(
+        &self,
+        sha: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        let url = format!(
+            "{}/repos/{}/{}/git/trees/{}?recursive=1",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, sha
+        );
+        let tree: GitHubTree = retry_with_backoff(
+            || async {
+                self.client
+                    .get(&url)
+                    .timeout(Duration::from_secs(30))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await
+                    .context("failed to list repository tree")
+            },
+            3,
+        )
+        .await?;
+        if tree.truncated {
+            tracing::warn!(
+                "source-control tree response was truncated; context matching may be incomplete"
+            );
+        }
+        Ok(tree
+            .tree
+            .into_iter()
+            .filter(|entry| entry.kind == "blob")
+            .map(|entry| entry.path)
+            .collect())
+    }
+
     pub async fn user_can_review(&self, login: &str) -> anyhow::Result<bool> {
         let url = format!(
             "{}/repos/{}/{}/collaborators/{}/permission",
@@ -464,7 +652,7 @@ impl GitHubClient {
     ///
     /// Prefers the authenticated login when available; otherwise matches bots
     /// whose comments carry the exclusive Cururu marker.
-    fn user_is_cururu(user: Option<&CommentUser>, own_login: Option<&str>) -> bool {
+    fn user_is_cururu(user: Option<&ScmIdentity>, own_login: Option<&str>) -> bool {
         let user_login = user.map(|u| u.login.as_str());
         let is_bot = user.is_some_and(|u| u.kind == "Bot");
         own_login.is_some_and(|own| user_login == Some(own)) || (own_login.is_none() && is_bot)
@@ -520,7 +708,7 @@ impl GitHubClient {
         &self,
         head_sha: &str,
         names: &[String],
-    ) -> anyhow::Result<Vec<CheckAnnotation>> {
+    ) -> anyhow::Result<Vec<FindingAnnotation>> {
         let runs_url = format!(
             "{}/repos/{}/{}/commits/{}/check-runs?per_page=100",
             self.cfg.api_url, self.cfg.owner, self.cfg.repo, head_sha
@@ -556,7 +744,7 @@ impl GitHubClient {
                 "{}/repos/{}/{}/check-runs/{}/annotations?per_page=100",
                 self.cfg.api_url, self.cfg.owner, self.cfg.repo, run.id
             );
-            let mut page: Vec<CheckAnnotation> = retry_with_backoff(
+            let page: Vec<GitHubCheckAnnotation> = retry_with_backoff(
                 || async {
                     self.client
                         .get(&ann_url)
@@ -567,41 +755,59 @@ impl GitHubClient {
                         .send()
                         .await?
                         .error_for_status()?
-                        .json::<Vec<CheckAnnotation>>()
+                        .json::<Vec<GitHubCheckAnnotation>>()
                         .await
                         .context("failed to list check annotations")
                 },
                 3,
             )
             .await?;
-            annotations.append(&mut page);
+            annotations.extend(page.into_iter().map(|annotation| FindingAnnotation {
+                path: annotation.path,
+                line: annotation.start_line.or(annotation.end_line),
+                severity: annotation.annotation_level,
+                title: annotation.title,
+                message: annotation.message,
+                details: annotation.raw_details,
+            }));
         }
         Ok(annotations)
     }
 
     pub async fn list_review_comments(&self) -> anyhow::Result<Vec<ReviewComment>> {
-        let url = format!(
-            "{}/repos/{}/{}/pulls/{}/comments?per_page=100",
-            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
-        );
-        retry_with_backoff(
-            || async {
-                self.client
-                    .get(&url)
-                    .timeout(Duration::from_secs(15))
-                    .header("Accept", "application/vnd.github+json")
-                    .header("X-GitHub-Api-Version", "2026-03-10")
-                    .bearer_auth(&self.cfg.token)
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .json::<Vec<ReviewComment>>()
-                    .await
-                    .context("failed to list review comments")
-            },
-            3,
-        )
-        .await
+        const PAGE_SIZE: usize = 100;
+        const MAX_PAGES: usize = 100;
+        let mut comments = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let url = format!(
+                "{}/repos/{}/{}/pulls/{}/comments?per_page={PAGE_SIZE}&page={page}",
+                self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+            );
+            let mut page_comments: Vec<ReviewComment> = retry_with_backoff(
+                || async {
+                    self.client
+                        .get(&url)
+                        .timeout(Duration::from_secs(15))
+                        .header("Accept", "application/vnd.github+json")
+                        .header("X-GitHub-Api-Version", "2026-03-10")
+                        .bearer_auth(&self.cfg.token)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .json::<Vec<ReviewComment>>()
+                        .await
+                        .context("failed to list review comments")
+                },
+                3,
+            )
+            .await?;
+            let is_last_page = page_comments.len() < PAGE_SIZE;
+            comments.append(&mut page_comments);
+            if is_last_page {
+                return Ok(comments);
+            }
+        }
+        anyhow::bail!("review comment history exceeds the supported pagination limit")
     }
 
     /// Collect bounded human and Cururu replies to prior findings. Historical
@@ -954,39 +1160,6 @@ impl GitHubClient {
         Ok(true)
     }
 
-    pub async fn update_review_comment(&self, id: u64, body: &str) -> anyhow::Result<()> {
-        let url = format!(
-            "{}/repos/{}/{}/pulls/comments/{}",
-            self.cfg.api_url, self.cfg.owner, self.cfg.repo, id
-        );
-        retry_with_backoff(
-            || async {
-                let resp = self
-                    .client
-                    .patch(&url)
-                    .timeout(Duration::from_secs(15))
-                    .header("Accept", "application/vnd.github+json")
-                    .header("X-GitHub-Api-Version", "2026-03-10")
-                    .bearer_auth(&self.cfg.token)
-                    .json(&ReviewCommentBody { body })
-                    .send()
-                    .await
-                    .context("failed to send update review comment request")?;
-                let status = resp.status();
-                if !status.is_success() {
-                    let detail = resp
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "(unreadable body)".to_string());
-                    anyhow::bail!("failed to update review comment ({status}): {detail}");
-                }
-                Ok(())
-            },
-            3,
-        )
-        .await
-    }
-
     pub async fn reply_review_comment(&self, id: u64, body: &str) -> anyhow::Result<()> {
         let url = format!(
             "{}/repos/{}/{}/pulls/{}/comments/{id}/replies",
@@ -1007,44 +1180,9 @@ impl GitHubClient {
         Ok(())
     }
 
-    pub async fn delete_review_comment(&self, id: u64) -> anyhow::Result<()> {
-        let url = format!(
-            "{}/repos/{}/{}/pulls/comments/{}",
-            self.cfg.api_url, self.cfg.owner, self.cfg.repo, id
-        );
-        retry_with_backoff(
-            || async {
-                let resp = self
-                    .client
-                    .delete(&url)
-                    .timeout(Duration::from_secs(15))
-                    .header("Accept", "application/vnd.github+json")
-                    .header("X-GitHub-Api-Version", "2026-03-10")
-                    .bearer_auth(&self.cfg.token)
-                    .send()
-                    .await
-                    .context("failed to send delete review comment request")?;
-                let status = resp.status();
-                if !status.is_success() {
-                    let detail = resp
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "(unreadable body)".to_string());
-                    anyhow::bail!("failed to delete review comment ({status}): {detail}");
-                }
-                Ok(())
-            },
-            3,
-        )
-        .await
-    }
-
-    /// Reconcile inline review comments so the PR matches the desired set.
-    ///
-    /// Existing Cururu comments are matched by (path, line); those still
-    /// desired are updated in place, new ones are created, and stale ones are
-    /// deleted. Falls back to the file-level comment (`subject_type = "file"`)
-    /// for findings without a valid line anchor.
+    /// Publish new inline findings while preserving all previously published
+    /// comments as review history. Duplicate findings are identified by path
+    /// and normalized body, independent of their current diff line.
     pub async fn reconcile_review_comments(
         &self,
         head_sha: &str,
@@ -1057,28 +1195,22 @@ impl GitHubClient {
             .filter(|c| Self::comment_is_cururu(c, own_login.as_deref()))
             .collect();
 
-        // Map desired comments by (path, line) key so multiple findings on the
+        // Map desired comments by (path, line) so multiple findings on the
         // same line merge into one comment.
         let desired_map = merge_desired_by_anchor(desired);
 
-        for comment in &cururu_existing {
-            let key = (comment.path.clone(), comment.line);
-            if let Some(new_body) = desired_map.get(&key) {
-                if comment.body.as_deref().is_some_and(|b| b != new_body) {
-                    self.update_review_comment(comment.id, new_body).await?;
-                }
-            } else {
-                self.delete_review_comment(comment.id).await?;
-            }
-        }
-
-        let existing_keys: std::collections::HashSet<(String, Option<u32>)> = cururu_existing
+        let existing_findings: std::collections::HashSet<(String, String)> = cururu_existing
             .iter()
-            .map(|c| (c.path.clone(), c.line))
+            .filter_map(|comment| {
+                comment
+                    .body
+                    .as_deref()
+                    .map(|body| (comment.path.clone(), normalize_finding_content(body)))
+            })
             .collect();
 
         for (key, body) in &desired_map {
-            if !existing_keys.contains(key) {
+            if !existing_findings.contains(&(key.0.clone(), normalize_finding_content(body))) {
                 self.create_review_comment(head_sha, &key.0, key.1, body)
                     .await?;
             }
@@ -1215,17 +1347,133 @@ impl GitHubClient {
         )
         .await
     }
+}
 
-    pub fn pr_url(&self) -> String {
-        format!(
-            "{}/{}/pull/{}",
-            self.cfg.server_url, self.cfg.repository, self.cfg.pr_number
-        )
+#[async_trait]
+impl ScmProvider for GitHubClient {
+    async fn fetch_head_sha(&self) -> anyhow::Result<String> {
+        Self::fetch_head_sha(self).await
+    }
+
+    async fn fetch_diff_with_limit(&self, max_bytes: usize) -> anyhow::Result<(String, bool)> {
+        Self::fetch_pr_diff_with_limit(self, max_bytes).await
+    }
+
+    async fn fetch_base_sha(&self) -> anyhow::Result<String> {
+        Self::fetch_base_sha(self).await
+    }
+
+    async fn fetch_file_at_ref(&self, path: &str, revision: &str) -> anyhow::Result<String> {
+        Self::fetch_file_at_ref(self, path, revision).await
+    }
+
+    async fn list_repository_paths_at_revision(
+        &self,
+        revision: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        Self::list_repository_paths_at_revision(self, revision).await
+    }
+
+    async fn fetch_prior_review_feedback(&self) -> anyhow::Result<Vec<PriorReviewFeedback>> {
+        Self::fetch_prior_review_feedback(self).await
+    }
+
+    async fn list_finding_annotations(
+        &self,
+        revision: &str,
+        source_names: &[String],
+    ) -> anyhow::Result<Vec<FindingAnnotation>> {
+        Self::list_check_annotations(self, revision, source_names).await
+    }
+
+    async fn list_review_comments(&self) -> anyhow::Result<Vec<ReviewComment>> {
+        Self::list_review_comments(self).await
+    }
+
+    async fn reconcile_review_comments(
+        &self,
+        revision: &str,
+        desired: &[ReviewCommentDraft],
+    ) -> anyhow::Result<()> {
+        Self::reconcile_review_comments(self, revision, desired).await
+    }
+
+    async fn has_summary_for_revision(&self, revision: &str) -> anyhow::Result<bool> {
+        Self::summary_has_head(self, revision).await
+    }
+
+    async fn upsert_summary_comment(&self, body: &str) -> anyhow::Result<()> {
+        Self::upsert_summary_comment(self, body).await
+    }
+
+    async fn create_issue_comment(&self, body: &str) -> anyhow::Result<()> {
+        Self::create_issue_comment(self, body).await
+    }
+
+    async fn reply_review_comment(&self, comment_id: u64, body: &str) -> anyhow::Result<()> {
+        Self::reply_review_comment(self, comment_id, body).await
+    }
+
+    async fn user_can_review(&self, login: &str) -> anyhow::Result<bool> {
+        Self::user_can_review(self, login).await
+    }
+
+    async fn request_cururu_as_reviewer(&self, login: &str) -> anyhow::Result<bool> {
+        Self::request_app_reviewer(self, login).await
+    }
+
+    async fn formal_review_exists(&self, marker: &str, login: &str) -> anyhow::Result<bool> {
+        Self::formal_review_exists(self, marker, login).await
+    }
+
+    async fn create_pending_formal_review(
+        &self,
+        revision: &str,
+        body: &str,
+    ) -> anyhow::Result<u64> {
+        Self::create_pending_formal_review(self, revision, body).await
+    }
+
+    async fn delete_pending_formal_review(&self, review_id: u64) -> anyhow::Result<()> {
+        Self::delete_pending_formal_review(self, review_id).await
+    }
+
+    async fn submit_formal_review(&self, review_id: u64) -> anyhow::Result<()> {
+        Self::submit_formal_review(self, review_id).await
+    }
+
+    async fn fetch_config_toml(&self, revision: &str) -> anyhow::Result<Option<String>> {
+        Self::fetch_config_toml(self, revision).await
+    }
+
+    async fn fetch_repository_file_at_ref(
+        &self,
+        repository: &str,
+        path: &str,
+        revision: &str,
+    ) -> anyhow::Result<String> {
+        Self::fetch_repository_file_at_ref(self, repository, path, revision).await
+    }
+
+    fn is_cururu_review_comment(&self, comment: &ReviewComment, login: Option<&str>) -> bool {
+        Self::comment_is_cururu(comment, login)
     }
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
+}
+
+async fn read_response_prefix(response: &mut reqwest::Response, max_bytes: usize) -> Vec<u8> {
+    let mut body = Vec::with_capacity(max_bytes.min(1024));
+    while body.len() < max_bytes {
+        let Ok(Some(chunk)) = response.chunk().await else {
+            break;
+        };
+        let remaining = max_bytes - body.len();
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    body
 }
 
 fn bound_review_feedback(
@@ -1272,6 +1520,14 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
         .collect()
 }
 
+fn normalize_finding_content(body: &str) -> String {
+    body.replace(output::finding_marker(), "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
 /// Group desired comments by (path, line) so findings on the same anchor merge
 /// into a single comment body.
 fn merge_desired_by_anchor(
@@ -1302,6 +1558,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/repos/owner/repo/pulls/1"))
+            .and(header("accept", "application/vnd.github.diff"))
             .respond_with(ResponseTemplate::new(200).set_body_string("0123456789".repeat(100)))
             .mount(&server)
             .await;
@@ -1316,12 +1573,139 @@ mod tests {
         })
         .unwrap();
 
-        let diff = client.fetch_pr_diff_bounded(32).await.unwrap();
+        let (diff, truncated) = client.fetch_pr_diff_with_limit(32).await.unwrap();
+        assert!(truncated);
         assert_eq!(diff, "0123456789".repeat(3) + "01");
     }
 
     #[tokio::test]
-    async fn empty_review_reconciliation_deletes_previous_cururu_inline_comments() {
+    async fn diff_http_errors_include_safe_detail_without_repository_identifiers() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/private-owner/private-repo/pulls/81"))
+            .and(header("accept", "application/vnd.github.diff"))
+            .respond_with(ResponseTemplate::new(406).set_body_json(serde_json::json!({
+                "message": "Could not generate diff for private-owner/private-repo pull 81"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/private-owner/private-repo/pulls/81/files"))
+            .respond_with(ResponseTemplate::new(406).set_body_json(serde_json::json!({
+                "message": "Could not generate diff for private-owner/private-repo pull 81"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "secret-token".into(),
+            repository: "private-owner/private-repo".into(),
+            owner: "private-owner".into(),
+            repo: "private-repo".into(),
+            pr_number: 81,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+
+        let error = client
+            .fetch_pr_diff_with_limit(4096)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("HTTP 406"));
+        assert!(error.contains("Could not generate diff"));
+        assert!(!error.contains("private-owner"));
+        assert!(!error.contains("private-repo"));
+        assert!(!error.contains("secret-token"));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_paginated_file_patches_when_host_rejects_full_diff() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1"))
+            .and(header("accept", "application/vnd.github.diff"))
+            .respond_with(ResponseTemplate::new(406).set_body_json(serde_json::json!({
+                "message": "Diff representation unavailable"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1/files"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "1"))
+            .and(header("accept", "application/vnd.github+json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "filename": "src/lib.rs",
+                    "status": "modified",
+                    "patch": "@@ -1 +1 @@\n-old()\n+new()"
+                }
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+
+        let (diff, truncated) = client.fetch_pr_diff_with_limit(4096).await.unwrap();
+
+        assert!(!truncated);
+        assert!(diff.contains("diff --git a/src/lib.rs b/src/lib.rs"));
+        assert!(diff.contains("@@ -1 +1 @@\n-old()\n+new()"));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn refuses_file_patch_fallback_when_host_omits_any_patch() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1"))
+            .respond_with(ResponseTemplate::new(406))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1/files"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"filename":"assets/image.bin","status":"modified"}
+            ])))
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+
+        let error = client
+            .fetch_pr_diff_with_limit(4096)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("host omitted patches for 1 changed file"));
+    }
+
+    #[tokio::test]
+    async fn empty_review_reconciliation_preserves_previous_cururu_inline_comments() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/repos/owner/repo/pulls/1/comments"))
@@ -1340,7 +1724,13 @@ mod tests {
         Mock::given(method("DELETE"))
             .and(path("/repos/owner/repo/pulls/comments/7"))
             .respond_with(ResponseTemplate::new(204))
-            .expect(1)
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/owner/repo/pulls/comments/7"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
             .mount(&server)
             .await;
         let client = GitHubClient::new(&GitHubConfig {
@@ -1356,6 +1746,202 @@ mod tests {
 
         client
             .reconcile_review_comments("head-sha", &[])
+            .await
+            .unwrap();
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn review_reconciliation_does_not_repeat_same_finding_after_line_moves() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": 7,
+                    "body": "<!-- cururu:finding -->\n\n**HIGH**: Unsafe input\n\nThe value reaches a shell.",
+                    "user": {"login": "cururu[bot]", "type": "Bot"},
+                    "path": "src/lib.rs",
+                    "line": 12,
+                    "subject_type": "line"
+                }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/pulls/1/comments"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+
+        client
+            .reconcile_review_comments(
+                "new-head",
+                &[ReviewCommentDraft {
+                    path: "src/lib.rs".into(),
+                    line: Some(20),
+                    body: "<!-- cururu:finding --> \n **high**:\n Unsafe Input   The value reaches a shell.".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn review_finding_deduplication_checks_comment_pages_beyond_the_first() {
+        let server = MockServer::start().await;
+        let first_page: Vec<_> = (1..=100)
+            .map(|id| {
+                serde_json::json!({
+                    "id": id,
+                    "body": "human discussion",
+                    "user": {"login": "reviewer", "type": "User"},
+                    "path": "src/lib.rs",
+                    "line": 1,
+                    "subject_type": "line"
+                })
+            })
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1/comments"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(first_page))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1/comments"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": 101,
+                    "body": "<!-- cururu:finding -->\n\n**HIGH**: Unsafe input\n\nThe value reaches a shell.",
+                    "user": {"login": "cururu[bot]", "type": "Bot"},
+                    "path": "src/lib.rs",
+                    "line": 12,
+                    "subject_type": "line"
+                }
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/pulls/1/comments"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+
+        client
+            .reconcile_review_comments(
+                "new-head",
+                &[ReviewCommentDraft {
+                    path: "src/lib.rs".into(),
+                    line: Some(30),
+                    body: "<!-- cururu:finding -->\n\n**HIGH**: Unsafe input\n\nThe value reaches a shell.".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn changed_finding_is_added_without_editing_or_deleting_its_history() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": 7,
+                    "body": "<!-- cururu:finding -->\n\n**HIGH**: Unsafe input\n\nOld explanation.",
+                    "user": {"login": "cururu[bot]", "type": "Bot"},
+                    "path": "src/lib.rs",
+                    "line": 12,
+                    "subject_type": "line"
+                }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/pulls/1/comments"))
+            .and(body_json(serde_json::json!({
+                "body": "<!-- cururu:finding -->\n\n**HIGH**: Unsafe input\n\nNew explanation.",
+                "commit_id": "new-head",
+                "path": "src/lib.rs",
+                "line": 12
+            })))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/owner/repo/pulls/comments/7"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/owner/repo/pulls/comments/7"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+
+        client
+            .reconcile_review_comments(
+                "new-head",
+                &[ReviewCommentDraft {
+                    path: "src/lib.rs".into(),
+                    line: Some(12),
+                    body: "<!-- cururu:finding -->\n\n**HIGH**: Unsafe input\n\nNew explanation."
+                        .into(),
+                }],
+            )
             .await
             .unwrap();
         server.verify().await;
@@ -1594,7 +2180,7 @@ mod tests {
             id: 1,
             in_reply_to_id: None,
             body: Some(body.into()),
-            user: Some(CommentUser {
+            user: Some(ScmIdentity {
                 login: login.into(),
                 kind: kind.into(),
             }),

@@ -8,14 +8,13 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn base_config() -> AppConfig {
     AppConfig {
-        github: GitHubConfig {
+        source_control: ScmConfig {
+            provider: "github".into(),
             token: "test-token".into(),
             repository: "owner/repo".into(),
-            owner: "owner".into(),
-            repo: "repo".into(),
-            pr_number: 42,
+            change_request_number: 42,
             api_url: "https://api.github.com".into(),
-            server_url: "https://github.com".into(),
+            web_url: "https://github.com".into(),
         },
         llm: LlmConfig {
             provider: LlmProvider::OpenRouter,
@@ -34,6 +33,7 @@ fn base_config() -> AppConfig {
             technical_level: "intermediate".into(),
             suggestion_detail: "detailed".into(),
             comment_mode: CommentMode::Inline,
+            recommendations: false,
             policy: ReviewPolicy::default(),
         },
         context: ContextConfig::default(),
@@ -52,6 +52,15 @@ fn loads_review_tone_and_suggestion_detail() {
     assert_eq!(cfg.review.tone, "didactic");
     assert_eq!(cfg.review.technical_level, "beginner");
     assert_eq!(cfg.review.suggestion_detail, "standard");
+}
+
+#[test]
+fn recommendations_are_opt_in_and_can_be_enabled_in_toml() {
+    let mut cfg = base_config();
+    assert!(!cfg.review.recommendations);
+    cfg.merge_toml_str("version = 1\n[review]\nrecommendations = true\n")
+        .unwrap();
+    assert!(cfg.review.recommendations);
 }
 
 #[test]
@@ -305,6 +314,106 @@ fn env_var_overrides_toml_provider() {
                         cfg.merge_toml_str("version = 1\n[provider]\nname = \"groq\"\n")
                             .unwrap();
                         assert_eq!(cfg.llm.provider, LlmProvider::OpenRouter);
+                    });
+                });
+            });
+        });
+    });
+}
+
+#[test]
+fn local_scm_config_uses_neutral_repository_and_credential_overrides() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    temp_env::with_var(
+        "CURURU_REPOSITORY",
+        Some("https://github.example/team/service.git"),
+        || {
+            temp_env::with_var("GITHUB_REPOSITORY", None::<&str>, || {
+                temp_env::with_var("CURURU_SCM_TOKEN", Some("scm-token"), || {
+                    temp_env::with_var("GITHUB_TOKEN", None::<&str>, || {
+                        temp_env::with_var("CURURU_CHANGE_REQUEST_NUMBER", Some("42"), || {
+                            temp_env::with_var("PR_NUMBER", None::<&str>, || {
+                                temp_env::with_var("LLM_API_KEY", Some("llm-key"), || {
+                                    temp_env::with_var("CURURU_SCM_PROVIDER", None::<&str>, || {
+                                        temp_env::with_var(
+                                            "CURURU_SCM_API_URL",
+                                            Some("https://api.github.example/v3"),
+                                            || {
+                                                temp_env::with_var(
+                                                    "CURURU_SCM_SERVER_URL",
+                                                    Some("https://github.example"),
+                                                    || {
+                                                        temp_env::with_var(
+                                                            "GITHUB_API_URL",
+                                                            None::<&str>,
+                                                            || {
+                                                                temp_env::with_var(
+                                                                    "GITHUB_SERVER_URL",
+                                                                    None::<&str>,
+                                                                    || {
+                                                                        let config =
+                                                                            AppConfig::from_env()
+                                                                                .unwrap();
+                                                                        assert_eq!(
+                                                                            config
+                                                                                .source_control
+                                                                                .repository,
+                                                                            "team/service"
+                                                                        );
+                                                                        assert_eq!(config.source_control.change_request_number, 42);
+                                                                        assert_eq!(
+                                                                            config
+                                                                                .source_control
+                                                                                .token,
+                                                                            "scm-token"
+                                                                        );
+                                                                        assert_eq!(
+                                                                            config
+                                                                                .source_control
+                                                                                .web_url,
+                                                                            "https://github.example"
+                                                                        );
+                                                                        assert_eq!(
+                                                                            config
+                                                                                .source_control
+                                                                                .api_url,
+                                                                            "https://api.github.example/v3"
+                                                                        );
+                                                                    },
+                                                                );
+                                                            },
+                                                        );
+                                                    },
+                                                );
+                                            },
+                                        );
+                                    });
+                                });
+                            });
+                        });
+                    });
+                });
+            });
+        },
+    );
+}
+
+#[test]
+fn loading_scm_context_does_not_require_llm_credentials_for_diff_only_commands() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    temp_env::with_var("CURURU_REPOSITORY", None::<&str>, || {
+        temp_env::with_var("GITHUB_REPOSITORY", Some("owner/repo"), || {
+            temp_env::with_var("CURURU_SCM_TOKEN", None::<&str>, || {
+                temp_env::with_var("GITHUB_TOKEN", Some("scm-token"), || {
+                    temp_env::with_var("CURURU_CHANGE_REQUEST_NUMBER", None::<&str>, || {
+                        temp_env::with_var("PR_NUMBER", Some("42"), || {
+                            temp_env::with_var("LLM_API_KEY", None::<&str>, || {
+                                let config = AppConfig::from_env().unwrap();
+                                assert_eq!(config.source_control.change_request_number, 42);
+                                assert!(config.llm.api_key.is_empty());
+                                assert!(config.require_llm_api_key().is_err());
+                            });
+                        });
                     });
                 });
             });

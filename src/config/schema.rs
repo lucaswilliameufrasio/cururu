@@ -64,6 +64,8 @@ pub(super) struct ReviewToml {
     #[serde(default)]
     pub(super) comment_mode: Option<String>,
     #[serde(default)]
+    pub(super) recommendations: Option<bool>,
+    #[serde(default)]
     pub(super) profile: Option<String>,
 }
 

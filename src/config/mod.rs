@@ -5,6 +5,7 @@ mod github;
 mod provider;
 mod review;
 mod schema;
+mod scm;
 mod summary;
 
 #[cfg(test)]
@@ -15,6 +16,7 @@ pub use context::ContextConfig;
 pub use github::GitHubConfig;
 pub use provider::{LlmConfig, LlmProvider};
 pub use review::{CommentMode, FailOn, ReviewConfig, ReviewPolicy, Severity};
+pub use scm::ScmConfig;
 pub use summary::SummaryConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +31,7 @@ use schema::CururuToml;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
-    pub github: GitHubConfig,
+    pub source_control: ScmConfig,
     pub llm: LlmConfig,
     pub review: ReviewConfig,
     pub context: ContextConfig,
@@ -59,21 +61,38 @@ impl AppConfig {
                 .with_context(|| format!("invalid CURURU_FAIL_ON: {value}"))?;
         }
 
-        let repository = env::env_optional("GITHUB_REPOSITORY").unwrap_or_default();
-        let (owner, repo) = repository.split_once('/').unwrap_or(("", ""));
-        let owner = owner.to_string();
-        let repo = repo.to_string();
+        let scm_provider =
+            std::env::var("CURURU_SCM_PROVIDER").unwrap_or_else(|_| "github".to_string());
+        let identity = crate::repository::github_identity_from_environment()?;
+        if let Some(identity) = &identity {
+            crate::repository::validate_github_adapter(identity, &scm_provider)?;
+        }
+        let repository = if let Some(identity) = &identity {
+            let (owner, repo) = identity.owner_and_repository()?;
+            format!("{owner}/{repo}")
+        } else {
+            String::new()
+        };
+        let (api_url, server_url) = identity.as_ref().map_or_else(
+            || {
+                let default_identity = crate::repository::RepositoryIdentity {
+                    host: None,
+                    path: "owner/repository".into(),
+                };
+                crate::repository::github_host_urls(&default_identity)
+            },
+            crate::repository::github_host_urls,
+        );
         Ok(Self {
-            github: GitHubConfig {
-                token: env::env_optional("GITHUB_TOKEN").unwrap_or_default(),
+            source_control: ScmConfig {
+                provider: scm_provider,
+                token: env::env_optional("CURURU_SCM_TOKEN")
+                    .or_else(|| env::env_optional("GITHUB_TOKEN"))
+                    .unwrap_or_default(),
                 repository,
-                owner,
-                repo,
-                pr_number: 0,
-                api_url: std::env::var("GITHUB_API_URL")
-                    .unwrap_or_else(|_| "https://api.github.com".to_string()),
-                server_url: std::env::var("GITHUB_SERVER_URL")
-                    .unwrap_or_else(|_| "https://github.com".to_string()),
+                change_request_number: 0,
+                api_url,
+                web_url: server_url,
             },
             llm: LlmConfig {
                 provider,
@@ -92,6 +111,7 @@ impl AppConfig {
                 technical_level: "intermediate".into(),
                 suggestion_detail: "detailed".into(),
                 comment_mode: CommentMode::Inline,
+                recommendations: false,
                 policy,
             },
             context: ContextConfig::default(),
@@ -163,27 +183,37 @@ impl AppConfig {
 
     pub fn from_env() -> anyhow::Result<Self> {
         let mut config = Self::from_local_env()?;
-        let repository = env::env_required("GITHUB_REPOSITORY")?;
-        let (owner, repo) = repository
-            .split_once('/')
-            .context("GITHUB_REPOSITORY must be owner/repo")?;
-        let owner = owner.to_string();
-        let repo = repo.to_string();
+        anyhow::ensure!(
+            !config.source_control.repository.is_empty(),
+            "repository not configured; set CURURU_REPOSITORY or add an origin remote to this Git checkout"
+        );
 
-        let pr_number = env::env_optional("PR_NUMBER")
+        let pr_number = env::env_optional("CURURU_CHANGE_REQUEST_NUMBER")
+            .or_else(|| env::env_optional("PR_NUMBER"))
             .or_else(|| {
                 env::env_optional("GITHUB_REF_NAME")
                     .and_then(|v| v.split('/').next().map(String::from))
             })
             .and_then(|v| v.parse::<u64>().ok())
-            .context("set PR_NUMBER env var")?;
-        config.github.token = env::env_required("GITHUB_TOKEN")?;
-        config.github.repository = repository;
-        config.github.owner = owner;
-        config.github.repo = repo;
-        config.github.pr_number = pr_number;
-        config.llm.api_key = env::env_required("LLM_API_KEY")?;
+            .or_else(|| {
+                crate::repository::change_request_number_from_host_cli(
+                    &config.source_control.provider,
+                )
+            })
+            .context("set CURURU_CHANGE_REQUEST_NUMBER or PR_NUMBER, or use an authenticated host CLI in an active change-request checkout")?;
+        config.source_control.token = env::env_optional("CURURU_SCM_TOKEN")
+            .or_else(|| env::env_optional("GITHUB_TOKEN"))
+            .context("set CURURU_SCM_TOKEN (or GITHUB_TOKEN) env var")?;
+        config.source_control.change_request_number = pr_number;
         Ok(config)
+    }
+
+    pub fn require_llm_api_key(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.llm.api_key.is_empty(),
+            "LLM_API_KEY is required for review generation"
+        );
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -274,6 +304,9 @@ impl AppConfig {
                 && let Some(m) = CommentMode::from_name(&mode)
             {
                 self.review.comment_mode = m;
+            }
+            if let Some(recommendations) = tr.recommendations {
+                self.review.recommendations = recommendations;
             }
 
             if env::env_optional("CURURU_PROFILE").is_none()

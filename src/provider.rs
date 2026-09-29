@@ -28,6 +28,8 @@ pub struct ChatResponse {
 #[derive(Debug, Deserialize)]
 pub struct Choice {
     pub message: AssistantMessage,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,9 +119,7 @@ pub fn merge_usage(results: &[super::agent::ChunkResult]) -> Option<ProviderUsag
         total.reasoning_tokens += u.reasoning_tokens;
         total.cost = match (total.cost, u.cost) {
             (Some(a), Some(b)) => Some(a + b),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
+            _ => None,
         };
     }
     Some(total)
@@ -127,7 +127,40 @@ pub fn merge_usage(results: &[super::agent::ChunkResult]) -> Option<ProviderUsag
 
 #[cfg(test)]
 mod tests {
-    use super::ChatResponse;
+    use super::{ChatResponse, ProviderUsage, merge_usage};
+    use crate::agent::{ChunkResult, ReviewResult};
+
+    fn chunk(cost: Option<f64>) -> ChunkResult {
+        ChunkResult {
+            review: ReviewResult {
+                model: "model".into(),
+                files_reviewed: 1,
+                summary: String::new(),
+                findings: vec![],
+            },
+            usage: Some(ProviderUsage {
+                prompt_tokens: 1,
+                completion_tokens: 2,
+                total_tokens: 3,
+                cached_tokens: 0,
+                reasoning_tokens: 0,
+                cost,
+            }),
+        }
+    }
+
+    #[test]
+    fn merged_cost_is_unavailable_if_any_chunk_lacks_provider_cost() {
+        let merged = merge_usage(&[chunk(Some(0.25)), chunk(None)]).unwrap();
+        assert_eq!(merged.prompt_tokens, 2);
+        assert_eq!(merged.cost, None);
+    }
+
+    #[test]
+    fn merged_cost_sums_provider_costs_when_every_chunk_reports_them() {
+        let merged = merge_usage(&[chunk(Some(0.25)), chunk(Some(0.5))]).unwrap();
+        assert_eq!(merged.cost, Some(0.75));
+    }
 
     #[test]
     fn reports_provider_error_when_response_has_no_choices() {
