@@ -112,6 +112,58 @@ pub async fn answer_conversation(
         .await
 }
 
+pub async fn recommend_after_truncation(
+    config: &LlmConfig,
+    finish_reason: &str,
+) -> anyhow::Result<(String, Option<ProviderUsage>)> {
+    anyhow::ensure!(
+        matches!(finish_reason, "length" | "max_tokens"),
+        "recommendation requires a recognized output-limit finish reason"
+    );
+    let agent = OpenAiCompatibleAgent::new(config.clone(), String::new())?;
+    let request = ChatRequest {
+        model: &agent.config.model,
+        messages: vec![
+            ChatMessage {
+                role: "system",
+                content: "You help maintain Cururu configuration. Give a brief, actionable recommendation for a review output that reached its output-token limit. Do not request or infer project code, paths, prompts, or private data. Return JSON only: {\"answer\":\"...\"}.".into(),
+            },
+            ChatMessage {
+                role: "user",
+                content: format!("The review model reported finish_reason={finish_reason}. Suggest safe configuration steps, noting tradeoffs."),
+            },
+        ],
+        temperature: 0.1,
+        max_tokens: config.max_output_tokens.min(500),
+        response_format: ResponseFormat { kind: "json_object" },
+    };
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    let response = agent
+        .client
+        .post(url)
+        .timeout(Duration::from_secs(30))
+        .bearer_auth(&config.api_key)
+        .json(&request)
+        .send()
+        .await
+        .context("failed to send truncation recommendation request")?
+        .error_for_status()
+        .context("LLM rejected truncation recommendation")?
+        .json::<ChatResponse>()
+        .await
+        .context("failed to parse recommendation response")?;
+    let content = &response
+        .first_choice("LLM returned no recommendation choices")?
+        .message
+        .content;
+    let parsed: AnswerEnvelope =
+        serde_json::from_str(content.trim()).context("LLM returned invalid recommendation JSON")?;
+    Ok((
+        parsed.answer.trim().chars().take(1500).collect(),
+        response.extract_metadata().usage,
+    ))
+}
+
 struct OpenAiCompatibleAgent {
     client: reqwest::Client,
     config: LlmConfig,
@@ -286,7 +338,11 @@ fn parse_review_json(content: &str, finish_reason: &str) -> anyhow::Result<Revie
         finish_reason, "LLM returned invalid or incomplete review JSON"
     );
     Err(InvalidReviewOutput {
-        finish_reason: finish_reason.to_string(),
+        finish_reason: match finish_reason {
+            "length" | "max_tokens" | "stop" | "content_filter" | "tool_calls"
+            | "function_call" => finish_reason.to_string(),
+            _ => "other".to_string(),
+        },
     }
     .into())
 }
@@ -415,6 +471,14 @@ mod tests {
         );
         assert!(!error.contains("private/source.rs"));
         assert!(!error.contains("private source"));
+    }
+
+    #[test]
+    fn untrusted_finish_reason_is_sanitized_before_becoming_diagnostic() {
+        let error = parse_review_json("{", "`\n<!-- injected -->").unwrap_err();
+        let failure = error.downcast_ref::<InvalidReviewOutput>().unwrap();
+        assert_eq!(failure.finish_reason, "other");
+        assert!(!error.to_string().contains("injected"));
     }
 
     #[test]

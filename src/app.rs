@@ -336,7 +336,13 @@ async fn run_pull_request_review(
         }
     }
 
-    let result = review::run_review(config, source_control).await?;
+    let result = match review::run_review(config, source_control).await {
+        Ok(result) => result,
+        Err(error) => {
+            publish_truncation_diagnostic(config, source_control, &error).await;
+            return Err(error);
+        }
+    };
     review::ensure_review_head_unchanged(
         &result.head_sha,
         &source_control.fetch_head_sha().await?,
@@ -397,6 +403,38 @@ async fn run_pull_request_review(
         "Cururu App review completed"
     );
     Ok(())
+}
+
+async fn publish_truncation_diagnostic(
+    config: &AppConfig,
+    source_control: &dyn ScmProvider,
+    error: &anyhow::Error,
+) {
+    let Some(failure) = error.downcast_ref::<agent::InvalidReviewOutput>() else {
+        return;
+    };
+    let mut body = format!(
+        "<!-- cururu:diagnostic:v1 -->\n\n## Cururu review could not complete\n\nThe model reported an incomplete response (finish reason: `{}`). No partial review was published.",
+        failure.finish_reason
+    );
+    if config.review.recommendations
+        && let Ok((recommendation, usage)) =
+            agent::recommend_after_truncation(&config.llm, &failure.finish_reason).await
+    {
+        use std::fmt::Write as _;
+        body.push_str("\n\n### Configuration recommendation\n\n");
+        body.push_str(&recommendation);
+        body.push_str("\n\n**Additional recommendation cost:** ");
+        match usage.and_then(|u| u.cost) {
+            Some(cost) => {
+                let _ = write!(body, "provider-reported `${cost:.6}`.");
+            }
+            None => body.push_str("unavailable from the LLM provider; no estimate is shown."),
+        }
+    }
+    if let Err(comment_error) = source_control.create_issue_comment(&body).await {
+        warn!(error = %comment_error, "could not publish sanitized truncation diagnostic");
+    }
 }
 
 async fn process_issue_comment(state: &AppState, payload: &Value) -> anyhow::Result<()> {
