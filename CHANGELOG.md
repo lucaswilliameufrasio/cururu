@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.9.0] - 2026-09-29
+
+### Bug Fixes
+
+- Harden provider-neutral code review
+- Report provider costs accurately
+
+### Chores
+
+- Pin v4.8.0 OCI digest
+
+### Documentation
+
+- Pin v4.8.0 examples to OCI digest
+- Use current release instructions
+- Link showcase and current releases
+
+### Features
+
+- Add opt-in review recommendations
+- Publish safe truncation diagnostics
+
+### Refactor
+
+- Preserve structured output failure reason
 ## [4.8.0] - 2026-09-27
 
 ### Bug Fixes
@@ -12,6 +37,8 @@ All notable changes to this project will be documented in this file.
 ### Chores
 
 - Pin v4.7.0 OCI digest
+- Prepare for v4.8.0
+- Use v4.8.0 action in workflows
 
 ### Features
 
