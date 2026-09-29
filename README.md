@@ -453,11 +453,13 @@ logic.
 
 ### Using the CLI in a consuming repository
 
-For the v4.7.0 CLI release, download a platform archive and verify its published
-SHA-256 checksum before installing it. Example for Linux x86_64:
+Open the [Cururu Releases page](https://github.com/lucaswilliameufrasio/cururu/releases)
+and choose the latest stable release and archive matching your operating system
+and architecture. Verify its published SHA-256 checksum before installing it.
+Example for Linux x86_64 (replace `VERSION` with the selected release tag):
 
 ```bash
-VERSION=v4.7.0
+VERSION=vX.Y.Z
 ASSET=cururu-x86_64-unknown-linux-gnu.tar.xz
 BASE="https://github.com/lucaswilliameufrasio/cururu/releases/download/$VERSION"
 curl --fail --location "$BASE/$ASSET" --output "$ASSET"
@@ -469,10 +471,11 @@ export PATH="$HOME/.local/bin:$PATH"
 cururu init
 ```
 
-On Windows, verify the matching archive checksum before extracting:
+On Windows, select the matching archive from the same Releases page and verify
+its checksum before extracting:
 
 ```powershell
-$Version = "v4.7.0"
+$Version = "vX.Y.Z"
 $Asset = "cururu-x86_64-pc-windows-msvc.zip"
 $Base = "https://github.com/lucaswilliameufrasio/cururu/releases/download/$Version"
 Invoke-WebRequest "$Base/$Asset" -OutFile $Asset
@@ -488,11 +491,11 @@ if (-not $Exe) { throw "cururu.exe was not found in the verified archive" }
 
 Each release includes per-platform archives and SHA-256 checksums. To use a
 different version or architecture, select the matching archive from that
-release's assets and update `VERSION`/`ASSET` above. To build the tagged source
-instead, with Rust/Cargo installed:
+release's assets and update `VERSION`/`ASSET` above. Alternatively, install the
+selected release tag from source with Rust/Cargo installed:
 
 ```bash
-cargo install --git https://github.com/lucaswilliameufrasio/cururu --tag v4.7.0 --locked
+cargo install --git https://github.com/lucaswilliameufrasio/cururu --tag "$VERSION" --locked
 cururu init
 ```
 
