@@ -9,6 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::warn;
 
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "LLM returned invalid or incomplete review JSON (finish reason: {finish_reason}); reduce diff/context size or increase the configured output-token limit"
+)]
+pub struct InvalidReviewOutput {
+    pub finish_reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReviewResult {
     pub model: String,
@@ -277,9 +285,10 @@ fn parse_review_json(content: &str, finish_reason: &str) -> anyhow::Result<Revie
         response_bytes = content.len(),
         finish_reason, "LLM returned invalid or incomplete review JSON"
     );
-    anyhow::bail!(
-        "LLM returned invalid or incomplete review JSON (finish reason: {finish_reason}); reduce diff/context size or increase the configured output-token limit"
-    );
+    Err(InvalidReviewOutput {
+        finish_reason: finish_reason.to_string(),
+    }
+    .into())
 }
 
 pub fn merge_results(
@@ -393,11 +402,17 @@ mod tests {
     fn truncated_model_json_fails_without_echoing_private_response_content() {
         let truncated = r#"{"findings":[{"path":"private/source.rs","message":"private source""#;
 
-        let error = parse_review_json(truncated, "length")
-            .unwrap_err()
-            .to_string();
+        let anyhow_error = parse_review_json(truncated, "length").unwrap_err();
+        let error = anyhow_error.to_string();
 
         assert!(error.contains("finish reason: length"));
+        assert_eq!(
+            anyhow_error
+                .downcast_ref::<InvalidReviewOutput>()
+                .unwrap()
+                .finish_reason,
+            "length"
+        );
         assert!(!error.contains("private/source.rs"));
         assert!(!error.contains("private source"));
     }
