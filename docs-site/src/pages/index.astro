@@ -46,7 +46,7 @@ const description = "Self-service AI code review for GitHub. Use the GitHub Acti
 
       <section class="quickstart" id="quickstart">
         <div><p class="eyebrow">01 / QUICK START</p><h2>Put Cururu on a pull request.</h2><p>Install the CLI, scaffold a workflow and configuration, then add your model key as a repository secret.</p><p class="note">The generated workflow uses the repository's trusted base configuration and does not execute pull-request code.</p></div>
-        <pre><code>{"# Install from source (until release binaries ship)\ncargo install --git https://github.com/lucaswilliameufrasio/cururu\n\n# In the repository to review\ncururu init\n\n# Set LLM_API_KEY in repository secrets"}</code></pre>
+        <pre><code>{"# Install the latest release: https://github.com/lucaswilliameufrasio/cururu/releases\n\n# In the repository to review\ncururu init\n\n# Set LLM_API_KEY in repository secrets"}</code></pre>
       </section>
 
       <section class="configure" id="configure">
@@ -57,6 +57,8 @@ const description = "Self-service AI code review for GitHub. Use the GitHub Acti
       <section class="shared">
         <div class="shared-icon">↗</div><div><p class="eyebrow">SHARED CONFIGURATION</p><h2>One baseline. Local judgment stays local.</h2><p>Point each repository at a pinned commit SHA in a shared config repository. Scalars can be overridden locally; shared focus and context rules can be extended. Private sources work when the GitHub token can read both repositories.</p><a class="text-link" href="https://github.com/lucaswilliameufrasio/cururu#shared-configuration">Read the configuration guide →</a></div>
       </section>
+
+      <section class="app-roadmap"><span class="roadmap-tag">SHOWCASE / INTENTIONALLY VULNERABLE</span><h2>See Cururu review a real demo.</h2><p>The showcase repository contains deliberate security and reliability vulnerabilities so you can inspect Cururu's findings and workflow. Use it only in a disposable, controlled environment; never deploy or run it with sensitive data.</p><a class="text-link" href="https://github.com/lucaswilliameufrasio/cururu-demo">Explore the cururu-demo showcase →</a></section>
 
       <section class="app-roadmap"><span class="roadmap-tag">SELF-HOSTED / GITHUB APP</span><h2>Run your own reviewer.</h2><p>Install Cururu into selected repositories. It can submit formal reviews, attempt a reviewer request, respond to authorized mentions, and reply in suggestion threads.</p><a class="text-link" href="/self-hosted-app">Read the self-hosting guide →</a></section>
 
