@@ -7,6 +7,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+mod severity;
+
+pub use severity::{FailOn, Severity};
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReviewResult {
     pub model: String,
