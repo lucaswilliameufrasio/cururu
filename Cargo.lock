@@ -472,6 +472,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "cururu-core",
  "dotenvy",
  "globset",
  "hex",
@@ -495,6 +496,15 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wiremock",
+]
+
+[[package]]
+name = "cururu-core"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

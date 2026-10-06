@@ -7,7 +7,12 @@ license = "MIT OR Apache-2.0"
 description = "Self-service AI code review for GitHub pull requests"
 repository = "https://github.com/lucaswilliameufrasio/cururu"
 
+[workspace]
+members = ["crates/cururu-core"]
+resolver = "3"
+
 [dependencies]
+cururu-core = { path = "crates/cururu-core", version = "0.1.0" }
 anyhow = "1.0"
 axum = "0.8"
 async-trait = "0.1"
