@@ -120,7 +120,7 @@ pub async fn run_review(
     );
     let (review, mut evaluation_report) = if let Some(mode) = config.evaluator.mode {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_mins(2))
             .build()
             .context("failed to build TypeSafe evaluator client")?;
         let mut report = evaluation::evaluate_with_jev(
