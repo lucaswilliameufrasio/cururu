@@ -40,13 +40,73 @@ pub fn render_summary_comment(output: &ReviewOutput) -> String {
     render_header(output, &mut out);
 
     if output.review.findings.is_empty() {
-        out.push_str("No high-confidence issues found.\n");
+        if output
+            .evaluation
+            .as_ref()
+            .is_some_and(|report| !report.findings.is_empty())
+        {
+            out.push_str(
+                "No findings passed Cururu's review policy; see evaluator judgments below.\n",
+            );
+        } else {
+            out.push_str("No high-confidence issues found.\n");
+        }
     } else {
         out.push_str("| Severity | File | Line | Finding | Suggestion |\n");
         out.push_str("|---|---|---:|---|---|\n");
         for finding in &output.review.findings {
             out.push_str(&render_finding_row(finding));
         }
+    }
+
+    if let Some(report) = &output.evaluation {
+        let _ = writeln!(
+            out,
+            "\n<details><summary>Jev evaluation ({})</summary>\n",
+            escape_md(&report.model)
+        );
+        out.push_str("\n| Status | Defect probability | Severity | Severity confidence | File | Line | Finding |\n|---|---:|---|---:|---|---:|---|\n");
+        if let Some(usage) = &report.usage {
+            let _ = writeln!(
+                out,
+                "\nEvaluator token usage: {} input / {} output.\n",
+                usage
+                    .input_tokens
+                    .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+                usage
+                    .output_tokens
+                    .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+            );
+        }
+        for item in &report.findings {
+            let line = item
+                .finding
+                .line
+                .map_or_else(|| "-".into(), |line| line.to_string());
+            let severity = item.judgment.severity.map_or("not rated", |value| {
+                value.as_str().map_or("ignore", |name| name)
+            });
+            let _ = writeln!(
+                out,
+                "| {} | {:.2} | {} | {} | `{}` | {} | {} |",
+                if item.suppressed {
+                    "suppressed by Jev"
+                } else if item.published {
+                    "published"
+                } else {
+                    "not published by policy"
+                },
+                item.judgment.defect_probability,
+                escape_md(severity),
+                item.judgment
+                    .severity_confidence
+                    .map_or_else(|| "unavailable".into(), |value| format!("{value:.2}")),
+                escape_md(&item.finding.path),
+                line,
+                escape_md(&item.finding.title),
+            );
+        }
+        out.push_str("\n</details>\n");
     }
 
     out.push_str(&render_signature(output.logo_url.as_deref()));
@@ -290,12 +350,34 @@ mod tests {
                 tools: vec![],
                 findings: vec![],
             },
+            evaluation: Some(crate::evaluation::EvaluationReport {
+                model: "jev-1.13.0".into(),
+                findings: vec![crate::evaluation::EvaluatedFinding {
+                    finding: finding(),
+                    judgment: crate::evaluation::FindingJudgment {
+                        defect_probability: 0.2,
+                        severity: Some(crate::evaluation::SeverityJudgment::Ignore),
+                        severity_confidence: Some(0.9),
+                    },
+                    suppressed: true,
+                    published: false,
+                }],
+                usage: Some(crate::evaluation::EvaluationUsage {
+                    input_tokens: Some(10),
+                    output_tokens: Some(2),
+                }),
+            }),
         };
         let body = render_summary_comment(&output);
         assert!(body.contains("<!-- cururu:state:v1 head=head -->"));
         assert!(body.contains("_Cururu_"));
         assert!(body.contains("![Cururu](<https://example.test/cururu.svg>)"));
         assert!(!body.contains("(o)_(o)"));
+        assert!(body.contains("No findings passed Cururu's review policy"));
+        assert!(body.contains("suppressed by Jev"));
+        assert!(body.contains("Defect probability"));
+        assert!(body.contains("0.20"));
+        assert!(body.contains("Evaluator token usage: 10 input / 2 output"));
     }
 
     #[test]
@@ -327,6 +409,7 @@ mod tests {
                 tools: vec![],
                 findings: vec![],
             },
+            evaluation: None,
         };
         let body = render_summary_comment(&output);
         assert!(body.contains("Provider-reported cost"));

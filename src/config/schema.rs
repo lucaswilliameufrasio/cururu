@@ -19,6 +19,8 @@ pub(super) struct CururuToml {
     pub(super) summary: Option<SummaryToml>,
     #[serde(default)]
     pub(super) analysis: Option<AnalysisToml>,
+    #[serde(default)]
+    pub(super) evaluator: Option<toml::Value>,
 }
 
 #[derive(Debug, Deserialize)]

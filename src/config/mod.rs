@@ -29,6 +29,24 @@ pub struct SharedBaseConfig {
 use anyhow::{Context, bail};
 use schema::CururuToml;
 
+#[derive(Clone)]
+pub struct EvaluatorConfig {
+    pub mode: Option<crate::evaluation::EvaluationMode>,
+    pub api_key: String,
+    pub model: String,
+}
+
+impl std::fmt::Debug for EvaluatorConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EvaluatorConfig")
+            .field("mode", &self.mode)
+            .field("api_key", &"[redacted]")
+            .field("model", &self.model)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub source_control: ScmConfig,
@@ -37,6 +55,7 @@ pub struct AppConfig {
     pub context: ContextConfig,
     pub summary: SummaryConfig,
     pub analysis: AnalysisConfig,
+    pub evaluator: EvaluatorConfig,
 }
 
 impl AppConfig {
@@ -56,6 +75,14 @@ impl AppConfig {
             || Ok(ReviewPolicy::default()),
             |value| review::profile_defaults(&value),
         )?;
+        let evaluator_mode = env::env_optional("CURURU_EVALUATOR_MODE");
+        let evaluator_mode = evaluator_mode
+            .map(|value| {
+                crate::evaluation::EvaluationMode::from_name(&value).ok_or_else(|| {
+                    anyhow::anyhow!("invalid CURURU_EVALUATOR_MODE: expected observe or filter")
+                })
+            })
+            .transpose()?;
         if let Some(value) = env::env_optional("CURURU_FAIL_ON") {
             policy.fail_on = FailOn::from_name(&value)
                 .with_context(|| format!("invalid CURURU_FAIL_ON: {value}"))?;
@@ -117,6 +144,11 @@ impl AppConfig {
             context: ContextConfig::default(),
             summary: SummaryConfig::default(),
             analysis: AnalysisConfig::default(),
+            evaluator: EvaluatorConfig {
+                mode: evaluator_mode,
+                api_key: env::env_optional("TYPESAFE_API_KEY").unwrap_or_default(),
+                model: env::env_optional("TYPESAFE_MODEL").unwrap_or_else(|| "jev-latest".into()),
+            },
         })
     }
 
@@ -228,6 +260,10 @@ impl AppConfig {
                 parsed.version
             );
         }
+        anyhow::ensure!(
+            parsed.evaluator.is_none(),
+            "[evaluator] is local-only; configure CURURU_EVALUATOR_MODE and TYPESAFE_API_KEY outside .cururu.toml"
+        );
 
         // TOML provider fields apply only when the corresponding env var is NOT set
         if let Some(tp) = parsed.provider {
