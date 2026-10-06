@@ -131,8 +131,10 @@ pub async fn run_review(
             &files,
         )
         .await?;
+        let mut judged_candidates = candidates;
+        let unevaluated = judged_candidates.findings.split_off(report.findings.len());
         let (judged_findings, judged_report) = evaluation::apply_judgments(
-            candidates.findings.clone(),
+            judged_candidates.findings,
             report
                 .findings
                 .iter()
@@ -141,8 +143,8 @@ pub async fn run_review(
             mode,
         )?;
         report.findings = judged_report.findings;
-        let mut judged_candidates = candidates;
         judged_candidates.findings = judged_findings;
+        judged_candidates.findings.extend(unevaluated);
         (
             agent::apply_policy(judged_candidates, &config.review.policy),
             Some(report),

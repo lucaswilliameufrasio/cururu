@@ -6,6 +6,7 @@ use crate::{agent::ReviewFinding, config::Severity};
 
 const MARKER: &str = "<!-- cururu:summary -->";
 const FINDING_MARKER: &str = "<!-- cururu:finding -->";
+const MAX_EVALUATION_ROWS_IN_COMMENT: usize = 20;
 
 pub const fn marker() -> &'static str {
     MARKER
@@ -78,7 +79,7 @@ pub fn render_summary_comment(output: &ReviewOutput) -> String {
                     .map_or_else(|| "unavailable".into(), |value| value.to_string()),
             );
         }
-        for item in &report.findings {
+        for item in report.findings.iter().take(MAX_EVALUATION_ROWS_IN_COMMENT) {
             let line = item
                 .finding
                 .line
@@ -101,9 +102,22 @@ pub fn render_summary_comment(output: &ReviewOutput) -> String {
                 item.judgment
                     .severity_confidence
                     .map_or_else(|| "unavailable".into(), |value| format!("{value:.2}")),
-                escape_md(&item.finding.path),
+                escape_md(&truncate_chars(&item.finding.path, 120)),
                 line,
-                escape_md(&item.finding.title),
+                escape_md(&truncate_chars(&item.finding.title, 160)),
+            );
+        }
+        let hidden_audit_rows = report
+            .findings
+            .len()
+            .saturating_sub(MAX_EVALUATION_ROWS_IN_COMMENT);
+        if hidden_audit_rows > 0 || report.omitted_findings > 0 {
+            let _ = writeln!(
+                out,
+                "\nEvaluator audit truncated for comment size: {} of {} evaluated rows hidden; {} candidate(s) were not sent to Jev. Full details are in dry-run JSON.\n",
+                hidden_audit_rows,
+                report.findings.len(),
+                report.omitted_findings,
             );
         }
         out.push_str("\n</details>\n");
@@ -241,6 +255,16 @@ fn escape_md(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', " ")
 }
 
+fn truncate_chars(value: &str, limit: usize) -> String {
+    let mut chars = value.chars();
+    let prefix: String = chars.by_ref().take(limit).collect();
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,6 +386,7 @@ mod tests {
                     suppressed: true,
                     published: false,
                 }],
+                omitted_findings: 3,
                 usage: Some(crate::evaluation::EvaluationUsage {
                     input_tokens: Some(10),
                     output_tokens: Some(2),
@@ -378,6 +403,7 @@ mod tests {
         assert!(body.contains("Defect probability"));
         assert!(body.contains("0.20"));
         assert!(body.contains("Evaluator token usage: 10 input / 2 output"));
+        assert!(body.contains("3 candidate(s) were not sent to Jev"));
     }
 
     #[test]

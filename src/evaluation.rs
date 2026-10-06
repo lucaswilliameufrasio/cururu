@@ -59,6 +59,8 @@ pub struct EvaluatedFinding {
 pub struct EvaluationReport {
     pub model: String,
     pub findings: Vec<EvaluatedFinding>,
+    #[serde(default)]
+    pub omitted_findings: usize,
     pub usage: Option<EvaluationUsage>,
 }
 
@@ -116,6 +118,7 @@ pub fn apply_judgments(
         EvaluationReport {
             model: String::new(),
             findings: evaluated,
+            omitted_findings: 0,
             usage: None,
         },
     ))
@@ -201,6 +204,7 @@ async fn evaluate_with_jev_at(
         return Ok(EvaluationReport {
             model: model.into(),
             findings: Vec::new(),
+            omitted_findings: 0,
             usage: None,
         });
     }
@@ -209,7 +213,8 @@ async fn evaluate_with_jev_at(
         "TYPESAFE_API_KEY is required when Jev evaluation is enabled"
     );
 
-    let state: Vec<_> = findings
+    let evaluated_findings = &findings[..findings.len().min(MAX_EVALUATED_FINDINGS)];
+    let state: Vec<_> = evaluated_findings
         .iter()
         .enumerate()
         .map(|(id, finding)| JevFindingState {
@@ -233,7 +238,7 @@ async fn evaluate_with_jev_at(
         })
         .collect();
     let mut questions = serde_json::Map::new();
-    for id in 0..findings.len() {
+    for id in 0..evaluated_findings.len() {
         questions.insert(format!("finding_{id}_is_defect"), serde_json::json!({
             "type": "noul",
             "instructions": {
@@ -278,8 +283,8 @@ async fn evaluate_with_jev_at(
         .await
         .context("TypeSafe evaluator returned an invalid response")?;
 
-    let mut evaluated = Vec::with_capacity(findings.len());
-    for (id, finding) in findings.iter().enumerate() {
+    let mut evaluated = Vec::with_capacity(evaluated_findings.len());
+    for (id, finding) in evaluated_findings.iter().enumerate() {
         let defect = response
             .answers
             .get(&format!("finding_{id}_is_defect"))
@@ -328,6 +333,7 @@ async fn evaluate_with_jev_at(
     Ok(EvaluationReport {
         model: response.model,
         findings: evaluated,
+        omitted_findings: findings.len() - evaluated_findings.len(),
         usage: response.usage,
     })
 }
@@ -365,6 +371,8 @@ fn relevant_hunk(file: &ChangedFile, line: Option<u32>) -> String {
 }
 
 use anyhow::Context;
+
+pub const MAX_EVALUATED_FINDINGS: usize = 100;
 
 #[cfg(test)]
 mod tests {
@@ -473,6 +481,7 @@ mod tests {
                 suppressed: false,
                 published: false,
             }],
+            omitted_findings: 0,
             usage: None,
         };
         mark_published(&mut report, &[]);
@@ -580,6 +589,58 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("omitted defect judgment"));
+    }
+
+    #[tokio::test]
+    async fn request_caps_findings_and_reports_the_unevaluated_remainder() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        let mut answers = serde_json::Map::new();
+        for id in 0..MAX_EVALUATED_FINDINGS {
+            answers.insert(
+                format!("finding_{id}_is_defect"),
+                serde_json::json!({"type":"noul", "noul":0.9}),
+            );
+            answers.insert(
+                format!("finding_{id}_severity"),
+                serde_json::json!({"type":"choice", "choice":"low", "confidence":0.8}),
+            );
+        }
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "model":"jev-test", "answers":answers
+            })))
+            .mount(&server)
+            .await;
+
+        let findings = vec![finding(); MAX_EVALUATED_FINDINGS + 7];
+        let report = evaluate_with_jev_at(
+            &reqwest::Client::new(),
+            &format!("{}/v1/systemone", server.uri()),
+            "secret-test",
+            "jev-latest",
+            &findings,
+            &[changed_file()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.findings.len(), MAX_EVALUATED_FINDINGS);
+        assert_eq!(report.omitted_findings, 7);
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(
+            body["state"].as_array().unwrap().len(),
+            MAX_EVALUATED_FINDINGS
+        );
+        assert_eq!(
+            body["questions"].as_object().unwrap().len(),
+            MAX_EVALUATED_FINDINGS * 2
+        );
     }
 
     #[tokio::test]
