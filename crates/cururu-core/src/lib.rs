@@ -7,8 +7,12 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+mod scm_types;
 mod severity;
 
+pub use scm_types::{
+    FindingAnnotation, PriorReviewComment, PriorReviewFeedback, ReviewCommentDraft,
+};
 pub use severity::{FailOn, Severity};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

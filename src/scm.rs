@@ -1,5 +1,9 @@
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+
+pub use cururu_core::{
+    FindingAnnotation, PriorReviewComment, PriorReviewFeedback, ReviewCommentDraft,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct ScmIdentity {
@@ -19,35 +23,6 @@ pub struct ReviewComment {
     pub line: Option<u32>,
     #[allow(dead_code)]
     pub subject_type: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ReviewCommentDraft {
-    pub path: String,
-    pub line: Option<u32>,
-    pub body: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PriorReviewFeedback {
-    pub location: String,
-    pub comments: Vec<PriorReviewComment>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PriorReviewComment {
-    pub author: String,
-    pub body: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FindingAnnotation {
-    pub path: String,
-    pub line: Option<u32>,
-    pub severity: String,
-    pub title: Option<String>,
-    pub message: String,
-    pub details: Option<String>,
 }
 
 /// Source-control capabilities required by Cururu's core. Concrete adapters
