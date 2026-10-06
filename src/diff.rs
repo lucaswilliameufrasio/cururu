@@ -1,21 +1,6 @@
+pub use cururu_core::{ChangedFile, DiffChunk};
 use globset::GlobSet;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ChangedFile {
-    pub path: String,
-    pub patch: String,
-    /// Line numbers (1-based) present in the new (RIGHT) side of the diff.
-    pub right_lines: Vec<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DiffChunk {
-    pub index: usize,
-    pub text: String,
-    pub files: Vec<String>,
-}
 
 pub fn parse_unified_diff(diff: &str) -> Vec<ChangedFile> {
     let header_re = Regex::new(r"(?m)^diff --git a/(.*?) b/(.*?)$").expect("valid regex");

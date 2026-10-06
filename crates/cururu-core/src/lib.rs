@@ -37,6 +37,23 @@ pub struct SuggestedChange {
     pub replacement: String,
 }
 
+/// A changed repository file with its unified patch and valid new-side lines.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct ChangedFile {
+    pub path: String,
+    pub patch: String,
+    /// Line numbers (1-based) present in the new (right) side of the diff.
+    pub right_lines: Vec<u32>,
+}
+
+/// A bounded piece of a diff submitted for review.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct DiffChunk {
+    pub index: usize,
+    pub text: String,
+    pub files: Vec<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum SuggestedChangeInput {
@@ -58,7 +75,7 @@ impl<'de> Deserialize<'de> for SuggestedChange {
 
 #[cfg(test)]
 mod tests {
-    use super::SuggestedChange;
+    use super::{ChangedFile, DiffChunk, SuggestedChange};
 
     #[test]
     fn suggested_change_deserializes_structured_and_legacy_values() {
@@ -66,5 +83,28 @@ mod tests {
             serde_json::from_str(r#"{"replacement":"new code"}"#).unwrap();
         let legacy: SuggestedChange = serde_json::from_str(r#""new code""#).unwrap();
         assert_eq!(structured.replacement, legacy.replacement);
+    }
+
+    #[test]
+    fn diff_domain_values_round_trip_through_json() {
+        let file = ChangedFile {
+            path: "src/lib.rs".into(),
+            patch: "@@ -1 +1 @@".into(),
+            right_lines: vec![1],
+        };
+        let chunk = DiffChunk {
+            index: 0,
+            text: file.patch.clone(),
+            files: vec![file.path.clone()],
+        };
+
+        assert_eq!(
+            serde_json::from_str::<ChangedFile>(&serde_json::to_string(&file).unwrap()).unwrap(),
+            file
+        );
+        assert_eq!(
+            serde_json::from_str::<DiffChunk>(&serde_json::to_string(&chunk).unwrap()).unwrap(),
+            chunk
+        );
     }
 }
