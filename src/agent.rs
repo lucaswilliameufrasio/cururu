@@ -4,9 +4,8 @@ use crate::provider::{ChatResponse, ProviderUsage};
 use crate::retry::retry_with_backoff;
 use anyhow::Context;
 use async_trait::async_trait;
-#[cfg(test)]
-use cururu_core::SuggestedChange;
-pub use cururu_core::{ReviewFinding, ReviewResult};
+#[allow(unused_imports)]
+pub use cururu_core::{ReviewFinding, ReviewResult, SuggestedChange};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::warn;

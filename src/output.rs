@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn inline_finding_renders_safe_suggested_change() {
         let mut f = finding();
-        f.suggested_change = Some(cururu_core::SuggestedChange {
+        f.suggested_change = Some(crate::agent::SuggestedChange {
             replacement: "use std::process::Command;".into(),
         });
         let body = render_inline_finding(&f);
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn inline_finding_ignores_multiline_suggested_change() {
         let mut f = finding();
-        f.suggested_change = Some(cururu_core::SuggestedChange {
+        f.suggested_change = Some(crate::agent::SuggestedChange {
             replacement: "first\nsecond".into(),
         });
         let body = render_inline_finding(&f);
