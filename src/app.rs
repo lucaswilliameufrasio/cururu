@@ -387,7 +387,7 @@ async fn run_pull_request_review(
             source_control
                 .delete_pending_formal_review(review_id)
                 .await?;
-            return Err(error);
+            return Err(error.into());
         }
         source_control.submit_formal_review(review_id).await?;
     }

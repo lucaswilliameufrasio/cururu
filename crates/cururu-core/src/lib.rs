@@ -12,6 +12,7 @@ mod context;
 mod evaluation;
 mod findings;
 mod quality;
+mod review_guard;
 mod scm_types;
 mod severity;
 
@@ -23,6 +24,7 @@ pub use evaluation::{
 };
 pub use findings::{deduplicate_review_findings, sort_review_findings};
 pub use quality::{QualityReport, evaluate_quality};
+pub use review_guard::{ReviewHeadChanged, ensure_review_head_unchanged};
 pub use scm_types::{
     FindingAnnotation, PriorReviewComment, PriorReviewFeedback, ReviewCommentDraft,
 };
