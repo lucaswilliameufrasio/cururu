@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 mod analysis;
 mod context;
+mod diff_limits;
 mod evaluation;
 mod findings;
 mod quality;
@@ -18,6 +19,7 @@ mod severity;
 
 pub use analysis::{AnalysisReport, AnalysisTool};
 pub use context::{ContextFile, ContextStore};
+pub use diff_limits::{ReviewInputError, ensure_review_diff_limits};
 pub use evaluation::{
     EvaluatedFinding, EvaluationError, EvaluationMode, EvaluationReport, EvaluationUsage,
     FindingJudgment, SeverityJudgment, apply_judgments, mark_published,
