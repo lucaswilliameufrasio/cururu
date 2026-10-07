@@ -13,8 +13,8 @@ mod scm_types;
 mod severity;
 
 pub use evaluation::{
-    EvaluatedFinding, EvaluationMode, EvaluationReport, EvaluationUsage, FindingJudgment,
-    SeverityJudgment,
+    EvaluatedFinding, EvaluationError, EvaluationMode, EvaluationReport, EvaluationUsage,
+    FindingJudgment, SeverityJudgment, apply_judgments, mark_published,
 };
 pub use quality::{QualityReport, evaluate_quality};
 pub use scm_types::{
