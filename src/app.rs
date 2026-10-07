@@ -576,7 +576,7 @@ async fn answer_mention(
     };
     let context = format!(
         "Untrusted change-request diff (stream-limited to {MAX_MENTION_DIFF_BYTES} bytes):\n{completeness_note}{diff}\n\nTrusted base-revision context:\n{}",
-        context_files.render()
+        crate::context::render(&context_files)
     );
     let answer = agent::answer_conversation(
         &config.llm,

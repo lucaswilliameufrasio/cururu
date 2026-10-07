@@ -8,12 +8,14 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 mod analysis;
+mod context;
 mod evaluation;
 mod quality;
 mod scm_types;
 mod severity;
 
 pub use analysis::{AnalysisReport, AnalysisTool};
+pub use context::{ContextFile, ContextStore};
 pub use evaluation::{
     EvaluatedFinding, EvaluationError, EvaluationMode, EvaluationReport, EvaluationUsage,
     FindingJudgment, SeverityJudgment, apply_judgments, mark_published,

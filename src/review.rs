@@ -66,7 +66,7 @@ pub async fn run_review(
     let context_rendered = if context_store.is_empty() {
         String::new()
     } else {
-        context_store.render()
+        context::render(&context_store)
     };
     let prior_feedback = source_control.fetch_prior_review_feedback().await?;
     info!(

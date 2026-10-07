@@ -2,51 +2,32 @@ use std::fmt::Write;
 
 use crate::{config::ContextConfig, scm::ScmProvider};
 use anyhow::Context;
+pub use cururu_core::{ContextFile, ContextStore};
 use tracing::warn;
 
-#[derive(Debug, Clone)]
-pub struct ContextStore {
-    pub files: Vec<ContextFile>,
-    pub truncated: Vec<String>,
-    pub skipped: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ContextFile {
-    pub label: String,
-    pub path: String,
-    pub content: String,
-}
-
-impl ContextStore {
-    pub const fn is_empty(&self) -> bool {
-        self.files.is_empty()
+pub fn render(store: &ContextStore) -> String {
+    if store.files.is_empty() {
+        return String::new();
     }
-
-    pub fn render(&self) -> String {
-        if self.files.is_empty() {
-            return String::new();
-        }
-        let mut out = String::from("\n---\n## Repository context\n\n");
-        for file in &self.files {
-            let _ = write!(
-                out,
-                "### {}: `{}`\n\n```\n{}\n```\n\n",
-                file.label, file.path, file.content
-            );
-        }
-        if !self.truncated.is_empty() {
-            out.push_str("Truncated files: ");
-            out.push_str(&self.truncated.join(", "));
-            out.push('\n');
-        }
-        if !self.skipped.is_empty() {
-            out.push_str("Files not found: ");
-            out.push_str(&self.skipped.join(", "));
-            out.push('\n');
-        }
-        out
+    let mut out = String::from("\n---\n## Repository context\n\n");
+    for file in &store.files {
+        let _ = write!(
+            out,
+            "### {}: `{}`\n\n```\n{}\n```\n\n",
+            file.label, file.path, file.content
+        );
     }
+    if !store.truncated.is_empty() {
+        out.push_str("Truncated files: ");
+        out.push_str(&store.truncated.join(", "));
+        out.push('\n');
+    }
+    if !store.skipped.is_empty() {
+        out.push_str("Files not found: ");
+        out.push_str(&store.skipped.join(", "));
+        out.push('\n');
+    }
+    out
 }
 
 pub async fn fetch_context(
@@ -144,4 +125,39 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
         .take_while(|(index, _)| *index < max_bytes)
         .map(|(_, character)| character)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ContextFile, ContextStore, render};
+
+    #[test]
+    fn rendering_preserves_the_existing_prompt_context_format() {
+        let store = ContextStore {
+            files: vec![ContextFile {
+                label: "Conventions".into(),
+                path: "CONTRIBUTING.md".into(),
+                content: "Check errors.".into(),
+            }],
+            truncated: vec!["large.md".into()],
+            skipped: vec!["missing.md".into()],
+        };
+
+        assert_eq!(
+            render(&store),
+            "\n---\n## Repository context\n\n### Conventions: `CONTRIBUTING.md`\n\n```\nCheck errors.\n```\n\nTruncated files: large.md\nFiles not found: missing.md\n"
+        );
+    }
+
+    #[test]
+    fn rendering_empty_context_returns_an_empty_string() {
+        assert!(
+            render(&ContextStore {
+                files: Vec::new(),
+                truncated: vec!["large.md".into()],
+                skipped: vec!["missing.md".into()],
+            })
+            .is_empty()
+        );
+    }
 }
