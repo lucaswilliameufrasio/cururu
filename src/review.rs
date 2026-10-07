@@ -6,6 +6,7 @@ use crate::{
     scm::ScmProvider,
 };
 use anyhow::Context;
+pub use cururu_core::ensure_review_head_unchanged;
 use tracing::info;
 
 const REVIEW_PROMPT: &str = include_str!("../prompts/review.md");
@@ -199,14 +200,6 @@ fn build_review_system_prompt(
         prompt.push_str(prior_comment_feedback);
     }
     prompt
-}
-
-pub fn ensure_review_head_unchanged(expected: &str, current: &str) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        expected == current,
-        "PR head changed during review; any already-published findings remain anchored to the analyzed revision, and a fresh review is required"
-    );
-    Ok(())
 }
 
 fn ensure_review_diff_limits(
