@@ -6,6 +6,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 #[allow(unused_imports)]
 pub use cururu_core::{ReviewFinding, ReviewResult, SuggestedChange};
+use cururu_core::{deduplicate_review_findings, sort_review_findings};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::warn;
@@ -331,14 +332,9 @@ pub fn collect_candidates(
             finding.suggested_change = None;
         }
     }
-    findings.sort_by(|a, b| {
-        severity_rank(&a.severity)
-            .cmp(&severity_rank(&b.severity))
-            .then(a.path.cmp(&b.path))
-            .then(a.line.cmp(&b.line))
-    });
+    sort_review_findings(&mut findings);
     if policy.synthesis {
-        findings = deduplicate_findings(findings);
+        findings = deduplicate_review_findings(findings);
     }
     ReviewResult {
         model,
@@ -355,75 +351,13 @@ pub fn apply_policy(mut candidates: ReviewResult, policy: &ReviewPolicy) -> Revi
             && Severity::from_name(&f.severity)
                 .is_some_and(|severity| policy.allowed_severities.contains(&severity))
     });
-    candidates.findings.sort_by(|a, b| {
-        severity_rank(&a.severity)
-            .cmp(&severity_rank(&b.severity))
-            .then(a.path.cmp(&b.path))
-            .then(a.line.cmp(&b.line))
-    });
+    sort_review_findings(&mut candidates.findings);
     candidates.findings.truncate(policy.max_findings);
     candidates.summary = format!(
         "Found {} high-confidence review finding(s).",
         candidates.findings.len()
     );
     candidates
-}
-
-fn deduplicate_findings(findings: Vec<ReviewFinding>) -> Vec<ReviewFinding> {
-    let mut unique: Vec<ReviewFinding> = Vec::with_capacity(findings.len());
-    for finding in findings {
-        let matches = unique.iter().position(|existing| {
-            existing.path == finding.path
-                && existing.line == finding.line
-                && same_rule(existing, &finding)
-                && titles_overlap(existing, &finding)
-        });
-        match matches {
-            Some(index) => {
-                let existing = &mut unique[index];
-                if merge_prefers(&finding, existing) {
-                    *existing = finding;
-                }
-            }
-            None => unique.push(finding),
-        }
-    }
-    unique
-}
-
-fn same_rule(a: &ReviewFinding, b: &ReviewFinding) -> bool {
-    match (&a.rule, &b.rule) {
-        (Some(x), Some(y)) => x == y,
-        _ => true,
-    }
-}
-
-fn titles_overlap(a: &ReviewFinding, b: &ReviewFinding) -> bool {
-    match (a.rule.as_deref(), b.rule.as_deref()) {
-        (Some(x), Some(y)) => x == y,
-        (Some(_), None) | (None, Some(_)) => true,
-        (None, None) => a.title.eq_ignore_ascii_case(&b.title),
-    }
-}
-
-fn merge_prefers(candidate: &ReviewFinding, existing: &ReviewFinding) -> bool {
-    let candidate_is_tool = candidate.source.is_some();
-    let existing_is_tool = existing.source.is_some();
-    match (candidate_is_tool, existing_is_tool) {
-        (true, false) => true,
-        (false, true) => false,
-        _ => candidate.confidence > existing.confidence,
-    }
-}
-
-fn severity_rank(severity: &str) -> u8 {
-    match severity.to_ascii_lowercase().as_str() {
-        "critical" => 0,
-        "high" => 1,
-        "medium" => 2,
-        "low" => 3,
-        _ => 4,
-    }
 }
 
 #[cfg(test)]
@@ -630,7 +564,7 @@ mod tests {
             llm_finding("src/a.rs", 5, "dangerous unwrap", 0.9),
             tool_finding("src/a.rs", 5, "unused_must_use", "medium"),
         ];
-        let merged = deduplicate_findings(findings);
+        let merged = deduplicate_review_findings(findings);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].source.as_deref(), Some("clippy"));
         assert_eq!(merged[0].severity, "medium");
@@ -642,7 +576,7 @@ mod tests {
             tool_finding("src/a.rs", 9, "needless_return", "low"),
             llm_finding("src/a.rs", 9, "needless_return", 0.99),
         ];
-        let merged = deduplicate_findings(findings);
+        let merged = deduplicate_review_findings(findings);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].source.as_deref(), Some("clippy"));
     }
@@ -653,7 +587,7 @@ mod tests {
             tool_finding("src/a.rs", 3, "rule_a", "high"),
             tool_finding("src/a.rs", 3, "rule_b", "high"),
         ];
-        let merged = deduplicate_findings(findings);
+        let merged = deduplicate_review_findings(findings);
         assert_eq!(merged.len(), 2);
     }
 
@@ -663,7 +597,7 @@ mod tests {
             llm_finding("src/a.rs", 7, "same issue", 0.7),
             llm_finding("src/a.rs", 7, "same issue", 0.95),
         ];
-        let merged = deduplicate_findings(findings);
+        let merged = deduplicate_review_findings(findings);
         assert_eq!(merged.len(), 1);
         assert!((merged[0].confidence - 0.95).abs() < f32::EPSILON);
     }
