@@ -1,73 +1,79 @@
 use crate::{agent::ReviewFinding, diff::ChangedFile};
+pub use cururu_core::{
+    EvaluatedFinding, EvaluationMode, EvaluationReport, EvaluationUsage, FindingJudgment,
+    SeverityJudgment,
+};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvaluationMode {
-    Observe,
-    Filter,
+const JEV_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
+
+#[async_trait::async_trait]
+pub trait ReviewEvaluator: Send + Sync {
+    async fn evaluate(
+        &self,
+        findings: &[ReviewFinding],
+        changed_files: &[ChangedFile],
+    ) -> anyhow::Result<EvaluationReport>;
 }
 
-impl EvaluationMode {
-    pub fn from_name(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "observe" => Some(Self::Observe),
-            "filter" => Some(Self::Filter),
-            _ => None,
+struct JevEvaluator {
+    client: reqwest::Client,
+    endpoint: String,
+    api_key: String,
+    model: String,
+}
+
+impl JevEvaluator {
+    fn new(client: reqwest::Client, api_key: String, model: String) -> Self {
+        Self {
+            client,
+            endpoint: JEV_ENDPOINT.into(),
+            api_key,
+            model,
+        }
+    }
+
+    #[cfg(test)]
+    const fn with_endpoint(
+        client: reqwest::Client,
+        endpoint: String,
+        api_key: String,
+        model: String,
+    ) -> Self {
+        Self {
+            client,
+            endpoint,
+            api_key,
+            model,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FindingJudgment {
-    pub defect_probability: f32,
-    pub severity: Option<SeverityJudgment>,
-    pub severity_confidence: Option<f32>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SeverityJudgment {
-    Critical,
-    High,
-    Medium,
-    Low,
-    Ignore,
-}
-
-impl SeverityJudgment {
-    pub const fn as_str(self) -> Option<&'static str> {
-        match self {
-            Self::Critical => Some("critical"),
-            Self::High => Some("high"),
-            Self::Medium => Some("medium"),
-            Self::Low => Some("low"),
-            Self::Ignore => None,
-        }
+#[async_trait::async_trait]
+impl ReviewEvaluator for JevEvaluator {
+    async fn evaluate(
+        &self,
+        findings: &[ReviewFinding],
+        changed_files: &[ChangedFile],
+    ) -> anyhow::Result<EvaluationReport> {
+        evaluate_with_jev_at(
+            &self.client,
+            &self.endpoint,
+            &self.api_key,
+            &self.model,
+            findings,
+            changed_files,
+        )
+        .await
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvaluatedFinding {
-    pub finding: ReviewFinding,
-    pub judgment: FindingJudgment,
-    pub suppressed: bool,
-    #[serde(default)]
-    pub published: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvaluationReport {
-    pub model: String,
-    pub findings: Vec<EvaluatedFinding>,
-    #[serde(default)]
-    pub omitted_findings: usize,
-    pub usage: Option<EvaluationUsage>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvaluationUsage {
-    pub input_tokens: Option<u32>,
-    pub output_tokens: Option<u32>,
+pub fn build_jev_evaluator(
+    client: reqwest::Client,
+    api_key: String,
+    model: String,
+) -> Box<dyn ReviewEvaluator> {
+    Box::new(JevEvaluator::new(client, api_key, model))
 }
 
 pub fn apply_judgments(
@@ -171,24 +177,6 @@ struct JevAnswer {
     noul: Option<f32>,
     choice: Option<String>,
     confidence: Option<f32>,
-}
-
-pub async fn evaluate_with_jev(
-    client: &reqwest::Client,
-    api_key: &str,
-    model: &str,
-    findings: &[ReviewFinding],
-    changed_files: &[ChangedFile],
-) -> anyhow::Result<EvaluationReport> {
-    evaluate_with_jev_at(
-        client,
-        "https://api.typesafe.ai/v1/systemone",
-        api_key,
-        model,
-        findings,
-        changed_files,
-    )
-    .await
 }
 
 #[allow(clippy::too_many_lines)]
@@ -514,16 +502,16 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let report = evaluate_with_jev_at(
-            &client,
-            &format!("{}/v1/systemone", server.uri()),
-            "secret-test",
-            "jev-latest",
-            &[finding()],
-            &[changed_file()],
-        )
-        .await
-        .unwrap();
+        let evaluator: Box<dyn ReviewEvaluator> = Box::new(JevEvaluator::with_endpoint(
+            client,
+            format!("{}/v1/systemone", server.uri()),
+            "secret-test".into(),
+            "jev-latest".into(),
+        ));
+        let report = evaluator
+            .evaluate(&[finding()], &[changed_file()])
+            .await
+            .unwrap();
         assert_eq!(report.model, "jev-1.13.0");
         assert!((report.findings[0].judgment.defect_probability - 0.97).abs() < f32::EPSILON);
         assert_eq!(
