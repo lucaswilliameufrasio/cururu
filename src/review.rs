@@ -6,7 +6,7 @@ use crate::{
     scm::ScmProvider,
 };
 use anyhow::Context;
-pub use cururu_core::ensure_review_head_unchanged;
+pub use cururu_core::{ensure_review_diff_limits, ensure_review_head_unchanged};
 use tracing::info;
 
 const REVIEW_PROMPT: &str = include_str!("../prompts/review.md");
@@ -200,26 +200,6 @@ fn build_review_system_prompt(
         prompt.push_str(prior_comment_feedback);
     }
     prompt
-}
-
-fn ensure_review_diff_limits(
-    files: &[diff::ChangedFile],
-    chunk_bytes: usize,
-    max_diff_bytes: usize,
-) -> anyhow::Result<()> {
-    let total_bytes = files
-        .iter()
-        .map(|file| file.patch.len())
-        .fold(0usize, usize::saturating_add);
-    anyhow::ensure!(
-        total_bytes <= max_diff_bytes,
-        "filtered change-request diff exceeds review.max_diff_bytes; increase the limit or split the change"
-    );
-    anyhow::ensure!(
-        files.iter().all(|file| file.patch.len() <= chunk_bytes),
-        "a changed file exceeds review.chunk_bytes; increase the chunk size or split the change"
-    );
-    Ok(())
 }
 
 async fn fetch_repo_context(
