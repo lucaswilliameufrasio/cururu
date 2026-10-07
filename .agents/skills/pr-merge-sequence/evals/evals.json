@@ -1,0 +1,23 @@
+{
+  "skill_name": "pr-merge-sequence",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Merge PRs #28 and #29 in that order. Both are green, but rebase the remaining branch after the first merge and use normal merge commits.",
+      "expected_output": "Checks both heads, merges #28 normally, rebases and pushes #29 on the new base, waits for its checks, then merges #29 normally.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Can you merge these two PRs? One has a new unresolved HIGH security finding and the other is green.",
+      "expected_output": "Does not merge past the unresolved HIGH finding; reports it and asks to fix or explicitly decide how to handle it before continuing the sequence.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Rebase all three requested branches on main before the first merge, then merge each normally and keep the others current after every merge.",
+      "expected_output": "Rebases all requested branches before the first merge, uses normal merge commits, and rebases/checks all remaining branches after each merge.",
+      "files": []
+    }
+  ]
+}
