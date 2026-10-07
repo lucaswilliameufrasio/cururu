@@ -5,8 +5,9 @@ use crate::{
     scm::{FindingAnnotation, ScmProvider},
 };
 use anyhow::Context;
+pub use cururu_core::{AnalysisReport, AnalysisTool};
 use globset::{Glob, GlobSetBuilder};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
@@ -69,21 +70,6 @@ struct SarifArtifactLocation {
 struct SarifRegion {
     #[serde(rename = "startLine")]
     start_line: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AnalysisReport {
-    pub status: String,
-    pub tools: Vec<AnalysisTool>,
-    pub findings: Vec<ReviewFinding>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct AnalysisTool {
-    pub name: String,
-    pub status: String,
-    pub exit_code: Option<i32>,
-    pub message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
