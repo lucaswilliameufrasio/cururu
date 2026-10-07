@@ -1,0 +1,23 @@
+{
+  "skill_name": "testing-quality-gate",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "A handler uses PostgreSQL locally and calls an external billing API. Propose unit and integration tests without replacing the local database with a mock.",
+      "expected_output": "Uses a real local database in integration tests and a protocol-level fake for the external API with the production client; keeps isolated unit tests for pure behavior.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "I fixed a bug but the new test passes both before and after the fix. Is that sufficient regression coverage?",
+      "expected_output": "Explains that the test must fail before the fix for the reported defect and pass afterward; recommends correcting the test reproduction.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "The unit tests pass for my change. Can I call it done without running the rest of this repository's checks?",
+      "expected_output": "Requires the full fresh repo quality gate including build, format, lint, unit tests, and real integration tests when configured; does not claim unrun checks passed.",
+      "files": []
+    }
+  ]
+}

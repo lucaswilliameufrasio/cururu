@@ -1,0 +1,17 @@
+{
+  "skill_name": "conventional-commits",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I added a backwards-compatible endpoint capability. Draft a Conventional Commit and explain the type choice; don't commit anything yet.",
+      "expected_output": "Suggests a feat commit with an optional relevant scope and concise imperative subject; does not perform a commit.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "This change removes a public API field. Review my proposed message `feat(api): clean up response` and make it accurately signal the breaking change.",
+      "expected_output": "Adds the breaking marker and a BREAKING CHANGE footer explaining compatibility impact; does not claim the project version was changed.",
+      "files": []
+    }
+  ]
+}

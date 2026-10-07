@@ -1,0 +1,17 @@
+{
+  "skill_name": "document-decisions",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "We're choosing between a new event bus and extending the existing request flow. Check for prior decisions and document the choice after I confirm it.",
+      "expected_output": "Searches existing decision records first, presents alternatives and trade-offs, waits for confirmation, then records the accepted decision in the repository's existing format.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Fix this typo in a label. Should we create an ADR?",
+      "expected_output": "Does not create a decision record for a trivial cosmetic change absent a meaningful trade-off.",
+      "files": []
+    }
+  ]
+}

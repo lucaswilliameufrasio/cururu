@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "skills": {
+    "conventional-commits": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "ae1606feb3bdd663ae82d978651b55a2dc2b11d3944dd04fd982788028456187"
+    },
+    "document-decisions": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "b59ca3979fe7db3af4e2e78fc4d3f44eade14f09556e94a83539a86037f92047"
+    },
+    "git-delivery": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "43a82fda92a9557b3a7b4fe47e9b67d90452462eb86bb2363ff89b0edd1a4a48"
+    },
+    "http-api-conventions": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "0286291b7b072ae3b54493a9a019ff467fcc893e8e4fc6190c23c07affe8db64"
+    },
+    "secrets-safety": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "f842eeba8c088d1b78d87ef6952587dd6711680588ae436aafb2b648e179644c"
+    },
+    "semantic-versioning": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "ecb713656644ad950b75f2a25b656dc0e55e1188644183b0633d6a393bf3d92d"
+    },
+    "testing-quality-gate": {
+      "source": "../agent-skills",
+      "sourceType": "local",
+      "computedHash": "dcb0e2474fb624dbc7c9670d644c3c520e449204b7516dfc104378fb0bd8691b"
+    }
+  }
+}
