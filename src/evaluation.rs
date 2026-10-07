@@ -1,7 +1,7 @@
 use crate::{agent::ReviewFinding, diff::ChangedFile};
 pub use cururu_core::{
     EvaluatedFinding, EvaluationMode, EvaluationReport, EvaluationUsage, FindingJudgment,
-    SeverityJudgment,
+    SeverityJudgment, apply_judgments, mark_published,
 };
 use serde::{Deserialize, Serialize};
 
@@ -74,73 +74,6 @@ pub fn build_jev_evaluator(
     model: String,
 ) -> Box<dyn ReviewEvaluator> {
     Box::new(JevEvaluator::new(client, api_key, model))
-}
-
-pub fn apply_judgments(
-    findings: Vec<ReviewFinding>,
-    judgments: Vec<FindingJudgment>,
-    mode: EvaluationMode,
-) -> anyhow::Result<(Vec<ReviewFinding>, EvaluationReport)> {
-    anyhow::ensure!(
-        findings.len() == judgments.len(),
-        "evaluator returned a different number of judgments than findings"
-    );
-
-    let mut accepted = Vec::with_capacity(findings.len());
-    let mut evaluated = Vec::with_capacity(findings.len());
-    for (mut finding, judgment) in findings.into_iter().zip(judgments) {
-        anyhow::ensure!(
-            judgment.defect_probability.is_finite()
-                && (0.0..=1.0).contains(&judgment.defect_probability),
-            "evaluator returned an invalid defect probability"
-        );
-        anyhow::ensure!(
-            judgment
-                .severity_confidence
-                .is_none_or(|value| value.is_finite() && (0.0..=1.0).contains(&value)),
-            "evaluator returned an invalid severity confidence"
-        );
-        if mode == EvaluationMode::Filter
-            && let Some(name) = judgment.severity.and_then(SeverityJudgment::as_str)
-        {
-            finding.severity = name.into();
-        }
-        let suppressed = mode == EvaluationMode::Filter
-            && (judgment.defect_probability < 0.5
-                || judgment.severity == Some(SeverityJudgment::Ignore));
-        if !suppressed {
-            accepted.push(finding.clone());
-        }
-        evaluated.push(EvaluatedFinding {
-            finding,
-            judgment,
-            suppressed,
-            published: false,
-        });
-    }
-
-    Ok((
-        accepted,
-        EvaluationReport {
-            model: String::new(),
-            findings: evaluated,
-            omitted_findings: 0,
-            usage: None,
-        },
-    ))
-}
-
-pub fn mark_published(report: &mut EvaluationReport, findings: &[ReviewFinding]) {
-    for evaluated in &mut report.findings {
-        evaluated.published = findings.iter().any(|published| {
-            published.path == evaluated.finding.path
-                && published.line == evaluated.finding.line
-                && published.title == evaluated.finding.title
-                && published.message == evaluated.finding.message
-                && published.source == evaluated.finding.source
-                && published.rule == evaluated.finding.rule
-        });
-    }
 }
 
 #[derive(Debug, Serialize)]
