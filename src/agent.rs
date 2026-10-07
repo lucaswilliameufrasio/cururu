@@ -4,7 +4,8 @@ use crate::provider::{ChatResponse, ProviderUsage};
 use crate::retry::retry_with_backoff;
 use anyhow::Context;
 use async_trait::async_trait;
-use schemars::JsonSchema;
+#[allow(unused_imports)]
+pub use cururu_core::{ReviewFinding, ReviewResult, SuggestedChange};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::warn;
@@ -15,55 +16,6 @@ use tracing::warn;
 )]
 pub struct InvalidReviewOutput {
     pub finish_reason: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ReviewResult {
-    pub model: String,
-    pub files_reviewed: usize,
-    pub summary: String,
-    pub findings: Vec<ReviewFinding>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ReviewFinding {
-    pub severity: String,
-    pub path: String,
-    pub line: Option<u32>,
-    pub title: String,
-    pub message: String,
-    pub suggestion: String,
-    pub confidence: f32,
-    #[serde(default)]
-    pub suggested_change: Option<SuggestedChange>,
-    #[serde(default)]
-    pub source: Option<String>,
-    #[serde(default)]
-    pub rule: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-pub struct SuggestedChange {
-    pub replacement: String,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum SuggestedChangeInput {
-    Structured { replacement: String },
-    Legacy(String),
-}
-
-impl<'de> Deserialize<'de> for SuggestedChange {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Ok(match SuggestedChangeInput::deserialize(deserializer)? {
-            SuggestedChangeInput::Structured { replacement }
-            | SuggestedChangeInput::Legacy(replacement) => Self { replacement },
-        })
-    }
 }
 
 #[derive(Debug, Clone)]

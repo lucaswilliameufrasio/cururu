@@ -1,6 +1,8 @@
 use anyhow::bail;
 use globset::GlobSet;
 
+pub use cururu_core::{FailOn, Severity};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommentMode {
     Inline,
@@ -57,80 +59,6 @@ impl Default for ReviewPolicy {
             synthesis: false,
             focus: Vec::new(),
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FailOn {
-    Off,
-    Critical,
-    High,
-    Medium,
-    Low,
-}
-
-impl FailOn {
-    pub fn from_name(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "off" | "none" => Some(Self::Off),
-            "critical" => Some(Self::Critical),
-            "high" => Some(Self::High),
-            "medium" => Some(Self::Medium),
-            "low" => Some(Self::Low),
-            _ => None,
-        }
-    }
-
-    pub const fn rank(self) -> u8 {
-        match self {
-            Self::Off => u8::MAX,
-            Self::Critical => 0,
-            Self::High => 1,
-            Self::Medium => 2,
-            Self::Low => 3,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Severity {
-    Critical,
-    High,
-    Medium,
-    Low,
-}
-
-impl Severity {
-    pub fn from_name(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "critical" => Some(Self::Critical),
-            "high" => Some(Self::High),
-            "medium" => Some(Self::Medium),
-            "low" => Some(Self::Low),
-            _ => None,
-        }
-    }
-
-    pub const fn rank(self) -> u8 {
-        match self {
-            Self::Critical => 0,
-            Self::High => 1,
-            Self::Medium => 2,
-            Self::Low => 3,
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Critical => "critical",
-            Self::High => "high",
-            Self::Medium => "medium",
-            Self::Low => "low",
-        }
-    }
-
-    pub fn all() -> Vec<Self> {
-        vec![Self::Critical, Self::High, Self::Medium, Self::Low]
     }
 }
 
