@@ -6,6 +6,7 @@ use crate::{agent::ReviewFinding, config::Severity};
 
 const MARKER: &str = "<!-- cururu:summary -->";
 const FINDING_MARKER: &str = "<!-- cururu:finding -->";
+const MAX_EVALUATION_ROWS_IN_COMMENT: usize = 20;
 
 pub const fn marker() -> &'static str {
     MARKER
@@ -40,13 +41,86 @@ pub fn render_summary_comment(output: &ReviewOutput) -> String {
     render_header(output, &mut out);
 
     if output.review.findings.is_empty() {
-        out.push_str("No high-confidence issues found.\n");
+        if output
+            .evaluation
+            .as_ref()
+            .is_some_and(|report| !report.findings.is_empty())
+        {
+            out.push_str(
+                "No findings passed Cururu's review policy; see evaluator judgments below.\n",
+            );
+        } else {
+            out.push_str("No high-confidence issues found.\n");
+        }
     } else {
         out.push_str("| Severity | File | Line | Finding | Suggestion |\n");
         out.push_str("|---|---|---:|---|---|\n");
         for finding in &output.review.findings {
             out.push_str(&render_finding_row(finding));
         }
+    }
+
+    if let Some(report) = &output.evaluation {
+        let _ = writeln!(
+            out,
+            "\n<details><summary>Jev evaluation ({})</summary>\n",
+            escape_md(&report.model)
+        );
+        out.push_str("\n| Status | Defect probability | Severity | Severity confidence | File | Line | Finding |\n|---|---:|---|---:|---|---:|---|\n");
+        if let Some(usage) = &report.usage {
+            let _ = writeln!(
+                out,
+                "\nEvaluator token usage: {} input / {} output.\n",
+                usage
+                    .input_tokens
+                    .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+                usage
+                    .output_tokens
+                    .map_or_else(|| "unavailable".into(), |value| value.to_string()),
+            );
+        }
+        for item in report.findings.iter().take(MAX_EVALUATION_ROWS_IN_COMMENT) {
+            let line = item
+                .finding
+                .line
+                .map_or_else(|| "-".into(), |line| line.to_string());
+            let severity = item.judgment.severity.map_or("not rated", |value| {
+                value.as_str().map_or("ignore", |name| name)
+            });
+            let _ = writeln!(
+                out,
+                "| {} | {:.2} | {} | {} | `{}` | {} | {} |",
+                if item.suppressed {
+                    "suppressed by Jev"
+                } else if item.published {
+                    "published"
+                } else {
+                    "not published by policy"
+                },
+                item.judgment.defect_probability,
+                escape_md(severity),
+                item.judgment
+                    .severity_confidence
+                    .map_or_else(|| "unavailable".into(), |value| format!("{value:.2}")),
+                escape_md(&truncate_chars(&item.finding.path, 120)),
+                line,
+                escape_md(&truncate_chars(&item.finding.title, 160)),
+            );
+        }
+        let hidden_audit_rows = report
+            .findings
+            .len()
+            .saturating_sub(MAX_EVALUATION_ROWS_IN_COMMENT);
+        if hidden_audit_rows > 0 || report.omitted_findings > 0 {
+            let _ = writeln!(
+                out,
+                "\nEvaluator audit truncated for comment size: {} of {} evaluated rows hidden; {} candidate(s) were not sent to Jev. Full details are in dry-run JSON.\n",
+                hidden_audit_rows,
+                report.findings.len(),
+                report.omitted_findings,
+            );
+        }
+        out.push_str("\n</details>\n");
     }
 
     out.push_str(&render_signature(output.logo_url.as_deref()));
@@ -181,6 +255,16 @@ fn escape_md(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', " ")
 }
 
+fn truncate_chars(value: &str, limit: usize) -> String {
+    let mut chars = value.chars();
+    let prefix: String = chars.by_ref().take(limit).collect();
+    if chars.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,12 +374,36 @@ mod tests {
                 tools: vec![],
                 findings: vec![],
             },
+            evaluation: Some(crate::evaluation::EvaluationReport {
+                model: "jev-1.13.0".into(),
+                findings: vec![crate::evaluation::EvaluatedFinding {
+                    finding: finding(),
+                    judgment: crate::evaluation::FindingJudgment {
+                        defect_probability: 0.2,
+                        severity: Some(crate::evaluation::SeverityJudgment::Ignore),
+                        severity_confidence: Some(0.9),
+                    },
+                    suppressed: true,
+                    published: false,
+                }],
+                omitted_findings: 3,
+                usage: Some(crate::evaluation::EvaluationUsage {
+                    input_tokens: Some(10),
+                    output_tokens: Some(2),
+                }),
+            }),
         };
         let body = render_summary_comment(&output);
         assert!(body.contains("<!-- cururu:state:v1 head=head -->"));
         assert!(body.contains("_Cururu_"));
         assert!(body.contains("![Cururu](<https://example.test/cururu.svg>)"));
         assert!(!body.contains("(o)_(o)"));
+        assert!(body.contains("No findings passed Cururu's review policy"));
+        assert!(body.contains("suppressed by Jev"));
+        assert!(body.contains("Defect probability"));
+        assert!(body.contains("0.20"));
+        assert!(body.contains("Evaluator token usage: 10 input / 2 output"));
+        assert!(body.contains("3 candidate(s) were not sent to Jev"));
     }
 
     #[test]
@@ -327,6 +435,7 @@ mod tests {
                 tools: vec![],
                 findings: vec![],
             },
+            evaluation: None,
         };
         let body = render_summary_comment(&output);
         assert!(body.contains("Provider-reported cost"));

@@ -2,7 +2,7 @@ use crate::{
     agent, analysis,
     config::AppConfig,
     context::{self, ContextFile, ContextStore},
-    diff, provider,
+    diff, evaluation, provider,
     scm::ScmProvider,
 };
 use anyhow::Context;
@@ -22,6 +22,7 @@ pub struct ReviewOutput {
     pub changed_files: Vec<diff::ChangedFile>,
     pub head_sha: String,
     pub analysis: analysis::AnalysisReport,
+    pub evaluation: Option<evaluation::EvaluationReport>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -110,13 +111,50 @@ pub async fn run_review(
     let usage = provider::merge_usage(&chunk_results);
     let analysis_report =
         analysis::load_evidence(&config.analysis, &files, &head_sha, source_control).await?;
-    let review = agent::merge_results(
+    let candidates = agent::collect_candidates(
         model.clone(),
         files.len(),
         chunk_results,
         &config.review.policy,
         analysis_report.findings.clone(),
     );
+    let (review, mut evaluation_report) = if let Some(mode) = config.evaluator.mode {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_mins(2))
+            .build()
+            .context("failed to build TypeSafe evaluator client")?;
+        let mut report = evaluation::evaluate_with_jev(
+            &client,
+            &config.evaluator.api_key,
+            &config.evaluator.model,
+            &candidates.findings,
+            &files,
+        )
+        .await?;
+        let mut judged_candidates = candidates;
+        let unevaluated = judged_candidates.findings.split_off(report.findings.len());
+        let (judged_findings, judged_report) = evaluation::apply_judgments(
+            judged_candidates.findings,
+            report
+                .findings
+                .iter()
+                .map(|item| item.judgment.clone())
+                .collect(),
+            mode,
+        )?;
+        report.findings = judged_report.findings;
+        judged_candidates.findings = judged_findings;
+        judged_candidates.findings.extend(unevaluated);
+        (
+            agent::apply_policy(judged_candidates, &config.review.policy),
+            Some(report),
+        )
+    } else {
+        (agent::apply_policy(candidates, &config.review.policy), None)
+    };
+    if let Some(report) = &mut evaluation_report {
+        evaluation::mark_published(report, &review.findings);
+    }
 
     let context_paths: Vec<String> = context_store.files.iter().map(|f| f.path.clone()).collect();
 
@@ -141,6 +179,7 @@ pub async fn run_review(
         changed_files: files,
         head_sha,
         analysis: analysis_report,
+        evaluation: evaluation_report,
     })
 }
 

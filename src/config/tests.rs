@@ -39,6 +39,11 @@ fn base_config() -> AppConfig {
         context: ContextConfig::default(),
         summary: SummaryConfig::default(),
         analysis: AnalysisConfig::default(),
+        evaluator: EvaluatorConfig {
+            mode: None,
+            api_key: String::new(),
+            model: "jev-latest".into(),
+        },
     }
 }
 
@@ -61,6 +66,29 @@ fn recommendations_are_opt_in_and_can_be_enabled_in_toml() {
     cfg.merge_toml_str("version = 1\n[review]\nrecommendations = true\n")
         .unwrap();
     assert!(cfg.review.recommendations);
+}
+
+#[test]
+fn evaluator_settings_are_rejected_from_repository_toml() {
+    let mut cfg = base_config();
+    let error = cfg
+        .merge_toml_str(
+            "version = 1\n[evaluator]\nmode = \"filter\"\napi_key = \"must-not-be-used\"\n",
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("local-only"));
+    assert!(cfg.evaluator.mode.is_none());
+    assert!(cfg.evaluator.api_key.is_empty());
+    assert_eq!(cfg.evaluator.model, "jev-latest");
+}
+
+#[test]
+fn evaluator_debug_output_redacts_the_api_key() {
+    let mut cfg = base_config();
+    cfg.evaluator.api_key = "secret-evaluator-key".into();
+    let debug = format!("{:?}", cfg.evaluator);
+    assert!(debug.contains("[redacted]"));
+    assert!(!debug.contains("secret-evaluator-key"));
 }
 
 #[test]

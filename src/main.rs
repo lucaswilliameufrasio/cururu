@@ -5,6 +5,7 @@ mod commands;
 mod config;
 mod context;
 mod diff;
+mod evaluation;
 mod github;
 mod output;
 mod provider;
@@ -29,6 +30,13 @@ use tracing_subscriber::{EnvFilter, fmt};
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(serde::Serialize)]
+struct DryRunOutput<'a> {
+    #[serde(flatten)]
+    review: &'a agent::ReviewResult,
+    evaluation: &'a Option<evaluation::EvaluationReport>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -196,7 +204,13 @@ async fn main() -> anyhow::Result<()> {
             let report = quality::evaluate(&result.review, config.review.policy.fail_on);
             write_action_outputs(&report)?;
             write_analysis_outputs(&result.analysis)?;
-            println!("{}", serde_json::to_string_pretty(&result.review)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&DryRunOutput {
+                    review: &result.review,
+                    evaluation: &result.evaluation,
+                })?
+            );
         }
         Command::Review => {
             let expected_head_sha = std::env::var("EXPECTED_HEAD_SHA")
@@ -431,6 +445,8 @@ fn print_redacted_config(config: &AppConfig) {
     println!("provider: {:?}", config.llm.provider);
     println!("base_url: {}", config.llm.base_url);
     println!("model: {}", config.llm.model);
+    println!("evaluator.mode: {:?}", config.evaluator.mode);
+    println!("evaluator.model: {}", config.evaluator.model);
     println!("temperature: {}", config.llm.temperature);
     println!("max_output_tokens: {}", config.llm.max_output_tokens);
     println!("repository: {}", config.source_control.repository);
@@ -476,7 +492,7 @@ fn build_inline_drafts(result: &review::ReviewOutput) -> Vec<scm::ReviewCommentD
 
 #[cfg(test)]
 mod cli_tests {
-    use super::initialize_repository_at;
+    use super::{DryRunOutput, initialize_repository_at};
 
     #[test]
     fn init_creates_starter_files_and_refuses_to_overwrite() {
@@ -492,5 +508,27 @@ mod cli_tests {
         let error = initialize_repository_at(root.path()).unwrap_err();
         assert!(error.to_string().contains("already exists"));
         assert_eq!(std::fs::read_to_string(config_path).unwrap(), "user config");
+    }
+
+    #[test]
+    fn dry_run_adds_evaluation_without_nesting_or_removing_review_fields() {
+        let review = crate::agent::ReviewResult {
+            model: "review-model".into(),
+            files_reviewed: 2,
+            summary: "summary".into(),
+            findings: vec![],
+        };
+        let evaluation = None;
+        let json = serde_json::to_value(DryRunOutput {
+            review: &review,
+            evaluation: &evaluation,
+        })
+        .unwrap();
+
+        assert_eq!(json["model"], "review-model");
+        assert_eq!(json["files_reviewed"], 2);
+        assert!(json["findings"].is_array());
+        assert!(json["evaluation"].is_null());
+        assert!(json.get("review").is_none());
     }
 }

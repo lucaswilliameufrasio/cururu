@@ -347,7 +347,21 @@ fn parse_review_json(content: &str, finish_reason: &str) -> anyhow::Result<Revie
     .into())
 }
 
+#[cfg(test)]
 pub fn merge_results(
+    model: String,
+    files_reviewed: usize,
+    results: Vec<ChunkResult>,
+    policy: &ReviewPolicy,
+    additional_findings: Vec<ReviewFinding>,
+) -> ReviewResult {
+    apply_policy(
+        collect_candidates(model, files_reviewed, results, policy, additional_findings),
+        policy,
+    )
+}
+
+pub fn collect_candidates(
     model: String,
     files_reviewed: usize,
     results: Vec<ChunkResult>,
@@ -360,12 +374,6 @@ pub fn merge_results(
         .collect();
     findings.extend(additional_findings);
 
-    findings.retain(|f| {
-        f.confidence.is_finite()
-            && f.confidence >= policy.minimum_confidence
-            && Severity::from_name(&f.severity)
-                .is_some_and(|severity| policy.allowed_severities.contains(&severity))
-    });
     if !policy.suggested_changes {
         for finding in &mut findings {
             finding.suggested_change = None;
@@ -380,17 +388,33 @@ pub fn merge_results(
     if policy.synthesis {
         findings = deduplicate_findings(findings);
     }
-    findings.truncate(policy.max_findings);
-
     ReviewResult {
         model,
         files_reviewed,
-        summary: format!(
-            "Found {} high-confidence review finding(s).",
-            findings.len()
-        ),
+        summary: format!("Collected {} review candidate(s).", findings.len()),
         findings,
     }
+}
+
+pub fn apply_policy(mut candidates: ReviewResult, policy: &ReviewPolicy) -> ReviewResult {
+    candidates.findings.retain(|f| {
+        f.confidence.is_finite()
+            && f.confidence >= policy.minimum_confidence
+            && Severity::from_name(&f.severity)
+                .is_some_and(|severity| policy.allowed_severities.contains(&severity))
+    });
+    candidates.findings.sort_by(|a, b| {
+        severity_rank(&a.severity)
+            .cmp(&severity_rank(&b.severity))
+            .then(a.path.cmp(&b.path))
+            .then(a.line.cmp(&b.line))
+    });
+    candidates.findings.truncate(policy.max_findings);
+    candidates.summary = format!(
+        "Found {} high-confidence review finding(s).",
+        candidates.findings.len()
+    );
+    candidates
 }
 
 fn deduplicate_findings(findings: Vec<ReviewFinding>) -> Vec<ReviewFinding> {
@@ -565,6 +589,34 @@ mod tests {
         );
 
         assert!(merged.findings.is_empty());
+    }
+
+    #[test]
+    fn candidates_are_available_before_confidence_and_severity_policies() {
+        let mut candidate = llm_finding("src/lib.rs", 1, "possible issue", 0.2);
+        candidate.severity = "low".into();
+        let candidates = collect_candidates(
+            "test-model".into(),
+            1,
+            vec![ChunkResult {
+                review: ReviewResult {
+                    model: "test-model".into(),
+                    files_reviewed: 1,
+                    summary: String::new(),
+                    findings: vec![candidate],
+                },
+                usage: None,
+            }],
+            &ReviewPolicy::default(),
+            Vec::new(),
+        );
+
+        assert_eq!(candidates.findings.len(), 1);
+        assert!(
+            apply_policy(candidates, &ReviewPolicy::default())
+                .findings
+                .is_empty()
+        );
     }
 
     #[tokio::test]
