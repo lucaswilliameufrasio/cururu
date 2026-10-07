@@ -7,10 +7,15 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+mod evaluation;
 mod quality;
 mod scm_types;
 mod severity;
 
+pub use evaluation::{
+    EvaluatedFinding, EvaluationMode, EvaluationReport, EvaluationUsage, FindingJudgment,
+    SeverityJudgment,
+};
 pub use quality::{QualityReport, evaluate_quality};
 pub use scm_types::{
     FindingAnnotation, PriorReviewComment, PriorReviewFeedback, ReviewCommentDraft,

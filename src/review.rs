@@ -123,14 +123,12 @@ pub async fn run_review(
             .timeout(std::time::Duration::from_mins(2))
             .build()
             .context("failed to build TypeSafe evaluator client")?;
-        let mut report = evaluation::evaluate_with_jev(
-            &client,
-            &config.evaluator.api_key,
-            &config.evaluator.model,
-            &candidates.findings,
-            &files,
-        )
-        .await?;
+        let evaluator = evaluation::build_jev_evaluator(
+            client,
+            config.evaluator.api_key.clone(),
+            config.evaluator.model.clone(),
+        );
+        let mut report = evaluator.evaluate(&candidates.findings, &files).await?;
         let mut judged_candidates = candidates;
         let unevaluated = judged_candidates.findings.split_off(report.findings.len());
         let (judged_findings, judged_report) = evaluation::apply_judgments(
