@@ -4,9 +4,11 @@ use crate::provider::{ChatResponse, ProviderUsage};
 use crate::retry::retry_with_backoff;
 use anyhow::Context;
 use async_trait::async_trait;
+#[cfg(test)]
+use cururu_core::deduplicate_review_findings;
+use cururu_core::{CandidateOptions, collect_review_candidates, sort_review_findings};
 #[allow(unused_imports)]
 pub use cururu_core::{ReviewFinding, ReviewResult, SuggestedChange};
-use cururu_core::{deduplicate_review_findings, sort_review_findings};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::warn;
@@ -321,27 +323,16 @@ pub fn collect_candidates(
     policy: &ReviewPolicy,
     additional_findings: Vec<ReviewFinding>,
 ) -> ReviewResult {
-    let mut findings: Vec<ReviewFinding> = results
-        .into_iter()
-        .flat_map(|r| r.review.findings)
-        .collect();
-    findings.extend(additional_findings);
-
-    if !policy.suggested_changes {
-        for finding in &mut findings {
-            finding.suggested_change = None;
-        }
-    }
-    sort_review_findings(&mut findings);
-    if policy.synthesis {
-        findings = deduplicate_review_findings(findings);
-    }
-    ReviewResult {
+    collect_review_candidates(
         model,
         files_reviewed,
-        summary: format!("Collected {} review candidate(s).", findings.len()),
-        findings,
-    }
+        results.into_iter().map(|result| result.review).collect(),
+        additional_findings,
+        CandidateOptions {
+            include_suggested_changes: policy.suggested_changes,
+            synthesize: policy.synthesis,
+        },
+    )
 }
 
 pub fn apply_policy(mut candidates: ReviewResult, policy: &ReviewPolicy) -> ReviewResult {

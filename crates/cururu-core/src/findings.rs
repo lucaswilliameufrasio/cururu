@@ -1,4 +1,42 @@
-use crate::ReviewFinding;
+use crate::{ReviewFinding, ReviewResult};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CandidateOptions {
+    pub include_suggested_changes: bool,
+    pub synthesize: bool,
+}
+
+/// Combines chunk results and analyzer findings before application policies run.
+#[must_use]
+pub fn collect_review_candidates(
+    model: String,
+    files_reviewed: usize,
+    reviews: Vec<ReviewResult>,
+    additional_findings: Vec<ReviewFinding>,
+    options: CandidateOptions,
+) -> ReviewResult {
+    let mut findings: Vec<ReviewFinding> = reviews
+        .into_iter()
+        .flat_map(|review| review.findings)
+        .collect();
+    findings.extend(additional_findings);
+
+    if !options.include_suggested_changes {
+        for finding in &mut findings {
+            finding.suggested_change = None;
+        }
+    }
+    sort_review_findings(&mut findings);
+    if options.synthesize {
+        findings = deduplicate_review_findings(findings);
+    }
+    ReviewResult {
+        model,
+        files_reviewed,
+        summary: format!("Collected {} review candidate(s).", findings.len()),
+        findings,
+    }
+}
 
 /// Sort findings by the existing Cururu severity, path, and line order.
 pub fn sort_review_findings(findings: &mut [ReviewFinding]) {
@@ -71,8 +109,11 @@ fn severity_rank(severity: &str) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{deduplicate_review_findings, sort_review_findings};
-    use crate::ReviewFinding;
+    use super::{
+        CandidateOptions, collect_review_candidates, deduplicate_review_findings,
+        sort_review_findings,
+    };
+    use crate::{ReviewFinding, ReviewResult, SuggestedChange};
 
     fn finding(severity: &str, path: &str, line: u32, title: &str) -> ReviewFinding {
         ReviewFinding {
@@ -134,5 +175,64 @@ mod tests {
         assert_eq!(deduplicated[0].source.as_deref(), Some("clippy"));
         assert_eq!(deduplicated[0].severity, "medium");
         assert_ne!(deduplicated[0].rule, deduplicated[1].rule);
+    }
+
+    #[test]
+    fn candidate_collection_preserves_existing_options_and_summary() {
+        let mut candidate = finding("medium", "src/lib.rs", 4, "possible issue");
+        candidate.suggested_change = Some(SuggestedChange {
+            replacement: "safe_call()".into(),
+        });
+        let review = ReviewResult {
+            model: "chunk-model".into(),
+            files_reviewed: 3,
+            summary: String::new(),
+            findings: vec![candidate],
+        };
+
+        let collected = collect_review_candidates(
+            "review-model".into(),
+            3,
+            vec![review],
+            Vec::new(),
+            CandidateOptions {
+                include_suggested_changes: false,
+                synthesize: false,
+            },
+        );
+
+        assert_eq!(collected.model, "review-model");
+        assert_eq!(collected.files_reviewed, 3);
+        assert_eq!(collected.summary, "Collected 1 review candidate(s).");
+        assert_eq!(collected.findings.len(), 1);
+        assert!(collected.findings[0].suggested_change.is_none());
+    }
+
+    #[test]
+    fn candidate_collection_applies_synthesis_only_when_enabled() {
+        let first = finding("high", "src/lib.rs", 4, "same issue");
+        let mut second = first.clone();
+        second.confidence = 0.95;
+        let review = ReviewResult {
+            model: "chunk-model".into(),
+            files_reviewed: 1,
+            summary: String::new(),
+            findings: vec![first, second],
+        };
+
+        let collected = collect_review_candidates(
+            "review-model".into(),
+            1,
+            vec![review],
+            Vec::new(),
+            CandidateOptions {
+                include_suggested_changes: true,
+                synthesize: true,
+            },
+        );
+
+        assert_eq!(collected.findings.len(), 1);
+        assert!((collected.findings[0].confidence - 0.95).abs() < f32::EPSILON);
+        assert_eq!(collected.summary, "Collected 1 review candidate(s).");
     }
 }
