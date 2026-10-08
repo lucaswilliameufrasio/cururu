@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 mod analysis;
+mod analysis_annotations;
 mod context;
 mod diff_limits;
 mod diff_ops;
@@ -20,6 +21,7 @@ mod severity;
 mod unified_diff;
 
 pub use analysis::{AnalysisReport, AnalysisTool};
+pub use analysis_annotations::annotations_to_findings;
 pub use context::{ContextFile, ContextStore};
 pub use diff_limits::{ReviewInputError, ensure_review_diff_limits};
 pub use diff_ops::{chunk_files, is_valid_anchor};
