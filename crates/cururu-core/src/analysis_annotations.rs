@@ -1,4 +1,4 @@
-use crate::{ChangedFile, FindingAnnotation, ReviewFinding};
+use crate::{ChangedFile, FindingAnnotation, ReviewFinding, normalize_analysis_path};
 
 /// Convert SCM check-run annotations into review findings for changed files.
 #[must_use]
@@ -8,7 +8,7 @@ pub fn annotations_to_findings(
 ) -> Vec<ReviewFinding> {
     let mut findings = Vec::new();
     for annotation in annotations {
-        let path = normalize_path(&annotation.path);
+        let path = normalize_analysis_path(&annotation.path);
         if !changed_files.iter().any(|file| file.path == path) {
             continue;
         }
@@ -42,13 +42,6 @@ pub fn annotations_to_findings(
         });
     }
     findings
-}
-
-fn normalize_path(path: &str) -> String {
-    path.strip_prefix("file://")
-        .unwrap_or(path)
-        .trim_start_matches("./")
-        .to_string()
 }
 
 #[cfg(test)]
