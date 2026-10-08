@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 mod analysis;
 mod analysis_annotations;
+mod analysis_findings;
 mod context;
 mod diff_limits;
 mod diff_ops;
@@ -22,6 +23,7 @@ mod unified_diff;
 
 pub use analysis::{AnalysisReport, AnalysisTool};
 pub use analysis_annotations::annotations_to_findings;
+pub use analysis_findings::sarif_finding;
 pub use context::{ContextFile, ContextStore};
 pub use diff_limits::{ReviewInputError, ensure_review_diff_limits};
 pub use diff_ops::{chunk_files, is_valid_anchor};
