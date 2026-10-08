@@ -51,6 +51,16 @@ pub struct AnalysisManifest {
     pub tools: Vec<AnalysisManifestTool>,
 }
 
+impl AnalysisManifest {
+    /// Report whether this manifest identifies a different analyzed revision.
+    #[must_use]
+    pub fn is_stale_for(&self, expected_head: &str) -> bool {
+        self.commit_sha
+            .as_deref()
+            .is_some_and(|commit_sha| commit_sha != expected_head)
+    }
+}
+
 /// One analyzer's execution metadata in an [`AnalysisManifest`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct AnalysisManifestTool {
@@ -132,6 +142,21 @@ mod tests {
             serde_json::from_str::<AnalysisManifest>(&encoded).unwrap(),
             complete
         );
+    }
+
+    #[test]
+    fn manifest_freshness_requires_a_present_matching_commit_sha() {
+        let manifest_without_sha: AnalysisManifest =
+            serde_json::from_str(r#"{"schema_version":1,"tools":[]}"#).unwrap();
+        let manifest_with_sha = AnalysisManifest {
+            schema_version: 1,
+            commit_sha: Some("abc123".into()),
+            tools: Vec::new(),
+        };
+
+        assert!(!manifest_without_sha.is_stale_for("def456"));
+        assert!(!manifest_with_sha.is_stale_for("abc123"));
+        assert!(manifest_with_sha.is_stale_for("def456"));
     }
 
     #[test]

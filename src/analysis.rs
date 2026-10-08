@@ -95,12 +95,7 @@ pub async fn load_evidence(
                 manifest.schema_version
             );
         }
-        if config.require_current_head
-            && manifest
-                .commit_sha
-                .as_deref()
-                .is_some_and(|sha| sha != expected_head)
-        {
+        if config.require_current_head && manifest.is_stale_for(expected_head) {
             return Ok(AnalysisReport {
                 status: "stale".into(),
                 tools: Vec::new(),
