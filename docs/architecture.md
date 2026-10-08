@@ -39,6 +39,11 @@ requests, media types and payloads. GitHub-specific environment aliases and
 webhook shapes are translated at the adapter boundary; core review code uses
 `ScmConfig` and `ScmProvider` rather than GitHub owner/repository API fields.
 
+`ScmProvider` remains an application-level composition contract in
+`src/scm.rs`; `cururu-core` does not own this async I/O interface. The core
+exports provider-neutral domain values and pure review operations, while each
+application composes those operations with its own SCM adapter.
+
 Local repository discovery prefers `CURURU_REPOSITORY`, then the checkout's
 Git `origin`; `GITHUB_REPOSITORY` remains a compatibility input for existing
 Actions workflows. Generic SCM configuration uses `CURURU_SCM_PROVIDER`,
