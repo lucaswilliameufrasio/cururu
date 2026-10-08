@@ -17,6 +17,7 @@ mod quality;
 mod review_guard;
 mod scm_types;
 mod severity;
+mod unified_diff;
 
 pub use analysis::{AnalysisReport, AnalysisTool};
 pub use context::{ContextFile, ContextStore};
@@ -35,6 +36,7 @@ pub use scm_types::{
     FindingAnnotation, PriorReviewComment, PriorReviewFeedback, ReviewCommentDraft,
 };
 pub use severity::{FailOn, Severity};
+pub use unified_diff::parse_unified_diff;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReviewResult {
