@@ -403,15 +403,21 @@ through repository configuration.
 | `CURURU_PROFILE` | no | `balanced` | Review profile |
 | `CURURU_FAIL_ON` | no | `off` | Fail the action at a severity threshold |
 | `CURURU_EVALUATOR_MODE` | no | disabled | Enable TypeSafe Jev in `observe` or `filter` mode |
+| `CURURU_EVALUATOR_ALLOWED_REPOSITORIES` | when evaluator is enabled | — | Comma-separated local allowlist (`owner/repo` or full Git remote identity) authorizing code to be sent to TypeSafe |
 | `TYPESAFE_API_KEY` | when evaluator is enabled | — | TypeSafe API key; keep in a local secret store or CI secret |
 | `TYPESAFE_MODEL` | no | `jev-latest` | TypeSafe model alias or version |
 
 ### Optional Jev evaluator
 
-The evaluator is disabled unless `CURURU_EVALUATOR_MODE` is explicitly set.
-When enabled, Cururu sends each finding and its changed-code hunk to TypeSafe's
-`/v1/systemone` API to judge defect probability and severity. Do not enable it
-for repositories whose code must not be sent to this remote service.
+The evaluator is disabled unless `CURURU_EVALUATOR_MODE` is explicitly set and
+the current repository is listed in `CURURU_EVALUATOR_ALLOWED_REPOSITORIES`.
+Keep that allowlist in the operator's local environment or trusted CI settings;
+it is intentionally not accepted from `.cururu.toml`. When enabled, Cururu sends
+finding metadata and changed-code evidence to TypeSafe's `/v1/systemone` API to
+judge defect probability and severity. Do not authorize repositories whose code
+must not be sent to this remote service. Each request is limited to 100 findings,
+8,000 evidence characters per finding, and 64,000 evidence characters total;
+findings beyond those limits remain unevaluated.
 
 - `observe` records and displays Jev's judgments without changing which findings
   Cururu publishes.
@@ -421,9 +427,11 @@ for repositories whose code must not be sent to this remote service.
   comment's audit section.
 
 An evaluator request/configuration error fails the review rather than silently
-falling back to unfiltered publication. Jev's probability/confidence is a model
-judgment, not proof that a finding is correct. Keep the evaluator key outside
-`.cururu.toml`; repo-controlled configuration cannot enable it or provide keys.
+falling back to unfiltered publication. Cururu uses a two-minute request timeout
+with no internal retries; the webhook delivery queue may retry a failed review
+up to five times. Jev's probability/confidence is a model judgment, not proof
+that a finding is correct. Keep the evaluator key outside `.cururu.toml`;
+repo-controlled configuration cannot enable it or provide keys.
 
 The optional Action input `expected_head_sha` pins a run to the head SHA from
 its triggering event. Cururu refuses to publish if that SHA no longer matches
