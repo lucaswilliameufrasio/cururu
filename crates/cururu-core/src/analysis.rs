@@ -40,9 +40,33 @@ pub struct AnalysisTool {
     pub message: Option<String>,
 }
 
+/// Versioned, provider-neutral manifest linking analyzer runs to their SARIF files.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct AnalysisManifest {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub commit_sha: Option<String>,
+    #[serde(default)]
+    pub tools: Vec<AnalysisManifestTool>,
+}
+
+/// One analyzer's execution metadata in an [`AnalysisManifest`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct AnalysisManifestTool {
+    pub name: String,
+    pub status: String,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub sarif_path: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AnalysisReport, AnalysisTool};
+    use super::{AnalysisManifest, AnalysisManifestTool, AnalysisReport, AnalysisTool};
     use crate::ReviewFinding;
 
     #[test]
@@ -76,6 +100,38 @@ mod tests {
         assert_eq!(decoded.findings.len(), 1);
         assert_eq!(decoded.findings[0].path, "src/lib.rs");
         assert_eq!(decoded.findings[0].source.as_deref(), Some("static-check"));
+    }
+
+    #[test]
+    fn analysis_manifest_round_trips_and_defaults_optional_fields() {
+        let manifest: AnalysisManifest = serde_json::from_str(
+            r#"{"schema_version":1,"tools":[{"name":"clippy","status":"succeeded","exit_code":0,"sarif_path":"target/clippy.sarif"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.commit_sha, None);
+        assert_eq!(manifest.tools[0].message, None);
+        assert_eq!(
+            manifest.tools[0].sarif_path.as_deref(),
+            Some("target/clippy.sarif")
+        );
+
+        let complete = AnalysisManifest {
+            schema_version: 1,
+            commit_sha: Some("abc123".into()),
+            tools: vec![AnalysisManifestTool {
+                name: "clippy".into(),
+                status: "succeeded".into(),
+                exit_code: Some(0),
+                message: Some("clean".into()),
+                sarif_path: Some("target/clippy.sarif".into()),
+            }],
+        };
+        let encoded = serde_json::to_string(&complete).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AnalysisManifest>(&encoded).unwrap(),
+            complete
+        );
     }
 
     #[test]

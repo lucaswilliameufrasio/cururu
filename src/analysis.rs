@@ -1,6 +1,6 @@
 use crate::{agent::ReviewFinding, config::AnalysisConfig, diff::ChangedFile, scm::ScmProvider};
 use anyhow::Context;
-pub use cururu_core::{AnalysisReport, AnalysisTool};
+pub use cururu_core::{AnalysisManifest, AnalysisReport, AnalysisTool};
 use cururu_core::{annotations_to_findings, normalize_analysis_path, sarif_finding};
 use globset::{Glob, GlobSetBuilder};
 use serde::Deserialize;
@@ -68,28 +68,6 @@ struct SarifRegion {
     start_line: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
-struct Manifest {
-    #[serde(default)]
-    schema_version: u32,
-    #[serde(default)]
-    commit_sha: Option<String>,
-    #[serde(default)]
-    tools: Vec<ManifestTool>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManifestTool {
-    name: String,
-    status: String,
-    #[serde(default)]
-    exit_code: Option<i32>,
-    #[serde(default)]
-    message: Option<String>,
-    #[serde(default)]
-    sarif_path: Option<String>,
-}
-
 pub async fn load_evidence(
     config: &AnalysisConfig,
     changed_files: &[ChangedFile],
@@ -109,7 +87,7 @@ pub async fn load_evidence(
     if let Some(manifest_path) = &config.manifest {
         let raw = std::fs::read_to_string(manifest_path)
             .with_context(|| format!("failed to read analysis manifest {manifest_path}"))?;
-        let manifest: Manifest = serde_json::from_str(&raw)
+        let manifest: AnalysisManifest = serde_json::from_str(&raw)
             .with_context(|| format!("failed to parse analysis manifest {manifest_path}"))?;
         if manifest.schema_version != 1 {
             anyhow::bail!(
