@@ -1,3 +1,4 @@
+use globset::{Glob, GlobSetBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -23,9 +24,36 @@ pub struct ContextFile {
     pub content: String,
 }
 
+/// Match a repository-relative path against an exact context path or glob.
+///
+/// Patterns without glob metacharacters retain exact-match semantics. Invalid
+/// glob patterns do not match, preserving the application's existing behavior.
+#[must_use]
+pub fn context_path_matches(path: &str, pattern: &str) -> bool {
+    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        let glob = Glob::new(pattern).ok();
+        let matcher = glob.and_then(|glob| {
+            let mut builder = GlobSetBuilder::new();
+            builder.add(glob);
+            builder.build().ok()
+        });
+        matcher.is_some_and(|set| set.is_match(path))
+    } else {
+        path == pattern
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ContextFile, ContextStore};
+    use super::{ContextFile, ContextStore, context_path_matches};
+
+    #[test]
+    fn context_path_matching_preserves_exact_glob_and_invalid_pattern_behavior() {
+        assert!(context_path_matches("CONTRIBUTING.md", "CONTRIBUTING.md"));
+        assert!(!context_path_matches("src/lib.rs", "src/main.rs"));
+        assert!(context_path_matches("src/lib.rs", "src/*.rs"));
+        assert!(!context_path_matches("src/lib.rs", "src/["));
+    }
 
     #[test]
     fn context_store_round_trips_with_diagnostics() {

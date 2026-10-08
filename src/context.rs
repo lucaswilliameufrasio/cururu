@@ -2,6 +2,7 @@ use std::fmt::Write;
 
 use crate::{config::ContextConfig, scm::ScmProvider};
 use anyhow::Context;
+use cururu_core::context_path_matches;
 pub use cururu_core::{ContextFile, ContextStore};
 use tracing::warn;
 
@@ -56,7 +57,7 @@ pub async fn fetch_context(
         for pattern in patterns {
             let matched: Vec<&String> = tree_paths
                 .iter()
-                .filter(|p| match_path(p, pattern))
+                .filter(|p| context_path_matches(p, pattern))
                 .collect();
 
             if matched.is_empty() {
@@ -100,20 +101,6 @@ pub async fn fetch_context(
         truncated,
         skipped,
     })
-}
-
-fn match_path(path: &str, pattern: &str) -> bool {
-    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
-        let g = globset::Glob::new(pattern).ok();
-        let set = g.and_then(|g| {
-            let mut b = globset::GlobSetBuilder::new();
-            b.add(g);
-            b.build().ok()
-        });
-        set.is_some_and(|s| s.is_match(path))
-    } else {
-        path == pattern
-    }
 }
 
 fn truncate_utf8(value: &str, max_bytes: usize) -> String {
