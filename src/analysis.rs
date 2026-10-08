@@ -89,10 +89,11 @@ pub async fn load_evidence(
             .with_context(|| format!("failed to read analysis manifest {manifest_path}"))?;
         let manifest: AnalysisManifest = serde_json::from_str(&raw)
             .with_context(|| format!("failed to parse analysis manifest {manifest_path}"))?;
-        if manifest.schema_version != 1 {
+        if !manifest.has_supported_schema_version() {
             anyhow::bail!(
-                "unsupported analysis manifest version {} (expected 1)",
-                manifest.schema_version
+                "unsupported analysis manifest version {} (expected {})",
+                manifest.schema_version,
+                AnalysisManifest::CURRENT_SCHEMA_VERSION
             );
         }
         if config.require_current_head && manifest.is_stale_for(expected_head) {
