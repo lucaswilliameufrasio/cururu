@@ -52,6 +52,15 @@ pub struct AnalysisManifest {
 }
 
 impl AnalysisManifest {
+    /// Current supported on-disk manifest schema version.
+    pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+    /// Whether this manifest uses a schema version understood by Cururu.
+    #[must_use]
+    pub const fn has_supported_schema_version(&self) -> bool {
+        self.schema_version == Self::CURRENT_SCHEMA_VERSION
+    }
+
     /// Report whether this manifest identifies a different analyzed revision.
     #[must_use]
     pub fn is_stale_for(&self, expected_head: &str) -> bool {
@@ -176,6 +185,22 @@ mod tests {
         assert!(!manifest_without_sha.is_stale_for("def456"));
         assert!(!manifest_with_sha.is_stale_for("abc123"));
         assert!(manifest_with_sha.is_stale_for("def456"));
+    }
+
+    #[test]
+    fn manifest_schema_validation_uses_the_core_supported_version() {
+        let supported = AnalysisManifest {
+            schema_version: AnalysisManifest::CURRENT_SCHEMA_VERSION,
+            commit_sha: None,
+            tools: Vec::new(),
+        };
+        let unsupported = AnalysisManifest {
+            schema_version: AnalysisManifest::CURRENT_SCHEMA_VERSION + 1,
+            ..supported.clone()
+        };
+
+        assert!(supported.has_supported_schema_version());
+        assert!(!unsupported.has_supported_schema_version());
     }
 
     #[test]
