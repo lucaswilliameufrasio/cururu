@@ -163,20 +163,7 @@ pub async fn load_evidence(
         }
     }
 
-    let status = if tools.iter().any(|tool| tool.status == "failed") {
-        "failed"
-    } else if tools.iter().any(|tool| tool.status == "not_run") {
-        "partial"
-    } else if tools.is_empty() && findings.is_empty() {
-        "no_evidence"
-    } else {
-        "passed"
-    };
-    Ok(AnalysisReport {
-        status: status.into(),
-        tools,
-        findings,
-    })
+    Ok(AnalysisReport::from_parts(tools, findings))
 }
 
 fn load_sarif_paths(
