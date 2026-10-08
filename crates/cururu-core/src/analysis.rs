@@ -59,6 +59,25 @@ impl AnalysisManifest {
             .as_deref()
             .is_some_and(|commit_sha| commit_sha != expected_head)
     }
+
+    /// Convert manifest entries into Cururu tool records and SARIF paths.
+    #[must_use]
+    pub fn into_analysis_data(self) -> (Vec<AnalysisTool>, Vec<String>) {
+        let mut tools = Vec::with_capacity(self.tools.len());
+        let mut sarif_paths = Vec::new();
+        for manifest_tool in self.tools {
+            if let Some(path) = manifest_tool.sarif_path {
+                sarif_paths.push(path);
+            }
+            tools.push(AnalysisTool {
+                name: manifest_tool.name,
+                status: manifest_tool.status,
+                exit_code: manifest_tool.exit_code,
+                message: manifest_tool.message,
+            });
+        }
+        (tools, sarif_paths)
+    }
 }
 
 /// One analyzer's execution metadata in an [`AnalysisManifest`].
@@ -157,6 +176,46 @@ mod tests {
         assert!(!manifest_without_sha.is_stale_for("def456"));
         assert!(!manifest_with_sha.is_stale_for("abc123"));
         assert!(manifest_with_sha.is_stale_for("def456"));
+    }
+
+    #[test]
+    fn manifest_conversion_preserves_tool_and_sarif_path_order() {
+        let manifest = AnalysisManifest {
+            schema_version: 1,
+            commit_sha: None,
+            tools: vec![
+                AnalysisManifestTool {
+                    name: "clippy".into(),
+                    status: "succeeded".into(),
+                    exit_code: Some(0),
+                    message: None,
+                    sarif_path: Some("target/clippy.sarif".into()),
+                },
+                AnalysisManifestTool {
+                    name: "test".into(),
+                    status: "failed".into(),
+                    exit_code: Some(1),
+                    message: Some("tests failed".into()),
+                    sarif_path: None,
+                },
+                AnalysisManifestTool {
+                    name: "audit".into(),
+                    status: "succeeded".into(),
+                    exit_code: Some(0),
+                    message: None,
+                    sarif_path: Some("target/audit.sarif".into()),
+                },
+            ],
+        };
+
+        let (tools, sarif_paths) = manifest.into_analysis_data();
+
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0].name, "clippy");
+        assert_eq!(tools[1].name, "test");
+        assert_eq!(tools[1].message.as_deref(), Some("tests failed"));
+        assert_eq!(tools[2].name, "audit");
+        assert_eq!(sarif_paths, ["target/clippy.sarif", "target/audit.sarif"]);
     }
 
     #[test]

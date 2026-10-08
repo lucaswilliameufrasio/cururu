@@ -102,17 +102,9 @@ pub async fn load_evidence(
                 findings: Vec::new(),
             });
         }
-        for tool in manifest.tools {
-            if let Some(path) = tool.sarif_path {
-                sarif_paths.push(path);
-            }
-            tools.push(AnalysisTool {
-                name: tool.name,
-                status: tool.status,
-                exit_code: tool.exit_code,
-                message: tool.message,
-            });
-        }
+        let (manifest_tools, manifest_sarif_paths) = manifest.into_analysis_data();
+        tools.extend(manifest_tools);
+        sarif_paths.extend(manifest_sarif_paths);
     }
 
     let mut findings = load_sarif_paths(&sarif_paths, changed_files, config.max_findings)?;
