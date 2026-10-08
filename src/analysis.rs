@@ -1,10 +1,6 @@
-use crate::{
-    agent::ReviewFinding,
-    config::AnalysisConfig,
-    diff::ChangedFile,
-    scm::{FindingAnnotation, ScmProvider},
-};
+use crate::{agent::ReviewFinding, config::AnalysisConfig, diff::ChangedFile, scm::ScmProvider};
 use anyhow::Context;
+use cururu_core::annotations_to_findings;
 pub use cururu_core::{AnalysisReport, AnalysisTool};
 use globset::{Glob, GlobSetBuilder};
 use serde::Deserialize;
@@ -181,49 +177,6 @@ pub async fn load_evidence(
         tools,
         findings,
     })
-}
-
-fn annotations_to_findings(
-    annotations: &[FindingAnnotation],
-    changed_files: &[ChangedFile],
-) -> Vec<ReviewFinding> {
-    let mut findings = Vec::new();
-    for annotation in annotations {
-        let path = normalize_path(&annotation.path);
-        if !changed_files.iter().any(|file| file.path == path) {
-            continue;
-        }
-        let line = annotation.line;
-        let rule = annotation
-            .title
-            .clone()
-            .unwrap_or_else(|| "check-run".into());
-        let severity = match annotation.severity.as_str() {
-            "failure" => "high",
-            "warning" => "medium",
-            _ => "low",
-        };
-        let message = if annotation.message.is_empty() {
-            annotation.details.clone().unwrap_or_else(|| rule.clone())
-        } else {
-            annotation.message.clone()
-        };
-        findings.push(ReviewFinding {
-            severity: severity.into(),
-            path,
-            line,
-            title: format!("check-run: {rule}"),
-            message,
-            suggestion:
-                "See the check-run annotation and project configuration for the recommended fix."
-                    .into(),
-            confidence: 1.0,
-            suggested_change: None,
-            source: Some("check-runs".into()),
-            rule: Some(rule),
-        });
-    }
-    findings
 }
 
 fn load_sarif_paths(
