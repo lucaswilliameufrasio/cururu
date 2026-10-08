@@ -26,7 +26,7 @@ pub use analysis::{AnalysisManifest, AnalysisManifestTool, AnalysisReport, Analy
 pub use analysis_annotations::annotations_to_findings;
 pub use analysis_findings::sarif_finding;
 pub use analysis_paths::normalize_analysis_path;
-pub use context::{ContextFile, ContextStore};
+pub use context::{ContextFile, ContextStore, context_path_matches};
 pub use diff_limits::{ReviewInputError, ensure_review_diff_limits};
 pub use diff_ops::{chunk_files, is_valid_anchor};
 pub use evaluation::{

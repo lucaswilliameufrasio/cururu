@@ -44,6 +44,10 @@ webhook shapes are translated at the adapter boundary; core review code uses
 exports provider-neutral domain values and pure review operations, while each
 application composes those operations with its own SCM adapter.
 
+Context path matching (exact paths and globs) is a pure core operation shared
+by applications. Configuration loading, pattern ordering, byte limits, file
+fetching, and prompt rendering remain application responsibilities.
+
 Local repository discovery prefers `CURURU_REPOSITORY`, then the checkout's
 Git `origin`; `GITHUB_REPOSITORY` remains a compatibility input for existing
 Actions workflows. Generic SCM configuration uses `CURURU_SCM_PROVIDER`,

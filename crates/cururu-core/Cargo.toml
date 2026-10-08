@@ -8,6 +8,7 @@ description = "Provider- and UI-independent domain types for Cururu code review"
 repository = "https://github.com/lucaswilliameufrasio/cururu"
 
 [dependencies]
+globset = "0.4"
 schemars = { version = "1.0", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 

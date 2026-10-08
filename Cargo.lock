@@ -502,6 +502,7 @@ dependencies = [
 name = "cururu-core"
 version = "0.1.0"
 dependencies = [
+ "globset",
  "schemars",
  "serde",
  "serde_json",
