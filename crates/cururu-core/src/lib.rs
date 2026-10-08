@@ -22,7 +22,7 @@ mod scm_types;
 mod severity;
 mod unified_diff;
 
-pub use analysis::{AnalysisReport, AnalysisTool};
+pub use analysis::{AnalysisManifest, AnalysisManifestTool, AnalysisReport, AnalysisTool};
 pub use analysis_annotations::annotations_to_findings;
 pub use analysis_findings::sarif_finding;
 pub use analysis_paths::normalize_analysis_path;
