@@ -1,7 +1,7 @@
 use crate::{agent::ReviewFinding, config::AnalysisConfig, diff::ChangedFile, scm::ScmProvider};
 use anyhow::Context;
-use cururu_core::annotations_to_findings;
 pub use cururu_core::{AnalysisReport, AnalysisTool};
+use cururu_core::{annotations_to_findings, sarif_finding};
 use globset::{Glob, GlobSetBuilder};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -220,18 +220,14 @@ fn load_sarif_paths(
                     .unwrap_or_else(|| "Static analysis reported an issue.".into());
                 let rule = result.rule_id.unwrap_or_else(|| "unknown".into());
                 let tool = run.tool.driver.name.clone();
-                findings.push(ReviewFinding {
-                    severity: normalize_level(result.level.as_deref()),
+                findings.push(sarif_finding(
+                    &tool,
+                    &rule,
+                    result.level.as_deref(),
                     path,
                     line,
-                    title: format!("{tool}: {rule}"),
                     message,
-                    suggestion: "See the analyzer diagnostic and project configuration for the recommended fix.".into(),
-                    confidence: 1.0,
-                    suggested_change: None,
-                    source: Some(tool),
-                    rule: Some(rule),
-                });
+                ));
                 if findings.len() >= max_findings {
                     return Ok(findings);
                 }
@@ -239,15 +235,6 @@ fn load_sarif_paths(
         }
     }
     Ok(findings)
-}
-
-fn normalize_level(level: Option<&str>) -> String {
-    match level.unwrap_or("warning").to_ascii_lowercase().as_str() {
-        "error" | "failure" => "high",
-        "warning" | "warn" => "medium",
-        _ => "low",
-    }
-    .into()
 }
 
 fn normalize_path(uri: &str) -> String {
