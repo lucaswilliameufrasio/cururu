@@ -34,6 +34,7 @@ pub struct EvaluatorConfig {
     pub mode: Option<crate::evaluation::EvaluationMode>,
     pub api_key: String,
     pub model: String,
+    pub repository_allowed: bool,
 }
 
 impl std::fmt::Debug for EvaluatorConfig {
@@ -43,6 +44,7 @@ impl std::fmt::Debug for EvaluatorConfig {
             .field("mode", &self.mode)
             .field("api_key", &"[redacted]")
             .field("model", &self.model)
+            .field("repository_allowed", &self.repository_allowed)
             .finish()
     }
 }
@@ -100,6 +102,14 @@ impl AppConfig {
         } else {
             String::new()
         };
+        let evaluator_repository_allowed = if evaluator_mode.is_some() {
+            evaluator_repository_is_allowed(
+                identity.as_ref(),
+                env::env_optional("CURURU_EVALUATOR_ALLOWED_REPOSITORIES").as_deref(),
+            )?
+        } else {
+            false
+        };
         let (api_url, server_url) = identity.as_ref().map_or_else(
             || {
                 let default_identity = crate::repository::RepositoryIdentity {
@@ -148,6 +158,7 @@ impl AppConfig {
                 mode: evaluator_mode,
                 api_key: env::env_optional("TYPESAFE_API_KEY").unwrap_or_default(),
                 model: env::env_optional("TYPESAFE_MODEL").unwrap_or_else(|| "jev-latest".into()),
+                repository_allowed: evaluator_repository_allowed,
             },
         })
     }
@@ -481,6 +492,45 @@ impl AppConfig {
 
         Ok(())
     }
+}
+
+fn evaluator_repository_is_allowed(
+    identity: Option<&crate::repository::RepositoryIdentity>,
+    allowlist: Option<&str>,
+) -> anyhow::Result<bool> {
+    let Some(identity) = identity else {
+        return Ok(false);
+    };
+    let Some(allowlist) = allowlist else {
+        return Ok(false);
+    };
+    let current_key = evaluator_repository_key(identity)?;
+    let mut allowed = false;
+
+    for entry in allowlist.split(',') {
+        let entry = entry.trim();
+        anyhow::ensure!(
+            !entry.is_empty(),
+            "CURURU_EVALUATOR_ALLOWED_REPOSITORIES contains an empty entry"
+        );
+        let allowed_identity =
+            crate::repository::RepositoryIdentity::parse(entry).with_context(|| {
+                format!("invalid repository in CURURU_EVALUATOR_ALLOWED_REPOSITORIES: {entry}")
+            })?;
+        if evaluator_repository_key(&allowed_identity)? == current_key {
+            allowed = true;
+        }
+    }
+
+    Ok(allowed)
+}
+
+fn evaluator_repository_key(
+    identity: &crate::repository::RepositoryIdentity,
+) -> anyhow::Result<String> {
+    let (owner, repository) = identity.owner_and_repository()?;
+    let host = identity.host.as_deref().unwrap_or("github.com");
+    Ok(format!("{host}/{owner}/{repository}"))
 }
 
 fn merge_values(base: toml::Value, local: toml::Value, path: &str) -> toml::Value {

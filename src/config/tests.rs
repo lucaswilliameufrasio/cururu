@@ -43,6 +43,7 @@ fn base_config() -> AppConfig {
             mode: None,
             api_key: String::new(),
             model: "jev-latest".into(),
+            repository_allowed: false,
         },
     }
 }
@@ -89,6 +90,40 @@ fn evaluator_debug_output_redacts_the_api_key() {
     let debug = format!("{:?}", cfg.evaluator);
     assert!(debug.contains("[redacted]"));
     assert!(!debug.contains("secret-evaluator-key"));
+}
+
+#[test]
+fn evaluator_repository_permission_requires_an_exact_local_allowlist_match() {
+    let github_repository = crate::repository::RepositoryIdentity::parse("owner/repo").unwrap();
+    let other_repository = crate::repository::RepositoryIdentity::parse("owner/other").unwrap();
+    let enterprise_repository =
+        crate::repository::RepositoryIdentity::parse("git@github.example.com:owner/repo").unwrap();
+
+    assert!(!evaluator_repository_is_allowed(Some(&github_repository), None).unwrap());
+    assert!(
+        evaluator_repository_is_allowed(
+            Some(&github_repository),
+            Some("https://github.com/owner/repo, owner/another")
+        )
+        .unwrap()
+    );
+    assert!(
+        !evaluator_repository_is_allowed(Some(&github_repository), Some("owner/other")).unwrap()
+    );
+    assert!(
+        !evaluator_repository_is_allowed(Some(&enterprise_repository), Some("owner/repo")).unwrap()
+    );
+    assert!(!evaluator_repository_is_allowed(None, Some("owner/repo")).unwrap());
+    assert!(evaluator_repository_is_allowed(Some(&other_repository), Some("owner/other")).unwrap());
+}
+
+#[test]
+fn evaluator_repository_permission_rejects_malformed_allowlist_entries() {
+    let identity = crate::repository::RepositoryIdentity::parse("owner/repo").unwrap();
+
+    let error = evaluator_repository_is_allowed(Some(&identity), Some("owner/repo,")).unwrap_err();
+
+    assert!(error.to_string().contains("empty entry"));
 }
 
 #[test]

@@ -120,6 +120,10 @@ pub async fn run_review(
         analysis_report.findings.clone(),
     );
     let (review, mut evaluation_report) = if let Some(mode) = config.evaluator.mode {
+        anyhow::ensure!(
+            config.evaluator.repository_allowed,
+            "Jev evaluation is not authorized for this repository; add its identity to CURURU_EVALUATOR_ALLOWED_REPOSITORIES"
+        );
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_mins(2))
             .build()

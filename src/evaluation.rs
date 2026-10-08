@@ -134,11 +134,21 @@ async fn evaluate_with_jev_at(
         "TYPESAFE_API_KEY is required when Jev evaluation is enabled"
     );
 
-    let evaluated_findings = &findings[..findings.len().min(MAX_EVALUATED_FINDINGS)];
-    let state: Vec<_> = evaluated_findings
-        .iter()
-        .enumerate()
-        .map(|(id, finding)| JevFindingState {
+    let mut state = Vec::new();
+    let mut evidence_budget = MAX_TOTAL_EVIDENCE_CHARS;
+    for (id, finding) in findings.iter().take(MAX_EVALUATED_FINDINGS).enumerate() {
+        let evidence = changed_files
+            .iter()
+            .find(|file| file.path == finding.path)
+            .map(|file| {
+                relevant_hunk(file, finding.line)
+                    .chars()
+                    .take(MAX_EVIDENCE_CHARS_PER_FINDING.min(evidence_budget))
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        evidence_budget -= evidence.chars().count();
+        state.push(JevFindingState {
             id,
             path: &finding.path,
             line: finding.line,
@@ -146,18 +156,13 @@ async fn evaluate_with_jev_at(
             claim: &finding.message,
             proposed_fix: &finding.suggestion,
             reported_severity: &finding.severity,
-            evidence: changed_files
-                .iter()
-                .find(|file| file.path == finding.path)
-                .map(|file| {
-                    relevant_hunk(file, finding.line)
-                        .chars()
-                        .take(8_000)
-                        .collect()
-                })
-                .unwrap_or_default(),
-        })
-        .collect();
+            evidence,
+        });
+        if evidence_budget == 0 {
+            break;
+        }
+    }
+    let evaluated_findings = &findings[..state.len()];
     let mut questions = serde_json::Map::new();
     for id in 0..evaluated_findings.len() {
         questions.insert(format!("finding_{id}_is_defect"), serde_json::json!({
@@ -294,6 +299,8 @@ fn relevant_hunk(file: &ChangedFile, line: Option<u32>) -> String {
 use anyhow::Context;
 
 pub const MAX_EVALUATED_FINDINGS: usize = 100;
+pub const MAX_EVIDENCE_CHARS_PER_FINDING: usize = 8_000;
+pub const MAX_TOTAL_EVIDENCE_CHARS: usize = 64_000;
 
 #[cfg(test)]
 mod tests {
@@ -562,6 +569,63 @@ mod tests {
             body["questions"].as_object().unwrap().len(),
             MAX_EVALUATED_FINDINGS * 2
         );
+    }
+
+    #[tokio::test]
+    async fn request_caps_aggregate_evidence_and_reports_the_unevaluated_remainder() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        let expected_count = MAX_TOTAL_EVIDENCE_CHARS / MAX_EVIDENCE_CHARS_PER_FINDING;
+        let mut answers = serde_json::Map::new();
+        for id in 0..expected_count {
+            answers.insert(
+                format!("finding_{id}_is_defect"),
+                serde_json::json!({"type":"noul", "noul":0.9}),
+            );
+            answers.insert(
+                format!("finding_{id}_severity"),
+                serde_json::json!({"type":"choice", "choice":"low", "confidence":0.8}),
+            );
+        }
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "model":"jev-test", "answers":answers
+            })))
+            .mount(&server)
+            .await;
+
+        let findings = vec![finding(); expected_count + 3];
+        let mut file = changed_file();
+        file.patch = format!("{}{}", "x".repeat(MAX_TOTAL_EVIDENCE_CHARS + 1), "\n");
+        let report = evaluate_with_jev_at(
+            &reqwest::Client::new(),
+            &format!("{}/v1/systemone", server.uri()),
+            "secret-test",
+            "jev-latest",
+            &findings,
+            &[file],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.findings.len(), expected_count);
+        assert_eq!(report.omitted_findings, 3);
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let state = body["state"].as_array().unwrap();
+        assert_eq!(state.len(), expected_count);
+        let evidence_chars: usize = state
+            .iter()
+            .map(|item| item["evidence"].as_str().unwrap().chars().count())
+            .sum();
+        assert_eq!(evidence_chars, MAX_TOTAL_EVIDENCE_CHARS);
+        assert!(state.iter().all(|item| {
+            item["evidence"].as_str().unwrap().chars().count() <= MAX_EVIDENCE_CHARS_PER_FINDING
+        }));
     }
 
     #[tokio::test]
