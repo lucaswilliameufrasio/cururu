@@ -138,13 +138,13 @@ mod tests {
 
     #[test]
     fn rendering_empty_context_returns_an_empty_string() {
-        assert!(
+        assert_eq!(
             render(&ContextStore {
                 files: Vec::new(),
                 truncated: vec!["large.md".into()],
                 skipped: vec!["missing.md".into()],
-            })
-            .is_empty()
+            }),
+            ""
         );
     }
 }
