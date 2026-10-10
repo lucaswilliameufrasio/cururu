@@ -516,7 +516,13 @@ dependencies = [
  "anyhow",
  "async-trait",
  "cururu-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tokio",
+ "tracing",
+ "wiremock",
 ]
 
 [[package]]

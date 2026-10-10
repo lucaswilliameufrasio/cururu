@@ -2,15 +2,15 @@ use anyhow::Result;
 use async_trait::async_trait;
 use cururu_core::{DiffChunk, ReviewResult};
 
-#[derive(Debug, Clone)]
-pub struct ReviewUsage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
-    pub cached_tokens: u32,
-    pub reasoning_tokens: u32,
-    pub cost: Option<f64>,
-}
+pub mod openai;
+pub mod provider;
+mod retry;
+
+pub use openai::{InvalidReviewOutput, OpenAiCompatibleAgent, OpenAiCompatibleSettings};
+pub use provider::{
+    AssistantMessage, ChatResponse, Choice, CompletionDetails, PromptDetails, ProviderMetadata,
+    ReviewUsage, UsageStats, merge_usage,
+};
 
 #[derive(Debug, Clone)]
 pub struct ChunkResult {

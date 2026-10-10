@@ -1,4 +1,4 @@
-pub use cururu_core::{ChangedFile, DiffChunk, chunk_files, is_valid_anchor, parse_unified_diff};
+pub use cururu_core::{ChangedFile, chunk_files, is_valid_anchor, parse_unified_diff};
 use globset::GlobSet;
 
 pub fn filter_ignored(files: Vec<ChangedFile>, ignore: &GlobSet) -> Vec<ChangedFile> {

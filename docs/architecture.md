@@ -62,13 +62,13 @@ Actions workflows. Generic SCM configuration uses `CURURU_SCM_PROVIDER`,
 provider adapter may expose different capabilities, so optional operations
 must be documented rather than assumed universal.
 
-`cururu-engine` exposes `ReviewAgent` and sequential bounded-chunk orchestration,
-which return Cururu's normalized review domain model. The current
-OpenAI-compatible adapter in `src/agent.rs` obtains
-responses through `provider.rs`; provider-specific request metadata is mapped
-to neutral usage fields. Structured response validation and normalization stay
-in Cururu so providers that only guarantee syntactically valid JSON do not
-break the core contract.
+`cururu-engine` exposes `ReviewAgent`, sequential bounded-chunk orchestration,
+and the shared OpenAI-compatible adapter. Applications provide the endpoint,
+model, credential, generation settings, and system prompt; the engine owns HTTP
+request/response handling, bounded conversation inputs, retry behavior for code
+review chunks, and structured-result validation. Provider usage is mapped to a
+neutral value. The desktop can compose this adapter with its own secure settings
+and local-repository workflow without copying review protocol logic.
 
 ## Diff limits and diagnostics
 
