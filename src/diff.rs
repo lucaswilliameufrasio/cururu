@@ -32,7 +32,7 @@ mod tests {
             patch: "x".into(),
             right_lines: vec![],
         }];
-        assert!(filter_ignored(files, &set).is_empty());
+        assert_eq!(filter_ignored(files, &set).len(), 0);
     }
 
     #[test]

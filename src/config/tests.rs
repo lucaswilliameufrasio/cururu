@@ -79,7 +79,7 @@ fn evaluator_settings_are_rejected_from_repository_toml() {
         .unwrap_err();
     assert!(error.to_string().contains("local-only"));
     assert!(cfg.evaluator.mode.is_none());
-    assert!(cfg.evaluator.api_key.is_empty());
+    assert_eq!(cfg.evaluator.api_key, "");
     assert_eq!(cfg.evaluator.model, "jev-latest");
 }
 
@@ -473,7 +473,7 @@ fn loading_scm_context_does_not_require_llm_credentials_for_diff_only_commands()
                             temp_env::with_var("LLM_API_KEY", None::<&str>, || {
                                 let config = AppConfig::from_env().unwrap();
                                 assert_eq!(config.source_control.change_request_number, 42);
-                                assert!(config.llm.api_key.is_empty());
+                                assert_eq!(config.llm.api_key, "");
                                 assert!(config.require_llm_api_key().is_err());
                             });
                         });

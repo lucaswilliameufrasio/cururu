@@ -149,19 +149,17 @@ mod tests {
     #[tokio::test]
     async fn basic_adapter_can_omit_optional_capabilities() {
         let adapter = MinimalScm;
-        assert!(
-            adapter
-                .fetch_prior_review_feedback()
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            adapter.fetch_prior_review_feedback().await.unwrap().len(),
+            0
         );
-        assert!(
+        assert_eq!(
             adapter
                 .list_finding_annotations("revision", &[])
                 .await
                 .unwrap()
-                .is_empty()
+                .len(),
+            0
         );
         assert!(
             adapter
