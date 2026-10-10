@@ -473,6 +473,7 @@ dependencies = [
  "axum",
  "clap",
  "cururu-core",
+ "cururu-engine",
  "dotenvy",
  "globset",
  "hex",
@@ -506,6 +507,16 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "cururu-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "cururu-core",
+ "tokio",
 ]
 
 [[package]]

@@ -1,14 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Debug, Clone)]
-pub struct ProviderUsage {
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
-    pub cached_tokens: u32,
-    pub reasoning_tokens: u32,
-    pub cost: Option<f64>,
-}
+pub use cururu_engine::ReviewUsage as ProviderUsage;
 
 #[derive(Debug, Clone)]
 pub struct ProviderMetadata {

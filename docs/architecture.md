@@ -8,6 +8,12 @@ currently shipped adapters; a new host or model provider should implement the
 relevant interface instead of adding platform-specific branches throughout the
 review pipeline.
 
+`cururu-core` remains the provider- and UI-independent domain crate. Shared
+asynchronous review execution contracts live in the separate `cururu-engine`
+workspace crate, which may depend on runtime/error crates without expanding the
+core's dependency surface. Desktop consumers pin the Cururu Git revision and do
+not require a published crate.
+
 ## Composition and review pipeline
 
 ```text
@@ -56,8 +62,9 @@ Actions workflows. Generic SCM configuration uses `CURURU_SCM_PROVIDER`,
 provider adapter may expose different capabilities, so optional operations
 must be documented rather than assumed universal.
 
-`src/agent.rs` exposes `ReviewAgent`, which returns Cururu's normalized review
-domain model. The current OpenAI-compatible adapter in `agent.rs` obtains
+`cururu-engine` exposes `ReviewAgent` and sequential bounded-chunk orchestration,
+which return Cururu's normalized review domain model. The current
+OpenAI-compatible adapter in `src/agent.rs` obtains
 responses through `provider.rs`; provider-specific request metadata is mapped
 to neutral usage fields. Structured response validation and normalization stay
 in Cururu so providers that only guarantee syntactically valid JSON do not
