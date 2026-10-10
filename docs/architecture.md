@@ -63,12 +63,13 @@ provider adapter may expose different capabilities, so optional operations
 must be documented rather than assumed universal.
 
 `cururu-engine` exposes `ReviewAgent`, sequential bounded-chunk orchestration,
-and the shared OpenAI-compatible adapter. Applications provide the endpoint,
-model, credential, generation settings, and system prompt; the engine owns HTTP
-request/response handling, bounded conversation inputs, retry behavior for code
-review chunks, and structured-result validation. Provider usage is mapped to a
-neutral value. The desktop can compose this adapter with its own secure settings
-and local-repository workflow without copying review protocol logic.
+the canonical `DEFAULT_REVIEW_PROMPT`, and the shared OpenAI-compatible adapter.
+Applications provide the endpoint, model, credential, generation settings, and
+system prompt. The engine owns HTTP request/response handling, bounded
+conversation inputs, retry behavior for code review chunks, and structured-result
+validation. Provider usage is mapped to a neutral value. The desktop can compose
+this adapter with its own secure settings and local-repository workflow without
+copying review protocol logic.
 
 ## Diff limits and diagnostics
 
