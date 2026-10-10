@@ -9,8 +9,6 @@ use anyhow::Context;
 pub use cururu_core::{ensure_review_diff_limits, ensure_review_head_unchanged};
 use tracing::info;
 
-const REVIEW_PROMPT: &str = include_str!("../prompts/review.md");
-
 pub struct ReviewOutput {
     pub review: agent::ReviewResult,
     pub usage: Option<provider::ProviderUsage>,
@@ -94,7 +92,7 @@ pub async fn run_review(
         config.review.suggestion_detail,
     );
     let system_prompt = build_review_system_prompt(
-        REVIEW_PROMPT.trim(),
+        cururu_engine::DEFAULT_REVIEW_PROMPT.trim(),
         &lang_instruction,
         &context_rendered,
         &serde_json::to_string(&prior_feedback)?,
