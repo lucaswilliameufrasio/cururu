@@ -102,11 +102,7 @@ pub async fn run_review(
 
     let agent = agent::build_agent(&config.llm, system_prompt)?;
 
-    let mut chunk_results = Vec::new();
-    for chunk in &chunks {
-        let result = agent.review_chunk(chunk).await?;
-        chunk_results.push(result);
-    }
+    let chunk_results = cururu_engine::review_chunks(agent.as_ref(), &chunks).await?;
 
     let model = config.llm.model.clone();
     let usage = provider::merge_usage(&chunk_results);

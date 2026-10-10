@@ -9,6 +9,7 @@ use cururu_core::deduplicate_review_findings;
 use cururu_core::{CandidateOptions, collect_review_candidates, sort_review_findings};
 #[allow(unused_imports)]
 pub use cururu_core::{ReviewFinding, ReviewResult, SuggestedChange};
+pub use cururu_engine::{ChunkResult, ReviewAgent};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::warn;
@@ -19,27 +20,6 @@ use tracing::warn;
 )]
 pub struct InvalidReviewOutput {
     pub finish_reason: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct ChunkResult {
-    pub review: ReviewResult,
-    pub usage: Option<ProviderUsage>,
-}
-
-#[async_trait]
-pub trait ReviewAgent: Send + Sync {
-    async fn review_chunk(&self, chunk: &DiffChunk) -> anyhow::Result<ChunkResult>;
-
-    async fn answer_question(
-        &self,
-        _tone: &str,
-        _technical_level: &str,
-        _question: &str,
-        _context: &str,
-    ) -> anyhow::Result<String> {
-        anyhow::bail!("LLM adapter does not support conversation answers")
-    }
 }
 
 pub fn build_agent(config: &LlmConfig, prompt: String) -> anyhow::Result<Box<dyn ReviewAgent>> {
