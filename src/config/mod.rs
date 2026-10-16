@@ -171,15 +171,7 @@ impl AppConfig {
     }
 
     pub fn shared_base_from_toml(raw: &str) -> anyhow::Result<Option<SharedBaseConfig>> {
-        let de = toml::Deserializer::new(raw);
-        let parsed: CururuToml =
-            serde_path_to_error::deserialize(de).context("failed to parse .cururu.toml")?;
-        if parsed.version != 1 {
-            bail!(
-                "unsupported .cururu.toml version {} (expected 1)",
-                parsed.version
-            );
-        }
+        let parsed = CururuToml::parse(raw)?;
         let Some(source) = parsed.config else {
             return Ok(None);
         };
@@ -261,16 +253,7 @@ impl AppConfig {
 
     #[allow(clippy::too_many_lines)]
     pub fn merge_toml_str(&mut self, raw: &str) -> anyhow::Result<()> {
-        let de = toml::Deserializer::new(raw);
-        let parsed: CururuToml =
-            serde_path_to_error::deserialize(de).context("failed to parse .cururu.toml")?;
-
-        if parsed.version != 1 {
-            bail!(
-                "unsupported .cururu.toml version {} (expected 1)",
-                parsed.version
-            );
-        }
+        let parsed = CururuToml::parse(raw)?;
         anyhow::ensure!(
             parsed.evaluator.is_none(),
             "[evaluator] is local-only; configure CURURU_EVALUATOR_MODE and TYPESAFE_API_KEY outside .cururu.toml"
@@ -574,12 +557,4 @@ fn merge_values(base: toml::Value, local: toml::Value, path: &str) -> toml::Valu
     }
 }
 
-fn validate_choice(field: &str, value: &str, choices: &[&str]) -> anyhow::Result<()> {
-    if !choices.contains(&value) {
-        bail!(
-            "invalid {field}: {value}; expected one of {}",
-            choices.join(", ")
-        );
-    }
-    Ok(())
-}
+use cururu_engine::config::validate_choice;

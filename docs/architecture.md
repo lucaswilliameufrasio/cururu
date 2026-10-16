@@ -129,3 +129,10 @@ context paths and automatic-context inclusion/exclusion lists combine uniquely,
 base first then local. Other arrays replace rather than append. `cururu init`
 scaffolds local configuration and the current GitHub workflow adapter;
 `cururu print-config` shows effective settings without secrets.
+## Shared repository configuration
+
+The portable `.cururu.toml` schema and version-aware parser are exposed by
+`cururu-engine::config` (ADR 006). Hosts own environment precedence, runtime
+policy, credentials, SCM, filesystem/network reads and user consent. The CLI
+reuses this schema through `src/config/schema.rs`; parsing a repository file
+never grants execution or data-sending permissions.
