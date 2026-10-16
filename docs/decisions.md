@@ -29,3 +29,9 @@
 - Context: `config.rs` reached 1,167 lines — larger than the analysis pipeline (475) — mixing provider, GitHub, review policy, context, and TOML schema concerns.
 - Decision: Split into `src/config/` with one module per domain (`github`, `provider`, `review`, `context`, `summary`, `analysis`) plus `schema` (TOML shape), `env` (helpers), and `tests`; `mod.rs` keeps `AppConfig`, the merge orchestration, and public re-exports so no caller changes.
 - Consequences: Largest config module drops to 298 lines; external API unchanged. See [docs/adr/005-config-split-by-domain.md](adr/005-config-split-by-domain.md).
+
+## ADR 006: Shared repository configuration schema
+- Date: October 16, 2026
+- Context: Desktop must consume `.cururu.toml` without copying the CLI schema or importing its environment and credential behavior.
+- Decision: Portable schema/parser and confidence/choice validation live in `cururu-engine::config`; hosts retain runtime merging, profiles, I/O, environment, SCM and authorization.
+- Consequences: CLI merge behavior stays unchanged; parsing never grants permissions. See [ADR 006](adr/006-shared-repository-config-schema.md).

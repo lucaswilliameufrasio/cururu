@@ -62,13 +62,7 @@ impl Default for ReviewPolicy {
     }
 }
 
-pub(super) fn validate_confidence(value: f32) -> anyhow::Result<()> {
-    if value.is_finite() && (0.0..=1.0).contains(&value) {
-        Ok(())
-    } else {
-        bail!("policy.minimum_confidence must be finite and between 0 and 1")
-    }
-}
+pub(super) use cururu_engine::config::validate_confidence;
 
 pub(super) fn profile_defaults(name: &str) -> anyhow::Result<ReviewPolicy> {
     let mut policy = ReviewPolicy {
