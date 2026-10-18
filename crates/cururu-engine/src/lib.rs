@@ -6,6 +6,7 @@ pub mod config;
 pub mod openai;
 pub mod provider;
 mod retry;
+pub mod review_context;
 
 pub use openai::{InvalidReviewOutput, OpenAiCompatibleAgent, OpenAiCompatibleSettings};
 pub use provider::{

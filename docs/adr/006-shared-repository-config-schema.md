@@ -33,3 +33,13 @@ the schema risks silent drift; moving all `AppConfig` would mix secrets, env,
 I/O and host policy into the reusable engine. Neither was chosen. Revisit if
 configuration validation needs host-independent typed policy resolution; do not
 silently move environment or permission semantics with it.
+
+## Bounded review evidence extension (2026-10-18)
+
+The engine accepts an optional `ReviewContext` containing already-approved focus
+hints and `cururu-core::ContextFile` values. It validates portable size/path
+contracts and serializes these as a separate **user** message, not appended
+system instructions or fake diff text. Empty context preserves the previous
+request shape. Hosts still own discovery, safe reads, content/revision identity,
+shared-base resolution and explicit consent. This is not a configuration loader
+and it does not authorize reading referenced files or sending evidence.
