@@ -1,4 +1,3 @@
-use anyhow::bail;
 use globset::GlobSet;
 
 pub use cururu_core::{FailOn, Severity};
@@ -33,62 +32,8 @@ pub struct ReviewConfig {
     pub policy: ReviewPolicy,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReviewPolicy {
-    pub profile: String,
-    pub minimum_confidence: f32,
-    pub max_findings: usize,
-    pub fail_on: FailOn,
-    pub allowed_severities: Vec<Severity>,
-    pub suggested_changes: bool,
-    pub incremental: bool,
-    pub synthesis: bool,
-    pub focus: Vec<String>,
-}
-
-impl Default for ReviewPolicy {
-    fn default() -> Self {
-        Self {
-            profile: "balanced".into(),
-            minimum_confidence: 0.65,
-            max_findings: 30,
-            fail_on: FailOn::Off,
-            allowed_severities: Severity::all(),
-            suggested_changes: false,
-            incremental: false,
-            synthesis: false,
-            focus: Vec::new(),
-        }
-    }
-}
+pub use cururu_engine::review_policy::ReviewPolicy;
 
 pub(super) use cururu_engine::config::validate_confidence;
 
-pub(super) fn profile_defaults(name: &str) -> anyhow::Result<ReviewPolicy> {
-    let mut policy = ReviewPolicy {
-        profile: name.to_string(),
-        ..ReviewPolicy::default()
-    };
-    match name.trim().to_ascii_lowercase().as_str() {
-        "balanced" => {}
-        "strict" => {
-            policy.minimum_confidence = 0.8;
-            policy.max_findings = 50;
-            policy.fail_on = FailOn::High;
-        }
-        "security" => {
-            policy.minimum_confidence = 0.75;
-            policy.max_findings = 40;
-            policy.fail_on = FailOn::High;
-            policy.allowed_severities = vec![Severity::Critical, Severity::High, Severity::Medium];
-            policy.focus = vec!["security".into()];
-        }
-        "minimal" => {
-            policy.minimum_confidence = 0.8;
-            policy.max_findings = 10;
-            policy.allowed_severities = vec![Severity::Critical, Severity::High];
-        }
-        _ => bail!("invalid review.profile: {name}"),
-    }
-    Ok(policy)
-}
+pub(super) use cururu_engine::review_policy::profile_defaults;
