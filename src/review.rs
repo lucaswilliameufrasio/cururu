@@ -234,8 +234,7 @@ async fn append_auto_context(
 ) -> anyhow::Result<()> {
     let base_sha = source_control.fetch_base_sha().await?;
     let auto = &config.context.auto;
-    let include = compile_globs(&auto.include)?;
-    let exclude = compile_globs(&auto.exclude)?;
+    let selector = cururu_engine::auto_context::CandidateSelector::new(auto)?;
     let mut total = store
         .files
         .iter()
@@ -243,12 +242,12 @@ async fn append_auto_context(
         .sum::<usize>();
 
     for changed in files {
-        if store.files.iter().any(|file| file.path == changed.path)
-            || !include.is_match(&changed.path)
-            || exclude.is_match(&changed.path)
-            || store.files.len() >= auto.max_files
-            || total >= auto.max_bytes
-        {
+        if !selector.accepts(
+            &changed.path,
+            store.files.iter().map(|file| file.path.as_str()),
+            store.files.len(),
+            total,
+        ) {
             continue;
         }
 
@@ -272,14 +271,6 @@ async fn append_auto_context(
         });
     }
     Ok(())
-}
-
-fn compile_globs(patterns: &[String]) -> anyhow::Result<globset::GlobSet> {
-    let mut builder = globset::GlobSetBuilder::new();
-    for pattern in patterns {
-        builder.add(globset::Glob::new(pattern)?);
-    }
-    Ok(builder.build()?)
 }
 
 fn truncate_utf8(value: &str, max_bytes: usize) -> String {
