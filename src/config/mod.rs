@@ -308,14 +308,18 @@ impl AppConfig {
                 self.review.language = lang;
             }
             if let Some(tone) = tr.tone {
-                validate_choice("review.tone", &tone, &["neutral", "direct", "didactic"])?;
+                validate_choice(
+                    "review.tone",
+                    &tone,
+                    cururu_engine::review_preferences::TONES,
+                )?;
                 self.review.tone = tone;
             }
             if let Some(level) = tr.technical_level {
                 validate_choice(
                     "review.technical_level",
                     &level,
-                    &["beginner", "intermediate", "expert"],
+                    cururu_engine::review_preferences::TECHNICAL_LEVELS,
                 )?;
                 self.review.technical_level = level;
             }
@@ -323,7 +327,7 @@ impl AppConfig {
                 validate_choice(
                     "review.suggestion_detail",
                     &detail,
-                    &["concise", "standard", "detailed"],
+                    cururu_engine::review_preferences::SUGGESTION_DETAILS,
                 )?;
                 self.review.suggestion_detail = detail;
             }
