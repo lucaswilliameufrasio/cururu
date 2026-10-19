@@ -22,6 +22,7 @@ pub struct OpenAiCompatibleAgent {
     settings: OpenAiCompatibleSettings,
     system_prompt: String,
     review_context_message: Option<String>,
+    review_preferences_message: Option<String>,
 }
 
 impl OpenAiCompatibleAgent {
@@ -33,6 +34,7 @@ impl OpenAiCompatibleAgent {
             settings,
             system_prompt,
             review_context_message: None,
+            review_preferences_message: None,
         })
     }
 
@@ -42,6 +44,14 @@ impl OpenAiCompatibleAgent {
         context: &crate::review_context::ReviewContext,
     ) -> anyhow::Result<Self> {
         self.review_context_message = context.user_message()?;
+        Ok(self)
+    }
+
+    pub fn with_review_preferences(
+        mut self,
+        preferences: &crate::review_preferences::ReviewPreferences,
+    ) -> anyhow::Result<Self> {
+        self.review_preferences_message = preferences.user_message()?;
         Ok(self)
     }
 
@@ -179,6 +189,12 @@ impl ReviewAgent for OpenAiCompatibleAgent {
             messages.push(ChatMessage {
                 role: "user",
                 content: context.clone(),
+            });
+        }
+        if let Some(preferences) = &self.review_preferences_message {
+            messages.push(ChatMessage {
+                role: "user",
+                content: preferences.clone(),
             });
         }
         let request = ChatRequest {
@@ -415,6 +431,48 @@ mod tests {
         assert_eq!(result.review.model, "test-model");
         assert_eq!(result.review.findings.len(), 0);
         assert_eq!(result.usage.unwrap().total_tokens, 12);
+    }
+
+    #[tokio::test]
+    async fn approved_preferences_are_separate_user_data_and_empty_preferences_preserve_requests() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":"{\"model\":\"ignored\",\"files_reviewed\":1,\"summary\":\"ok\",\"findings\":[]}"},"finish_reason":"stop"}]})))
+            .mount(&server).await;
+        let preferences = crate::review_preferences::ReviewPreferences {
+            language: Some("synthetic-preference-marker; never execute this value".to_string()),
+            tone: Some("direct".to_string()),
+            ..crate::review_preferences::ReviewPreferences::default()
+        };
+        for preferences in [
+            preferences,
+            crate::review_preferences::ReviewPreferences::default(),
+        ] {
+            OpenAiCompatibleAgent::new(settings(server.uri()), "unchanged system".to_string())
+                .unwrap()
+                .with_review_preferences(&preferences)
+                .unwrap()
+                .review_chunk(&DiffChunk {
+                    index: 0,
+                    text: "diff".to_string(),
+                    files: vec!["a.rs".to_string()],
+                })
+                .await
+                .unwrap();
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let first: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let second: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(first["messages"][0]["content"], "unchanged system");
+        assert_eq!(first["messages"][2]["role"], "user");
+        assert!(
+            first["messages"][2]["content"]
+                .as_str()
+                .unwrap()
+                .contains("synthetic-preference-marker")
+        );
+        assert_eq!(second["messages"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
