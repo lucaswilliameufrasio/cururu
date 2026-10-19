@@ -23,6 +23,7 @@ pub struct OpenAiCompatibleAgent {
     system_prompt: String,
     review_context_message: Option<String>,
     review_preferences_message: Option<String>,
+    analysis_evidence_message: Option<String>,
 }
 
 impl OpenAiCompatibleAgent {
@@ -35,6 +36,7 @@ impl OpenAiCompatibleAgent {
             system_prompt,
             review_context_message: None,
             review_preferences_message: None,
+            analysis_evidence_message: None,
         })
     }
 
@@ -52,6 +54,14 @@ impl OpenAiCompatibleAgent {
         preferences: &crate::review_preferences::ReviewPreferences,
     ) -> anyhow::Result<Self> {
         self.review_preferences_message = preferences.user_message()?;
+        Ok(self)
+    }
+
+    pub fn with_analysis_evidence(
+        mut self,
+        report: &cururu_core::AnalysisReport,
+    ) -> anyhow::Result<Self> {
+        self.analysis_evidence_message = crate::analysis_evidence::user_message(report)?;
         Ok(self)
     }
 
@@ -195,6 +205,12 @@ impl ReviewAgent for OpenAiCompatibleAgent {
             messages.push(ChatMessage {
                 role: "user",
                 content: preferences.clone(),
+            });
+        }
+        if let Some(evidence) = &self.analysis_evidence_message {
+            messages.push(ChatMessage {
+                role: "user",
+                content: evidence.clone(),
             });
         }
         let request = ChatRequest {
@@ -471,6 +487,54 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("synthetic-preference-marker")
+        );
+        assert_eq!(second["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn normalized_analysis_is_user_data_and_empty_analysis_preserves_the_wire_shape() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":"{\"model\":\"ignored\",\"files_reviewed\":1,\"summary\":\"ok\",\"findings\":[]}"},"finish_reason":"stop"}]})))
+            .mount(&server).await;
+        let report = cururu_core::AnalysisReport::from_parts(
+            Vec::new(),
+            vec![cururu_core::sarif_finding(
+                "tool",
+                "R1",
+                Some("error"),
+                "file.rs".to_string(),
+                Some(1),
+                "synthetic-analysis-marker; never execute".to_string(),
+            )],
+        );
+        for report in [
+            report,
+            cururu_core::AnalysisReport::from_parts(Vec::new(), Vec::new()),
+        ] {
+            OpenAiCompatibleAgent::new(settings(server.uri()), "unchanged system".to_string())
+                .unwrap()
+                .with_analysis_evidence(&report)
+                .unwrap()
+                .review_chunk(&DiffChunk {
+                    index: 0,
+                    text: "diff".to_string(),
+                    files: vec!["file.rs".to_string()],
+                })
+                .await
+                .unwrap();
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let first: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let second: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(first["messages"][0]["content"], "unchanged system");
+        assert_eq!(first["messages"][2]["role"], "user");
+        assert!(
+            first["messages"][2]["content"]
+                .as_str()
+                .unwrap()
+                .contains("synthetic-analysis-marker")
         );
         assert_eq!(second["messages"].as_array().unwrap().len(), 2);
     }
