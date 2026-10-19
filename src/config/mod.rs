@@ -164,10 +164,7 @@ impl AppConfig {
     }
 
     pub fn compose_toml(base: &str, local: &str) -> anyhow::Result<String> {
-        let base: toml::Value = toml::from_str(base).context("invalid shared base TOML")?;
-        let local: toml::Value = toml::from_str(local).context("invalid local TOML")?;
-        toml::to_string(&merge_values(base, local, ""))
-            .context("failed to serialize effective configuration")
+        cururu_engine::config::compose_toml(base, local)
     }
 
     pub fn shared_base_from_toml(raw: &str) -> anyhow::Result<Option<SharedBaseConfig>> {
@@ -514,47 +511,6 @@ fn evaluator_repository_key(
     let (owner, repository) = identity.owner_and_repository()?;
     let host = identity.host.as_deref().unwrap_or("github.com");
     Ok(format!("{host}/{owner}/{repository}"))
-}
-
-fn merge_values(base: toml::Value, local: toml::Value, path: &str) -> toml::Value {
-    match (base, local) {
-        (toml::Value::Table(mut base), toml::Value::Table(local)) => {
-            for (key, local_value) in local {
-                let child_path = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{path}.{key}")
-                };
-                let value = base.remove(&key).map_or_else(
-                    || local_value.clone(),
-                    |base_value| merge_values(base_value, local_value.clone(), &child_path),
-                );
-                base.insert(key, value);
-            }
-            toml::Value::Table(base)
-        }
-        (toml::Value::Array(mut base), toml::Value::Array(local))
-            if matches!(
-                path,
-                "review.ignore"
-                    | "policy.focus"
-                    | "context.conventions"
-                    | "context.specifications"
-                    | "context.skills"
-                    | "context.additional"
-                    | "context.auto.include"
-                    | "context.auto.exclude"
-            ) =>
-        {
-            for value in local {
-                if !base.contains(&value) {
-                    base.push(value);
-                }
-            }
-            toml::Value::Array(base)
-        }
-        (_, local) => local,
-    }
 }
 
 use cururu_engine::config::validate_choice;
