@@ -9,6 +9,7 @@ pub mod provider;
 mod retry;
 pub mod review_context;
 pub mod review_policy;
+pub mod sarif;
 
 pub use openai::{InvalidReviewOutput, OpenAiCompatibleAgent, OpenAiCompatibleSettings};
 pub use provider::{

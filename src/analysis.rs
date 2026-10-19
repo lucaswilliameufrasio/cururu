@@ -1,72 +1,9 @@
 use crate::{agent::ReviewFinding, config::AnalysisConfig, diff::ChangedFile, scm::ScmProvider};
 use anyhow::Context;
+use cururu_core::annotations_to_findings;
 pub use cururu_core::{AnalysisManifest, AnalysisReport, AnalysisTool};
-use cururu_core::{annotations_to_findings, normalize_analysis_path, sarif_finding};
 use globset::{Glob, GlobSetBuilder};
-use serde::Deserialize;
 use std::path::{Path, PathBuf};
-
-#[derive(Debug, Deserialize)]
-struct Sarif {
-    #[serde(default)]
-    runs: Vec<SarifRun>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifRun {
-    tool: SarifTool,
-    #[serde(default)]
-    results: Vec<SarifResult>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifTool {
-    driver: SarifDriver,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifDriver {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifResult {
-    #[serde(rename = "ruleId")]
-    rule_id: Option<String>,
-    level: Option<String>,
-    message: SarifMessage,
-    #[serde(default)]
-    locations: Vec<SarifLocation>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifMessage {
-    text: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifLocation {
-    #[serde(rename = "physicalLocation")]
-    physical_location: Option<SarifPhysicalLocation>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifPhysicalLocation {
-    #[serde(rename = "artifactLocation")]
-    artifact_location: Option<SarifArtifactLocation>,
-    region: Option<SarifRegion>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifArtifactLocation {
-    uri: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifRegion {
-    #[serde(rename = "startLine")]
-    start_line: Option<u32>,
-}
 
 pub async fn load_evidence(
     config: &AnalysisConfig,
@@ -142,49 +79,16 @@ fn load_sarif_paths(
     for path in paths {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("failed to read SARIF file {}", path.display()))?;
-        let sarif: Sarif = serde_json::from_str(&raw)
-            .with_context(|| format!("failed to parse SARIF file {}", path.display()))?;
-        for run in sarif.runs {
-            for result in run.results {
-                let Some(location) = result.locations.first() else {
-                    continue;
-                };
-                let Some(physical) = &location.physical_location else {
-                    continue;
-                };
-                let Some(path) = physical
-                    .artifact_location
-                    .as_ref()
-                    .and_then(|location| location.uri.as_deref())
-                    .map(normalize_analysis_path)
-                else {
-                    continue;
-                };
-                if !changed_files.iter().any(|file| file.path == path) {
-                    continue;
-                }
-                let line = physical
-                    .region
-                    .as_ref()
-                    .and_then(|region| region.start_line);
-                let message = result
-                    .message
-                    .text
-                    .unwrap_or_else(|| "Static analysis reported an issue.".into());
-                let rule = result.rule_id.unwrap_or_else(|| "unknown".into());
-                let tool = run.tool.driver.name.clone();
-                findings.push(sarif_finding(
-                    &tool,
-                    &rule,
-                    result.level.as_deref(),
-                    path,
-                    line,
-                    message,
-                ));
-                if findings.len() >= max_findings {
-                    return Ok(findings);
-                }
-            }
+        let parsed = cururu_engine::sarif::parse_findings(
+            &raw,
+            changed_files,
+            max_findings.saturating_sub(findings.len()),
+        )
+        .with_context(|| format!("failed to parse SARIF file {}", path.display()))?;
+        let has_findings = !parsed.is_empty();
+        findings.extend(parsed);
+        if has_findings && findings.len() >= max_findings {
+            return Ok(findings);
         }
     }
     Ok(findings)
