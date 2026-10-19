@@ -129,9 +129,149 @@ pub fn validate_choice(field: &str, value: &str, choices: &[&str]) -> anyhow::Re
     Ok(())
 }
 
+/// Combines repository TOML documents without loading resources or applying host
+/// configuration, environment precedence, permissions or schema validation.
+pub fn compose_toml(base: &str, local: &str) -> anyhow::Result<String> {
+    let base: toml::Value = toml::from_str(base).context("invalid shared base TOML")?;
+    let local: toml::Value = toml::from_str(local).context("invalid local TOML")?;
+    toml::to_string(&merge_values(base, local, ""))
+        .context("failed to serialize effective configuration")
+}
+
+fn merge_values(base: toml::Value, local: toml::Value, path: &str) -> toml::Value {
+    match (base, local) {
+        (toml::Value::Table(mut base), toml::Value::Table(local)) => {
+            for (key, local_value) in local {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                let value = base.remove(&key).map_or_else(
+                    || local_value.clone(),
+                    |base_value| merge_values(base_value, local_value.clone(), &child_path),
+                );
+                base.insert(key, value);
+            }
+            toml::Value::Table(base)
+        }
+        (toml::Value::Array(mut base), toml::Value::Array(local))
+            if matches!(
+                path,
+                "review.ignore"
+                    | "policy.focus"
+                    | "context.conventions"
+                    | "context.specifications"
+                    | "context.skills"
+                    | "context.additional"
+                    | "context.auto.include"
+                    | "context.auto.exclude"
+            ) =>
+        {
+            for value in local {
+                if !base.contains(&value) {
+                    base.push(value);
+                }
+            }
+            toml::Value::Array(base)
+        }
+        (_, local) => local,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composition_preserves_recursive_precedence_and_cumulative_array_order() {
+        let base = r#"version = 1
+future = "base"
+[review]
+max_diff_bytes = 100
+ignore = ["base/**", "same/**"]
+[policy]
+minimum_confidence = 0.9
+allowed_severities = ["critical", "high"]
+focus = ["correctness", "security"]
+[context]
+conventions = ["BASE.md"]
+specifications = ["BASE.md"]
+skills = ["BASE.md"]
+additional = ["BASE.md"]
+[context.auto]
+include = ["base/**"]
+exclude = ["generated/**"]
+"#;
+        let local = r#"version = 1
+future = "local"
+[review]
+max_diff_bytes = 200
+ignore = ["same/**", "local/**"]
+[policy]
+allowed_severities = ["medium"]
+focus = ["security", "performance"]
+[context]
+conventions = ["BASE.md", "LOCAL.md"]
+specifications = ["LOCAL.md"]
+skills = ["LOCAL.md"]
+additional = ["LOCAL.md"]
+[context.auto]
+include = ["local/**"]
+exclude = ["generated/**", "vendor/**"]
+"#;
+        let merged = compose_toml(base, local).unwrap();
+        let value: toml::Value = toml::from_str(&merged).unwrap();
+        assert_eq!(value["future"].as_str(), Some("local"));
+        let parsed = CururuToml::parse(&merged).unwrap();
+        let review = parsed.review.unwrap();
+        assert_eq!(review.max_diff_bytes, Some(200));
+        assert_eq!(review.ignore.unwrap(), ["base/**", "same/**", "local/**"]);
+        let policy = parsed.policy.unwrap();
+        assert_eq!(policy.minimum_confidence, Some(0.9));
+        assert_eq!(policy.allowed_severities.unwrap(), ["medium"]);
+        assert_eq!(
+            policy.focus.unwrap(),
+            ["correctness", "security", "performance"]
+        );
+        let context = parsed.context.unwrap();
+        for paths in [
+            context.conventions,
+            context.specifications,
+            context.skills,
+            context.additional,
+        ] {
+            assert_eq!(paths.unwrap(), ["BASE.md", "LOCAL.md"]);
+        }
+        let auto = context.auto.unwrap();
+        assert_eq!(auto.include.unwrap(), ["base/**", "local/**"]);
+        assert_eq!(auto.exclude.unwrap(), ["generated/**", "vendor/**"]);
+    }
+
+    #[test]
+    fn composition_preserves_errors_and_does_not_apply_or_authorize_settings() {
+        assert_eq!(
+            compose_toml("[", "version = 1").unwrap_err().to_string(),
+            "invalid shared base TOML"
+        );
+        assert_eq!(
+            compose_toml("version = 1", "[").unwrap_err().to_string(),
+            "invalid local TOML"
+        );
+        let merged =
+            compose_toml("version = 1\n[evaluator]\nmode = 'filter'", "version = 99").unwrap();
+        let raw: toml::Value = toml::from_str(&merged).unwrap();
+        assert_eq!(raw["evaluator"]["mode"].as_str(), Some("filter"));
+        // Composition preserves document values. Hosts still reject unsupported
+        // versions/settings and control every permission and runtime side effect.
+        assert!(CururuToml::parse(&merged).is_err());
+        let base: toml::Value = toml::from_str("[future]\na = 1").unwrap();
+        let local: toml::Value = toml::from_str("future = 'replacement'").unwrap();
+        assert_eq!(
+            merge_values(base, local, "")["future"].as_str(),
+            Some("replacement")
+        );
+    }
 
     #[test]
     fn minimal_config_keeps_optional_fields_absent_and_unknown_fields_compatible() {
