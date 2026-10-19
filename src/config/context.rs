@@ -8,28 +8,7 @@ pub struct ContextConfig {
     pub auto: AutoContextConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AutoContextConfig {
-    pub enabled: bool,
-    pub max_bytes: usize,
-    pub max_files: usize,
-    pub per_file_bytes: usize,
-    pub include: Vec<String>,
-    pub exclude: Vec<String>,
-}
-
-impl Default for AutoContextConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            max_bytes: 50_000,
-            max_files: 20,
-            per_file_bytes: 12_000,
-            include: vec!["src/**".into(), "tests/**".into()],
-            exclude: vec!["**/generated/**".into(), "**/*.min.js".into()],
-        }
-    }
-}
+pub use cururu_engine::auto_context::AutoContextConfig;
 
 impl Default for ContextConfig {
     fn default() -> Self {

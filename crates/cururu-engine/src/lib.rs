@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use cururu_core::{DiffChunk, ReviewResult};
 
+pub mod auto_context;
 pub mod config;
 pub mod openai;
 pub mod provider;
