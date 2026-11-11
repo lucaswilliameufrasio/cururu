@@ -15,16 +15,48 @@ permissions:
   issues: write
 
 jobs:
-  review:
+  gate:
+    # Validates comment commands without joining the concurrency group, so
+    # unrelated, mis-cased or unauthorized comments never cancel a review.
+    # Cururu still checks the commenter's write permission itself.
     if: >-
       github.actor != 'dependabot[bot]' &&
       (
         (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false) ||
-        (github.event_name == 'issue_comment' && github.event.issue.pull_request != null &&
-         contains(fromJSON('["/cururu review","/cururu review\n","/cururu review\r\n","/cururu review --full","/cururu review --full\n","/cururu review --full\r\n"]'), github.event.comment.body))
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
       )
-    # Job-level, so a skipped job (e.g. an unrelated or bot comment) never
-    # cancels a review that is already running.
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    outputs:
+      run: ${{ steps.command.outputs.run }}
+    steps:
+      - name: Accept PR events and exact commands from collaborators
+        id: command
+        env:
+          EVENT: ${{ github.event_name }}
+          BODY: ${{ github.event.comment.body }}
+          ASSOCIATION: ${{ github.event.comment.author_association }}
+        run: |
+          run=false
+          if [ "$EVENT" = "pull_request_target" ]; then
+            run=true
+          else
+            body="$(printf '%s' "$BODY" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            case "$ASSOCIATION" in
+              OWNER|MEMBER|COLLABORATOR)
+                if [ "$body" = "/cururu review" ] || [ "$body" = "/cururu review --full" ]; then
+                  run=true
+                fi
+                ;;
+            esac
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  review:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    # Only validated events reach this group; a newer review cancels an older one.
     concurrency:
       group: cururu-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: true
