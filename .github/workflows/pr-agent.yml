@@ -42,7 +42,7 @@ jobs:
           fi
       - name: Review PR
         if: steps.llm_key.outputs.skip == 'false'
-        uses: lucaswilliameufrasio/cururu@dcf93993a6729cd56eb323ffcadfe798dfa7441f # main; Dependabot updates this immutable pin.
+        uses: lucaswilliameufrasio/cururu@b8dcb532bbc71507b6a4d203715e2d5d2d8d1e2e # main; Dependabot updates this immutable pin.
         with:
           llm_api_key: ${{ secrets.LLM_API_KEY }}
           expected_head_sha: ${{ github.event.pull_request.head.sha || '' }}
