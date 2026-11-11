@@ -26,10 +26,6 @@ permissions:
   pull-requests: write
   issues: write
 
-concurrency:
-  group: cururu-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
-
 jobs:
   review:
     # Draft PRs are reviewed on ready_for_review, not on each draft push.
@@ -37,8 +33,14 @@ jobs:
       github.actor != 'dependabot[bot]' &&
       (
         (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false) ||
-        (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request != null &&
+         startsWith(github.event.comment.body, '/cururu review'))
       )
+    # Job-level, so a skipped job (e.g. an unrelated or bot comment) never
+    # cancels a review that is already running.
+    concurrency:
+      group: cururu-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -80,6 +82,10 @@ jobs:
     if: ${{ !cancelled() && needs.review.outputs.review_status == 'pending_approval' }}
     # Required reviewers on this environment approve the exact candidate.
     environment: cururu-publish
+    # A newer review supersedes a publication still waiting for approval.
+    concurrency:
+      group: cururu-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
