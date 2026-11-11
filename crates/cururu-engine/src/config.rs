@@ -19,7 +19,9 @@ pub struct CururuToml {
 
 impl CururuToml {
     pub fn parse(raw: &str) -> anyhow::Result<Self> {
-        let parsed: Self = serde_path_to_error::deserialize(toml::Deserializer::new(raw))
+        let deserializer =
+            toml::Deserializer::parse(raw).context("failed to parse .cururu.toml")?;
+        let parsed: Self = serde_path_to_error::deserialize(deserializer)
             .context("failed to parse .cururu.toml")?;
         if parsed.version != 1 {
             bail!(

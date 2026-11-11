@@ -124,7 +124,7 @@ pub fn new_run_id(head: &str) -> String {
         .unwrap_or_default()
         .as_nanos();
     let digest = Sha256::digest(format!("{head}:{nanos}:{}", std::process::id()).as_bytes());
-    format!("{digest:x}")[..24].to_string()
+    hex::encode(digest)[..24].to_string()
 }
 
 #[cfg(test)]

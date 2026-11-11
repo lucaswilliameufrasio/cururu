@@ -2,7 +2,7 @@
 name = "cururu"
 version = "4.9.0"
 edition = "2024"
-rust-version = "1.97"
+rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 description = "Self-service AI code review for GitHub pull requests"
 repository = "https://github.com/lucaswilliameufrasio/cururu"
@@ -17,22 +17,22 @@ cururu-engine = { path = "crates/cururu-engine", version = "0.1.0" }
 anyhow = "1.0"
 axum = "0.8"
 async-trait = "0.1"
-clap = { version = "4.5", features = ["derive", "env"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 dotenvy = "0.15"
 hex = "0.4"
 globset = "0.4"
-jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
-hmac = "0.12"
-regex = "1.11"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli", "zstd"] }
-schemars = { version = "1.0", features = ["derive"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+hmac = "0.13"
+regex = "1.13"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "gzip", "brotli", "zstd"] }
+schemars = { version = "1.2", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "any", "postgres", "sqlite"] }
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "any", "postgres", "sqlite"] }
 thiserror = "2.0"
-tokio = { version = "1.46", features = ["macros", "rt-multi-thread", "fs", "net", "signal", "time"] }
-toml = "0.8"
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "fs", "net", "signal", "time"] }
+toml = "1.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 url = "2.5"
@@ -40,7 +40,7 @@ jsonc-parser = { version = "0.34.0", features = ["cst"] }
 tempfile = "3.27"
 
 [dev-dependencies]
-insta = { version = "1.43", features = ["json"] }
+insta = { version = "1.49", features = ["json"] }
 temp-env = "0.3"
 tempfile = "3.27"
 wiremock = "0.6"

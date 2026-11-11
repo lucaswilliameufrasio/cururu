@@ -91,7 +91,7 @@ pub fn attach_local_analysis(
         "combined analyzer evidence exceeds limit"
     );
     let bytes = serde_json::to_vec(&(&prepared.snapshot_sha256, &manifest_raw, &sarif_raw))?;
-    prepared.snapshot_sha256 = format!("{:x}", Sha256::digest(bytes));
+    prepared.snapshot_sha256 = hex::encode(Sha256::digest(bytes));
     prepared.analyzer_evidence = combined;
     Ok(())
 }
@@ -249,7 +249,7 @@ fn prepare(
         config.review.chunk_bytes,
         config.review.max_diff_bytes,
     );
-    let raw_hash = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    let raw_hash = hex::encode(Sha256::digest(raw.as_bytes()));
     let preferences = serde_json::json!({
         "language": config.review.language,
         "tone": config.review.tone,
@@ -294,7 +294,7 @@ fn prepare(
         source,
         revision,
         diff_sha256: raw_hash,
-        snapshot_sha256: format!("{:x}", Sha256::digest(snapshot)),
+        snapshot_sha256: hex::encode(Sha256::digest(snapshot)),
         scope: if source == "local" {
             "tracked staged and unstaged changes against HEAD; excludes untracked files"
         } else {
@@ -367,7 +367,7 @@ pub async fn prepare_agent_pr(
     };
     review::ensure_review_head_unchanged(&prepared.revision, &scm.fetch_head_sha().await?)?;
     let bytes = serde_json::to_vec(&(&prepared.snapshot_sha256, &context, &feedback, &evidence))?;
-    prepared.snapshot_sha256 = format!("{:x}", Sha256::digest(bytes));
+    prepared.snapshot_sha256 = hex::encode(Sha256::digest(bytes));
     prepared.repository_context = Some(context);
     prepared.prior_feedback = feedback;
     prepared.analyzer_evidence = evidence;

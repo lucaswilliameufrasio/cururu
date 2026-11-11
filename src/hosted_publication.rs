@@ -222,7 +222,7 @@ impl HostedCandidate {
 }
 
 pub fn preview_digest(preview: &str) -> String {
-    format!("{:x}", Sha256::digest(preview.as_bytes()))
+    hex::encode(Sha256::digest(preview.as_bytes()))
 }
 
 pub fn formal_review_marker(head_sha: &str) -> String {

@@ -102,7 +102,7 @@ pub fn ensure_evaluator_mode_allowed(config: &AppConfig) -> anyhow::Result<()> {
 
 pub fn trusted_config_hash(raw: &str) -> String {
     use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(raw.as_bytes()))
+    hex::encode(Sha256::digest(raw.as_bytes()))
 }
 
 async fn ensure_trusted_config_unchanged(

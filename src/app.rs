@@ -21,7 +21,7 @@ use axum::{
     routing::{get, post},
 };
 use db::{DeliveryStore, QueuedDelivery, StoredCandidate};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::Value;
 use sha2::Sha256;
 use std::{sync::Arc, time::Duration};

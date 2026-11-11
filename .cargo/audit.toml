@@ -2,5 +2,11 @@
 # does not enable. CI fails if `cargo tree` finds an active RSA dependency path;
 # the advisory currently has no patched upstream release.
 # Revisit this exception when SQLx removes or replaces that optional dependency.
+#
+# RUSTSEC-2026-0459 (bundled SQLite < 3.54.0): exploitable only when a process
+# opens a database and `-wal` file that a less trusted party could write.
+# Cururu opens only its operator-owned queue database. `sqlx-sqlite` 0.9.0
+# caps `libsqlite3-sys` below the patched 0.39. Remove this exception as soon
+# as an SQLx release allows `libsqlite3-sys` >= 0.39.
 [advisories]
-ignore = ["RUSTSEC-2023-0071"]
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]
