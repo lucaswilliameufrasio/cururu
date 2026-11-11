@@ -47,7 +47,7 @@ impl AnthropicAgent {
         let mut response = self
             .client
             .post(url)
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_mins(2))
             .header("anthropic-version", "2023-06-01")
             .header("x-api-key", &self.config.api_key)
             .json(&body)

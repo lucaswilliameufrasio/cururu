@@ -84,7 +84,6 @@ fn stdio_multichunk_requires_all_results_in_order() {
     let result: serde_json::Value =
         serde_json::from_str(complete["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(result["files_reviewed"], 2);
-    drop(call);
     drop(stdin);
     assert!(child.wait_with_output().unwrap().status.success());
 }

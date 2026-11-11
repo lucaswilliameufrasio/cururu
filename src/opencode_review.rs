@@ -48,7 +48,7 @@ pub async fn generate(
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
-        .timeout(Duration::from_secs(180))
+        .timeout(Duration::from_mins(3))
         .build()
         .context("failed to create OpenCode client")?;
     let mut reviews = Vec::with_capacity(prepared.chunks.len());

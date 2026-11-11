@@ -263,8 +263,7 @@ mod tests {
             assert!(!preview.body.contains("</pre>@everyone"));
             assert!(scm.posted.lock().unwrap().is_empty());
             publish(&config, &scm, &preview).await.unwrap();
-            let posted = scm.posted.lock().unwrap();
-            assert_eq!(posted[0], preview.body);
+            assert_eq!(scm.posted.lock().unwrap()[0], preview.body);
         }
     }
 
