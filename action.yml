@@ -7,6 +7,21 @@ branding:
   color: "green"
 
 inputs:
+  mode:
+    description: "prepare: review and show a candidate without commenting; publish: post an approved candidate from a job gated by a protected environment"
+    required: false
+    default: prepare
+  candidate_digest:
+    description: "Publish mode: the review job's candidate_digest output"
+    required: false
+  candidate_path:
+    description: "Path of the candidate file written in prepare mode and read in publish mode"
+    required: false
+    default: cururu-candidate.json
+  approval_environment:
+    description: "Publish mode: GitHub Environment that must require reviewers and be approved for this run"
+    required: false
+    default: cururu-publish
   github_token:
     description: "GitHub token for API access"
     required: false
@@ -15,8 +30,8 @@ inputs:
     description: "Optional token with read access to a shared config repository in another GitHub App installation"
     required: false
   llm_api_key:
-    description: "LLM provider API key"
-    required: true
+    description: "LLM provider API key (required in prepare mode, unused in publish mode)"
+    required: false
   llm_base_url:
     description: "LLM API base URL (overrides provider default)"
     required: false
@@ -45,7 +60,11 @@ inputs:
 
 outputs:
   review_status:
-    description: "Review execution status (completed or skipped_diff_limit); skipped is not an approval"
+    description: "pending_approval, not_approvable or skipped_diff_limit in prepare mode; completed in publish mode. None of these is a code approval"
+  candidate_digest:
+    description: "SHA-256 of the candidate preview, required by publish mode"
+  candidate_path:
+    description: "Path of the prepared candidate file"
   quality_gate:
     description: "Quality gate status"
   quality_gate_passed:
@@ -77,7 +96,7 @@ runs:
   using: "docker"
   image: docker://ghcr.io/lucaswilliameufrasio/cururu@sha256:0ad52d815d64e693b13a91fe09f8e375393a3fd80f371e72a241031a1b9d82c7
   args:
-    - review
+    - ${{ inputs.mode == 'publish' && 'publish-approved-review' || 'review' }}
   env:
     GITHUB_TOKEN: ${{ inputs.github_token }}
     CURURU_SHARED_CONFIG_TOKEN: ${{ inputs.shared_config_token }}
@@ -90,3 +109,6 @@ runs:
     CURURU_LANGUAGE: ${{ inputs.cururu_language }}
     CURURU_PROFILE: ${{ inputs.cururu_profile }}
     CURURU_FAIL_ON: ${{ inputs.cururu_fail_on }}
+    CURURU_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+    CURURU_CANDIDATE_PATH: ${{ inputs.candidate_path }}
+    CURURU_APPROVAL_ENVIRONMENT: ${{ inputs.approval_environment }}

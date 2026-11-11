@@ -132,7 +132,7 @@ the shared configuration client uses the same access identity as the initial loa
 | Analyzer evidence | Selected evidence is sent and promoted | Exposes prepared check-run evidence to the client and promotes it | Configured evidence is collected and promoted; not sent to the model |
 | Executable suggestions | Governed by review policy | Governed by review policy | Governed by review policy |
 | Evaluator | Not invoked | Not invoked | Optional configured evaluator; filtering is not part of the approved rollout |
-| Publication | Separate interactive confirmation for PR receipts | No publication tool; separate CLI confirmation | Existing automated publication path |
+| Publication | Separate interactive confirmation for PR receipts | No publication tool; separate CLI confirmation | Candidate shown in a Check Run; published only after a separate approval per candidate (GitHub or CLI) |
 
 The API/MCP disclosure and separate-publication boundaries are intentional. The
 other differences describe current behavior, not a decision that exact parity is
@@ -172,45 +172,32 @@ before retrying. The
 MCP process uses its working directory and explicit environment, and does not
 automatically load `.env`.
 
-Add `.github/workflows/cururu-review.yml` to any repository:
-
-```yaml
-name: Cururu PR Review
-on: pull_request_target
-permissions:
-  contents: read
-  checks: read
-  pull-requests: write
-  issues: write
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check LLM API key
-        id: llm_key
-        env:
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-        run: |
-          if [ -z "$LLM_API_KEY" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::LLM_API_KEY is not configured — skipping Cururu review."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Review PR
-        if: steps.llm_key.outputs.skip == 'false'
-        uses: lucaswilliameufrasio/cururu@601b4e125b7dd865c6adab289d2d8948f1e5c841 # v4.8.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          llm_api_key: ${{ secrets.LLM_API_KEY }}
-          expected_head_sha: ${{ github.event.pull_request.head.sha || '' }}
-          cururu_language: pt-BR
-          cururu_profile: balanced
-          cururu_fail_on: off
-```
-
-Set `LLM_API_KEY` as a repository secret. That is it — if the secret is not
+Add [`docs/examples/cururu-review.yml`](docs/examples/cururu-review.yml) as
+`.github/workflows/cururu-review.yml` (or run `cururu init`), set `LLM_API_KEY`
+as a repository secret, and create a `cururu-publish` environment
+(**Settings → Environments**) with required reviewers. If the secret is not
 configured, the review is skipped with a notice instead of failing the PR.
+
+Publication requires a separate approval for every review (Cururu v5 and
+later; v4 publishes directly):
+
+1. The `review` job reviews the PR and comments **nothing**. It shows the exact
+   candidate (summary and every inline comment) in the job summary and in a
+   `Cururu review` check, and outputs its `candidate_digest`.
+2. The `publish` job uses the `cururu-publish` environment, so it waits for a
+   required reviewer. Approve it on the run page, or inspect and approve from a
+   terminal with your own token: `cururu approve-hosted-review --pr <number>`.
+3. Before posting, the job checks that the environment requires reviewers, that
+   the run was approved, that any approval naming a candidate names this one,
+   that the candidate file matches the review job's digest, and that the PR head
+   and trusted configuration are unchanged. Otherwise nothing is published.
+
+The workflow needs `checks: write` and `actions: read` in addition to the PR and
+issue permissions. A new push cancels a run still waiting for approval. The
+diff-limit notice is the only comment posted without approval; it contains no
+code or review content. The candidate is visible to anyone who can read the
+repository's checks and run summaries before approval. See
+[hosted publication approval](docs/hosted-publication-approval.md).
 
 ## Integration discovery prompt
 
@@ -713,6 +700,11 @@ Automatic reviews run for `opened`, `synchronize`, `reopened`, and
 reviewed when changed to ready; authorized collaborators can still request a
 manual review with `/cururu review`.
 
+With the self-hosted GitHub App, `/cururu approve <digest>` approves exactly the
+candidate shown in the `Cururu review` check (the full 64-character digest is
+required). Mention answers are posted directly, because a collaborator asked
+for them explicitly.
+
 Only exact commands are accepted. The commenter must have `write`, `maintain`,
 or `admin` permission, and comment text cannot change the model, endpoint,
 prompt, or secrets.
@@ -723,7 +715,9 @@ prompt, or secrets.
 cururu init           Add a starter .cururu.toml and GitHub Actions workflow
   cururu print-diff     Print the change-request diff
 cururu dry-run        Review and print JSON, do not post comment
-cururu review         Review and post summary comment
+cururu review         Review and prepare a candidate for approval (no comment)
+cururu publish-approved-review   Publish an Action candidate from an approved job
+cururu approve-hosted-review     Inspect and approve a hosted candidate
 cururu print-config   Print merged configuration
 ```
 

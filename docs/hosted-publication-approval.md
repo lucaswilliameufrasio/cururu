@@ -1,47 +1,87 @@
 # Hosted review: separate publication approval
 
-Status: **implementation pending**. The user requested that both the GitHub
-App and Action require a separate approval for each publication, and that the
-operator can choose approval through GitHub or the CLI. The current hosted
-implementation still publishes automatically; do not treat it as satisfying
-this requirement until the new journeys are implemented and tested.
+Status: **implemented and verified locally against protocol-level fakes**; not
+yet exercised against the real GitHub API. Released as a breaking change in the
+first v5 release; v4 Actions publish directly.
 
-## Required journeys
+The user decided that both the GitHub App and the Action require a separate
+approval for each publication, and that the operator chooses to approve through
+GitHub or the CLI.
 
-1. The operator authorizes disclosure to the configured model. Preparing a
-   review does not itself authorize publication.
-2. The hosted review produces a complete, inspectable candidate, bound to its
-   repository, PR, head, effective configuration, evidence, and exact rendered
-   publication. An incomplete review cannot be approved as complete.
-3. The operator chooses either an authenticated GitHub interaction or an
-   interactive CLI confirmation. Both must identify the same candidate and
-   authorize exactly that candidate; neither is a blanket repository setting.
-4. The publisher rechecks authorization and the current snapshot before any
-   review, summary, inline comment, diagnostic, or other publication. Changed
-   input invalidates approval; the operator must inspect and approve again.
-5. Duplicate requests, worker restarts, and uncertain remote outcomes must not
-   silently create repeated publications or turn failure into approval. The
-   GitHub API does not support an atomic snapshot check and POST, so the
-   remaining race must be disclosed.
+## Decisions
 
-## Design work and verification still required
+- **Inspection surface:** a neutral `Cururu review` Check Run on the PR head
+  (App and Action) and the run's job summary (Action) show the canonical
+  preview: summary comment, every inline comment with its location, and the
+  formal review body. Nothing is commented on the PR before approval. The check
+  and summary are visible to anyone who can read the repository's checks; this
+  exposure was accepted in exchange for inspecting and approving inside GitHub.
+- **Digest binding:** the candidate digest is the SHA-256 of that exact preview.
+  Every approval names the digest or a check bound to it, so an approval
+  authorizes only inspected content. The CLI recomputes the digest from the
+  check text and ignores checks whose text does not match the digest they claim,
+  so a forged check cannot substitute other content.
+- **GitHub App approval:** the check's **Publish review** button
+  (`check_run.requested_action`), a `/cururu approve <64-hex digest>` PR comment,
+  or `cururu approve-hosted-review`, which posts that comment as the operator.
+  The approver must have write, maintain or admin permission.
+- **Action approval:** a `publish` job gated by a GitHub Environment
+  (`cururu-publish` by default) with required reviewers. The job refuses to
+  publish unless the environment requires reviewers and the run has an approval
+  for it. `cururu approve-hosted-review` approves the waiting deployment with a
+  `cururu-candidate:<digest>` comment, and the job refuses if any approval names
+  a different candidate. The candidate file must match the review job's
+  `candidate_digest` output.
+- **Exemptions:** the diff-limit notice is still posted without approval (it
+  contains no code or review content). Mention answers are posted directly,
+  because a write-authorized collaborator requested them. The truncation
+  diagnostic, which may contain model-written recommendations, is shown as a
+  check instead of a comment.
 
-- Design durable candidate storage and retrieval for both the long-running App
-  and the short-lived Action. Keep source and review data private; the public PR
-  must not receive the candidate before approval. Bind the approval to the
-  actual rendered candidate as well as its snapshot, not merely to a PR number.
-- Define authenticated, permission-checked GitHub approval and a CLI path that
-  can securely retrieve and approve the *same* candidate. An editable receipt,
-  issue comment, artifact, or caller-provided hash alone is not proof of an
-  authorized approval. Avoid an implicit dependency on a specific desktop.
-- Define idempotent state transitions, concurrent approval/publication,
-  expiration, cancellation, permission changes, and recovery after an
-  interrupted or uncertain POST. Do not automatically retry an uncertain POST.
-- Cover signed webhook and Action entry points with real local persistence and
-  protocol-level service fakes. Verify no approval, denial, unauthorized actor,
-  candidate tampering, changed PR/config/evidence, duplicate approval,
-  restart, and each successful approval interface. Verify that diagnostic and
-  limit-notice branches cannot bypass the boundary.
-- Replace existing documentation and tests that assume immediate hosted
-  publication only after the replacement flows are operational. Do not weaken
-  existing CLI/MCP confirmation or enable evaluator filtering.
+## Lifecycle (GitHub App)
+
+`pending` → `publishing` (atomic claim; only one approval wins) → `published`,
+`invalidated` (head or trusted configuration changed; nothing published) or
+`uncertain` (a write failed or a restart interrupted publication; never
+retried). A newer candidate for the same PR marks older pending ones
+`superseded`. Pending candidates expire after seven days; records are pruned
+after thirty days. Pressing the button of a superseded or expired candidate
+closes its check without publishing.
+
+## Revalidation
+
+Before the first write, publication rechecks that the candidate belongs to the
+PR, that the trusted repository and shared configuration content is unchanged
+(the base commit itself may move), and that the PR head is unchanged. The head
+is checked again before submitting the formal review and before the summary.
+Analyzer evidence is not re-collected: the approval authorizes the inspected
+content, not a re-review.
+
+## Verification
+
+- `tests/webhook_review_smoke.py`: signed webhooks, real SQLite queue, fake
+  GitHub/LLM. Preparing posts no comments; approvals by an account without write
+  access and by an unknown digest publish nothing; a valid `/cururu approve`
+  publishes exactly the previewed summary; a duplicate approval publishes
+  nothing more; approving after a new push invalidates without publishing.
+- `tests/hosted_review_smoke.py`: Action `review` posts no comments and outputs
+  the digest; `publish-approved-review` refuses an unprotected environment, a
+  missing approval, an approval naming another candidate, a tampered candidate
+  file and a moved head; the valid case publishes the previewed summary.
+- `tests/hosted_approval_pty.py`: CLI refuses forged checks, cancellation and
+  piped input; approves the App by comment and the Action by environment.
+- Unit tests cover digest coverage, localization, the size limit, approval
+  parsing, candidate state transitions, expiry and restart recovery.
+
+## Limitations
+
+- GitHub cannot condition a POST on the PR revision; a push between the final
+  check and a write can still make a publication stale.
+- The existing comment helpers retry some requests internally; a lost response
+  during approved publication could duplicate a comment. Inline comments and
+  the summary are reconciled/upserted, which limits duplicates.
+- Approvals happen in GitHub; Cururu verifies them but cannot prove the approver
+  actually read the preview.
+- Previews over 65 000 bytes cannot be approved; reduce the PR or finding scope.
+- Real GitHub behavior (check text normalization, environment and approval APIs
+  with `GITHUB_TOKEN`, App button delivery) has not been tested against GitHub.

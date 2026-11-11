@@ -26,7 +26,9 @@ CLI / GitHub App webhook adapter
             -> OpenAI-compatible LLM adapter (current implementation)
   -> quality.rs   severity/confidence/policy filtering
   -> output.rs    summary and finding comments
-  -> ScmProvider  publish comments and summaries
+  -> hosted_publication.rs  candidate preview + digest, shown as a check
+  -> (separate approval: Environment, check button, /cururu approve or CLI)
+  -> ScmProvider  publish the approved candidate after revalidation
 ```
 
 The CLI and self-hosted GitHub App are composition roots. The App webhook

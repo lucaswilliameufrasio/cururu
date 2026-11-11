@@ -836,3 +836,17 @@ async fn retired_opencode_review_never_contacts_server() {
     let requests = server.received_requests().await.unwrap();
     assert!(requests.is_empty());
 }
+
+#[cfg(unix)]
+#[test]
+fn hosted_candidate_cli_approval_requires_inspection_and_names_the_digest() {
+    let status = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/hosted_approval_pty.py"
+        ))
+        .arg(env!("CARGO_BIN_EXE_cururu"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}

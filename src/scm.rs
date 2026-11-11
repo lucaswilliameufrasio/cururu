@@ -118,6 +118,33 @@ pub trait ScmProvider: Send + Sync {
     fn is_cururu_review_comment(&self, _comment: &ReviewComment, _login: Option<&str>) -> bool {
         false
     }
+    /// Show a publication candidate for inspection without commenting on the
+    /// change request. Returns the provider's check identifier.
+    async fn create_candidate_check(&self, _check: &CandidateCheck<'_>) -> anyhow::Result<u64> {
+        anyhow::bail!("SCM adapter does not support publication candidate checks")
+    }
+    /// Close a candidate check, removing its approval action.
+    async fn finish_candidate_check(
+        &self,
+        _check_id: u64,
+        _conclusion: &str,
+        _title: &str,
+        _summary: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("SCM adapter does not support publication candidate checks")
+    }
+}
+
+/// An inspection surface for a hosted publication candidate.
+pub struct CandidateCheck<'a> {
+    pub head_sha: &'a str,
+    pub external_id: &'a str,
+    pub title: &'a str,
+    pub summary: &'a str,
+    /// The canonical preview; its SHA-256 is the candidate digest.
+    pub text: &'a str,
+    /// Offer an in-check approval action (GitHub App only).
+    pub approval_action: bool,
 }
 
 #[cfg(test)]

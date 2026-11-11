@@ -22,12 +22,13 @@ account/organization that owns the installation:
 - **Webhook secret:** generate a unique random value and set it as
   `GITHUB_WEBHOOK_SECRET` in the deployment.
 - **Repository permissions:** Metadata (read, automatic), Contents (read), Checks
-  (read), Pull requests (write), Issues (write). Cururu reads repository
-  config/context, diffs, and optional Check Run evidence; it writes
-  reviews/comments and answers comments/mentions.
+  (write), Pull requests (write), Issues (write). Cururu reads repository
+  config/context, diffs, and optional Check Run evidence; it shows publication
+  candidates as Check Runs, writes approved reviews/comments and answers
+  comments/mentions.
 - **Subscribe to events:** Pull request (`opened`, `synchronize`, `reopened`,
   `ready_for_review`), Issue comment (`created`), Pull request review comment
-  (`created`).
+  (`created`), Check run (`requested_action`).
 - Install the App on the repositories where Cururu should review code.
 
 Download the App's private key and store it as a file available to the service;
@@ -162,6 +163,18 @@ instance, retry failures with bounded backoff, recover interrupted jobs, and
 prune completed payloads after seven days. PR-head code is never checked out or
 executed. Comment-triggered LLM responses are limited to write-authorized
 collaborators, and comment/diff text remains untrusted prompt data.
+
+Reviews are not published automatically. Each review becomes a pending
+candidate stored in the database and shown in a `Cururu review` Check Run with a
+**Publish review** button. A collaborator with write access approves it with the
+button, a `/cururu approve <digest>` comment, or `cururu approve-hosted-review`.
+The worker then rechecks the approver, the PR head and the trusted configuration
+before publishing exactly that candidate. A new candidate for the PR supersedes
+older ones; pending candidates expire after seven days; a publication that fails
+midway, or is interrupted by a restart, is recorded as uncertain and never
+retried automatically. The check is visible to anyone who can read the
+repository's checks, so the candidate is visible there before approval. See
+[hosted publication approval](../hosted-publication-approval.md).
 
 The same worker reviews PR open/update events, accepts exact `/cururu review`
 and `/cururu review --full` commands, answers `@cururu` / `@cururu[bot]` mentions,

@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::time::Duration;
 
+mod approval;
+pub use approval::{CandidateCheckRun, RunApproval};
+
 fn url_encode(value: &str) -> String {
     value
         .replace('%', "%25")
@@ -1471,6 +1474,22 @@ impl GitHubClient {
 
 #[async_trait]
 impl ScmProvider for GitHubClient {
+    async fn create_candidate_check(
+        &self,
+        check: &crate::scm::CandidateCheck<'_>,
+    ) -> anyhow::Result<u64> {
+        self.create_candidate_check_run(check).await
+    }
+    async fn finish_candidate_check(
+        &self,
+        check_id: u64,
+        conclusion: &str,
+        title: &str,
+        summary: &str,
+    ) -> anyhow::Result<()> {
+        self.finish_candidate_check_run(check_id, conclusion, title, summary)
+            .await
+    }
     async fn fetch_head_sha(&self) -> anyhow::Result<String> {
         Self::fetch_head_sha(self).await
     }

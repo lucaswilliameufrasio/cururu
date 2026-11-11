@@ -1,3 +1,4 @@
+mod action_publication;
 mod agent;
 mod agent_publication;
 mod analysis;
@@ -9,6 +10,8 @@ mod context;
 mod diff;
 mod evaluation;
 mod github;
+mod hosted_approval;
+mod hosted_publication;
 mod mcp;
 mod mcp_install;
 mod output;
@@ -158,8 +161,21 @@ enum Command {
         /// Destination path for the backup copy.
         destination: std::path::PathBuf,
     },
-    /// Review the current change request and publish a summary comment.
+    /// Review the current change request and prepare a publication candidate
+    /// for approval; nothing is commented on the change request.
     Review,
+    /// Publish a GitHub Action candidate from a job approved through a
+    /// protected GitHub Environment.
+    PublishApprovedReview,
+    /// Inspect a hosted review candidate and approve exactly that candidate.
+    ApproveHostedReview {
+        /// Pull request number (defaults to `PR_NUMBER`).
+        #[arg(long)]
+        pr: Option<u64>,
+        /// Environment approved for GitHub Action candidates.
+        #[arg(long, default_value = hosted_publication::DEFAULT_APPROVAL_ENVIRONMENT)]
+        environment: String,
+    },
     /// Review the change request and print JSON without publishing comments.
     DryRun,
     /// Fetch and print the change-request diff.
@@ -297,6 +313,7 @@ async fn main() -> anyhow::Result<()> {
             | Command::AgentReview { .. }
             | Command::ApiReview { .. }
             | Command::PublishAgentReview { .. }
+            | Command::ApproveHostedReview { .. }
             | Command::InstallMcp { .. }
             | Command::CheckMcp { .. }
             | Command::PreviewMcpMerge { .. }
@@ -555,6 +572,9 @@ async fn main() -> anyhow::Result<()> {
             println!("{preview}");
             return Ok(());
         }
+        Command::ApproveHostedReview { pr, environment } => {
+            return hosted_approval::approve(*pr, environment).await;
+        }
         Command::PublishAgentReview {
             receipt,
             sarif,
@@ -678,7 +698,7 @@ async fn main() -> anyhow::Result<()> {
     // Load trusted configuration only for commands that use review settings.
     if matches!(
         cli.command,
-        Command::PrintConfig | Command::Review | Command::DryRun
+        Command::PrintConfig | Command::Review | Command::DryRun | Command::PublishApprovedReview
     ) {
         let loaded = merge_repository_config(&mut config, source_control.as_ref()).await?;
         if matches!(cli.command, Command::PrintConfig) {
@@ -708,6 +728,7 @@ async fn main() -> anyhow::Result<()> {
         | Command::AgentReview { .. }
         | Command::ApiReview { .. }
         | Command::PublishAgentReview { .. }
+        | Command::ApproveHostedReview { .. }
         | Command::InstallMcp { .. }
         | Command::PreviewMcpMerge { .. }
         | Command::UpdateCodexMcp { .. }
@@ -785,48 +806,37 @@ async fn main() -> anyhow::Result<()> {
             let report = quality::evaluate(&result.review, config.review.policy.fail_on);
             write_action_outputs(&report)?;
             write_analysis_outputs(&result.analysis)?;
-
-            match config.review.comment_mode {
-                CommentMode::Inline => {
-                    review::ensure_review_head_unchanged(
-                        &result.head_sha,
-                        &source_control.fetch_head_sha().await?,
-                    )?;
-                    let drafts = build_inline_drafts(&result);
-                    source_control
-                        .reconcile_review_comments(&result.head_sha, &drafts)
-                        .await?;
-                    // Keep a compact summary in the PR conversation as well.
-                    review::ensure_review_head_unchanged(
-                        &result.head_sha,
-                        &source_control.fetch_head_sha().await?,
-                    )?;
-                    let body = output::render_summary_comment(&result);
-                    source_control.upsert_summary_comment(&body).await?;
-                }
-                CommentMode::Summary => {
-                    review::ensure_review_head_unchanged(
-                        &result.head_sha,
-                        &source_control.fetch_head_sha().await?,
-                    )?;
-                    let body = output::render_summary_comment(&result);
-                    source_control.upsert_summary_comment(&body).await?;
-                }
-            }
+            let inline = matches!(config.review.comment_mode, CommentMode::Inline);
+            let candidate = hosted_publication::HostedCandidate::from_review(
+                &config,
+                &result,
+                if inline {
+                    build_inline_drafts(&result)
+                } else {
+                    Vec::new()
+                },
+                inline,
+                false,
+            );
             review::ensure_review_head_unchanged(
                 &result.head_sha,
                 &source_control.fetch_head_sha().await?,
             )?;
-
-            write_review_status("completed")?;
-
-            println!("{}", serde_json::to_string_pretty(&result.review)?);
+            action_publication::prepare(&candidate, source_control.as_ref()).await?;
+            println!(
+                "Cururu: candidate {} prepared; nothing was published. Approve the publication job to publish it.",
+                candidate.digest()
+            );
             if !report.passed {
                 anyhow::bail!(
                     "quality gate failed: {} finding(s) at or above configured threshold",
                     report.findings_count
                 );
             }
+        }
+        Command::PublishApprovedReview => {
+            let github = github::GitHubClient::from_scm_config(&config.source_control)?;
+            action_publication::publish_approved(&config, &github).await?;
         }
     }
 
@@ -1008,17 +1018,6 @@ fn write_action_outputs(report: &quality::QualityReport) -> anyhow::Result<()> {
     writeln!(file, "medium_count={}", report.medium_count)?;
     writeln!(file, "low_count={}", report.low_count)?;
     writeln!(file, "highest_severity={}", report.highest_severity)?;
-    Ok(())
-}
-
-fn write_review_status(status: &str) -> anyhow::Result<()> {
-    if let Some(path) = std::env::var_os("GITHUB_OUTPUT") {
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        writeln!(file, "review_status={status}")?;
-    }
     Ok(())
 }
 

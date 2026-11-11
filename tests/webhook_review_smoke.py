@@ -15,7 +15,7 @@ import urllib.request
 
 head = "a" * 40
 test_evaluator = len(sys.argv) > 2 and sys.argv[2] == "--test-evaluator"
-state = {"changed": False, "mutate": False, "models": 0, "evaluations": 0, "writes": []}
+state = {"changed": False, "mutate": False, "models": 0, "evaluations": 0, "writes": [], "checks": [], "check_updates": [], "head": head}
 
 
 class Fake(http.server.BaseHTTPRequestHandler):
@@ -35,12 +35,15 @@ class Fake(http.server.BaseHTTPRequestHandler):
             if self.headers.get("Accept") == "application/vnd.github.diff":
                 self.reply(200, "diff --git a/a b/a\n@@ -1 +1 @@\n-old\n+new\n")
             else:
-                self.reply(200, {"head": {"sha": head, "ref": "branch"}, "base": {"sha": head, "ref": "main"}})
+                self.reply(200, {"head": {"sha": state["head"], "ref": "branch"}, "base": {"sha": head, "ref": "main"}})
         elif self.path.startswith("/repos/test/repo/contents/.cururu.toml?"):
             value = "true" if state["changed"] and state["mutate"] else "false"
             self.reply(200, "version = 1\n[policy]\nsuggested_changes = " + value + "\n")
         elif self.path.startswith("/repos/test/repo/git/ref/heads/"):
             self.reply(200, {"object": {"sha": head}})
+        elif self.path.startswith("/repos/test/repo/collaborators/"):
+            login = self.path.split("/")[5]
+            self.reply(200, {"permission": "write" if login == "alice" else "read"})
         elif self.path == "/user":
             self.reply(200, {"login": "fixture[bot]"})
         elif self.path.startswith(("/repos/test/repo/pulls/1/comments?", "/repos/test/repo/issues/1/comments?", "/repos/test/repo/pulls/1/reviews?")):
@@ -69,9 +72,21 @@ class Fake(http.server.BaseHTTPRequestHandler):
             self.reply(200, {"model": "fixture-evaluator", "answers": {
                 "finding_0_is_defect": {"type": "noul", "noul": 0.9},
                 "finding_0_severity": {"type": "choice", "choice": "high", "confidence": 0.9}}})
+        elif self.path == "/repos/test/repo/check-runs":
+            state["checks"].append(json.loads(body))
+            self.reply(201, {"id": 900 + len(state["checks"])})
         else:
             state["writes"].append((self.path, body))
             self.reply(201, {"id": 42})
+
+    def do_PATCH(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        if self.path.startswith("/repos/test/repo/check-runs/"):
+            state["check_updates"].append((self.path, json.loads(body)))
+            self.reply(200, {})
+        else:
+            state["writes"].append((self.path, body))
+            self.reply(200, {})
 
 
 fake = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
@@ -110,15 +125,13 @@ with tempfile.TemporaryDirectory() as directory:
                 except OSError:
                     assert process.poll() is None and time.monotonic() < deadline
                     time.sleep(0.05)
-            for scenario in ("stable", "unauthorized", "changed"):
-                mutate = scenario == "changed"
-                state.update(changed=False, mutate=mutate, models=0, evaluations=0, writes=[])
-                delivery = scenario
-                repository = "other/repo" if scenario == "unauthorized" else "test/repo"
-                body = json.dumps({"action": "synchronize", "installation": {"id": 1}, "repository": {"full_name": repository}, "pull_request": {"number": 1, "draft": False}}).encode()
+            def send(event, payload, delivery):
+                body = json.dumps(payload).encode()
                 signature = hmac.new(b"fixture-secret", body, hashlib.sha256).hexdigest()
-                request = urllib.request.Request(url + "/v1/webhooks/github", data=body, headers={"X-Hub-Signature-256": "sha256=" + signature, "X-GitHub-Delivery": delivery, "X-GitHub-Event": "pull_request"})
+                request = urllib.request.Request(url + "/v1/webhooks/github", data=body, headers={"X-Hub-Signature-256": "sha256=" + signature, "X-GitHub-Delivery": delivery, "X-GitHub-Event": event})
                 assert urllib.request.urlopen(request, timeout=5).status == 202
+
+            def wait(delivery, done):
                 deadline = time.monotonic() + 20
                 while True:
                     db = sqlite3.connect(database)
@@ -126,22 +139,86 @@ with tempfile.TemporaryDirectory() as directory:
                         row = db.execute("SELECT state, attempts FROM github_deliveries WHERE delivery_id = ?", (delivery,)).fetchone()
                     finally:
                         db.close()
-                    if row and ((scenario == "stable" and row[0] == "done") or (scenario != "stable" and row[0] == "queued" and row[1] >= 1)):
-                        break
+                    if row and ((done and row[0] == "done") or (not done and row[0] == "queued" and row[1] >= 1)):
+                        return
                     if process.poll() is not None or time.monotonic() >= deadline:
                         log.flush()
                         log.seek(0)
                         raise AssertionError((delivery, row, log.read()))
                     time.sleep(0.05)
+
+            def candidate_state(digest):
+                db = sqlite3.connect(database)
+                try:
+                    return db.execute("SELECT state FROM hosted_candidates WHERE digest = ?", (digest,)).fetchone()[0]
+                finally:
+                    db.close()
+
+            installation = {"id": 1}
+            repo = {"full_name": "test/repo"}
+
+            def press(check_id, login, delivery):
+                send("check_run", {"action": "requested_action", "requested_action": {"identifier": "cururu_publish"}, "check_run": {"id": check_id}, "sender": {"login": login}, "repository": repo, "installation": installation}, delivery)
+                wait(delivery, True)
+
+            def comment(text, login, delivery):
+                send("issue_comment", {"action": "created", "issue": {"number": 1, "pull_request": {}}, "comment": {"body": text, "user": {"login": login, "type": "User"}}, "repository": repo, "installation": installation}, delivery)
+                wait(delivery, True)
+
+            for scenario in ("stable", "unauthorized", "changed"):
+                mutate = scenario == "changed"
+                state.update(changed=False, mutate=mutate, models=0, evaluations=0, writes=[], checks=[], check_updates=[])
+                repository = "other/repo" if scenario == "unauthorized" else "test/repo"
+                send("pull_request", {"action": "synchronize", "installation": installation, "repository": {"full_name": repository}, "pull_request": {"number": 1, "draft": False}}, scenario)
+                wait(scenario, scenario == "stable")
                 assert state["models"] == (0 if scenario == "unauthorized" else 1), state
                 assert state["evaluations"] == (1 if test_evaluator and scenario != "unauthorized" else 0), state
+                # Preparing a candidate never comments on the PR.
+                assert not state["writes"], state["writes"]
                 if scenario != "stable":
-                    assert not state["writes"], state["writes"]
-                else:
-                    paths = [item[0] for item in state["writes"]]
-                    assert "/repos/test/repo/pulls/1/reviews" in paths, paths
-                    assert "/repos/test/repo/pulls/1/reviews/42/events" in paths, paths
-                    assert "/repos/test/repo/issues/1/comments" in paths, paths
+                    assert not state["checks"], state["checks"]
+                    continue
+                assert len(state["checks"]) == 1, state["checks"]
+                check = state["checks"][0]
+                text = check["output"]["text"]
+                digest = hashlib.sha256(text.encode()).hexdigest()
+                assert check["external_id"] == digest and check["actions"][0]["identifier"] == "cururu_publish", check
+                assert digest in check["output"]["summary"]
+                assert candidate_state(digest) == "pending"
+                state["mutate"] = False
+                state["changed"] = False
+
+                press(901, "mallory", "press-without-write-access")
+                comment("/cururu approve " + "0" * 64, "alice", "approve-unknown-digest")
+                assert not state["writes"] and candidate_state(digest) == "pending", state["writes"]
+
+                comment("/cururu approve " + digest, "alice", "approve-by-comment")
+                paths = [item[0] for item in state["writes"]]
+                assert "/repos/test/repo/pulls/1/reviews" in paths, paths
+                assert "/repos/test/repo/pulls/1/reviews/42/events" in paths, paths
+                assert "/repos/test/repo/issues/1/comments" in paths, paths
+                summary = [item[1].decode() for item in state["writes"] if item[0] == "/repos/test/repo/issues/1/comments"][0]
+                assert json.loads(summary)["body"] in text
+                assert candidate_state(digest) == "published"
+                assert state["check_updates"][-1][1]["conclusion"] == "success", state["check_updates"]
+                published = len(state["writes"])
+
+                press(901, "alice", "duplicate-approval")
+                assert len(state["writes"]) == published, state["writes"]
+
+                # A newer head produces a new candidate; approving it after
+                # another push invalidates it without publishing.
+                state["head"] = "b" * 40
+                send("pull_request", {"action": "synchronize", "installation": installation, "repository": repo, "pull_request": {"number": 1, "draft": False}}, "second-head")
+                wait("second-head", True)
+                assert len(state["checks"]) == 2, state["checks"]
+                stale = hashlib.sha256(state["checks"][1]["output"]["text"].encode()).hexdigest()
+                state["head"] = "c" * 40
+                press(902, "alice", "stale-approval")
+                assert len(state["writes"]) == published, state["writes"]
+                assert candidate_state(stale) == "invalidated"
+                assert state["check_updates"][-1][1]["conclusion"] == "neutral", state["check_updates"]
+                state["head"] = head
         finally:
             process.terminate()
             process.wait(timeout=10)
