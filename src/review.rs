@@ -61,6 +61,32 @@ pub struct ReviewOutput {
     pub head_sha: String,
     pub analysis: analysis::AnalysisReport,
     pub evaluation: Option<evaluation::EvaluationReport>,
+    /// Unique identifier of this review run.
+    pub run_id: String,
+    /// Usage of every recorded review run on the PR, including this one.
+    pub pr_usage: Option<crate::review_usage::PrUsage>,
+}
+
+impl ReviewOutput {
+    pub fn usage_record(&self) -> crate::review_usage::UsageRecord {
+        crate::review_usage::UsageRecord::new(&self.run_id, &self.head_sha, self.usage.as_ref())
+    }
+
+    /// Add the PR's accumulated usage. History failures are logged and shown
+    /// as incomplete rather than blocking the review.
+    pub async fn attach_pr_usage(&mut self, source_control: &dyn ScmProvider) {
+        let history = match source_control.review_usage_history().await {
+            Ok(history) => history,
+            Err(error) => {
+                tracing::warn!(%error, "could not read earlier Cururu review usage");
+                crate::review_usage::UsageHistory::default()
+            }
+        };
+        self.pr_usage = Some(crate::review_usage::pr_total(
+            &history,
+            &self.usage_record(),
+        ));
+    }
 }
 
 pub fn ensure_evaluator_mode_allowed(config: &AppConfig) -> anyhow::Result<()> {
@@ -296,9 +322,11 @@ pub async fn run_review_with_evaluator(
         show_cost: config.summary.show_cost,
         logo_url: config.summary.logo_url.clone(),
         changed_files: files.clone(),
+        run_id: crate::review_usage::new_run_id(head_sha),
         head_sha: head_sha.clone(),
         analysis: analysis_report,
         evaluation: evaluation_report,
+        pr_usage: None,
     })
 }
 

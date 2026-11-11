@@ -50,6 +50,7 @@ pub async fn prepare(
     let preview = candidate.preview();
     let approvable = candidate.approvable();
     let instructions = candidate.approval_instructions(false);
+    let check_summary = candidate.check_summary(false);
     append(
         "GITHUB_STEP_SUMMARY",
         &format!("## Cururu review\n\n{instructions}\n\n{preview}\n"),
@@ -80,7 +81,7 @@ pub async fn prepare(
             } else {
                 "Candidate cannot be approved"
             },
-            summary: &instructions,
+            summary: &check_summary,
             text: &preview,
             approval_action: false,
         })

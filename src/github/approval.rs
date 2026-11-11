@@ -18,6 +18,9 @@ pub struct CandidateCheckRun {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct CheckRunOutput {
+    /// Approval instructions and the run's hidden usage record.
+    #[serde(default)]
+    pub summary: Option<String>,
     /// The candidate preview; its SHA-256 must equal the claimed digest.
     #[serde(default)]
     pub text: Option<String>,
@@ -114,7 +117,61 @@ struct ReviewPendingDeployments<'a> {
     comment: &'a str,
 }
 
+#[derive(Debug, Deserialize)]
+struct PullRequestCommit {
+    sha: String,
+}
+
+/// GitHub lists at most this many commits for a pull request.
+const MAX_PR_COMMITS: usize = 250;
+
 impl GitHubClient {
+    /// Usage markers from every `Cururu review` check on the PR's commits.
+    pub async fn review_usage_history(&self) -> anyhow::Result<crate::review_usage::UsageHistory> {
+        let mut commits = Vec::new();
+        for page in 1..=3 {
+            let mut batch: Vec<PullRequestCommit> = self
+                .api(
+                    reqwest::Method::GET,
+                    &format!(
+                        "/pulls/{}/commits?per_page=100&page={page}",
+                        self.cfg.pr_number
+                    ),
+                )
+                .send()
+                .await
+                .context("failed to list PR commits")?
+                .error_for_status()
+                .context("failed to read PR commits")?
+                .json()
+                .await
+                .context("failed to parse PR commits")?;
+            let last = batch.len() < 100;
+            commits.append(&mut batch);
+            if last {
+                break;
+            }
+        }
+        let complete = commits.len() < MAX_PR_COMMITS;
+        let mut records = Vec::new();
+        for chunk in commits.chunks(8) {
+            let mut tasks = tokio::task::JoinSet::new();
+            for commit in chunk {
+                let client = self.clone();
+                let sha = commit.sha.clone();
+                tasks.spawn(async move { client.list_candidate_check_runs(&sha).await });
+            }
+            while let Some(result) = tasks.join_next().await {
+                for check in result.context("usage history task failed")?? {
+                    if let Some(summary) = check.output.summary.as_deref() {
+                        records.extend(crate::review_usage::parse_markers(summary));
+                    }
+                }
+            }
+        }
+        Ok(crate::review_usage::UsageHistory { records, complete })
+    }
+
     fn api(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         self.client
             .request(
@@ -428,5 +485,80 @@ mod tests {
         assert_eq!(approvals[0].environments[0].name, "cururu-publish");
         let checks = github.list_candidate_check_runs("head").await.unwrap();
         assert_eq!(checks[0].output.text.as_deref(), Some("t"));
+    }
+
+    #[tokio::test]
+    async fn usage_history_reads_markers_from_every_pr_commit_check() {
+        let server = MockServer::start().await;
+        let first = crate::review_usage::UsageRecord::new("r1", "c1", None);
+        let second = crate::review_usage::UsageRecord::new("r2", "c2", None);
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/7/commits"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"sha": "c1"}, {"sha": "c2"}])),
+            )
+            .mount(&server)
+            .await;
+        for (sha, record) in [("c1", &first), ("c2", &second)] {
+            Mock::given(method("GET"))
+                .and(path(format!("/repos/owner/repo/commits/{sha}/check-runs")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "check_runs": [{"id": 1, "output": {"summary": format!("text {}", record.marker())}}]
+                })))
+                .mount(&server)
+                .await;
+        }
+        let history = client(&server).review_usage_history().await.unwrap();
+        assert!(history.complete);
+        let mut runs: Vec<_> = history
+            .records
+            .iter()
+            .map(|record| record.run.clone())
+            .collect();
+        runs.sort();
+        assert_eq!(runs, ["r1", "r2"]);
+    }
+
+    #[tokio::test]
+    async fn review_summary_is_a_new_comment_posted_once_per_run() {
+        let server = MockServer::start().await;
+        let existing = format!(
+            "{}\n{}",
+            crate::output::marker(),
+            crate::output::run_marker("old")
+        );
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/7/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": 1, "body": existing, "user": {"login": "cururu[bot]", "type": "Bot"}}
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues/7/comments"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let github = client(&server);
+        github
+            .publish_review_summary("old summary", "old")
+            .await
+            .unwrap();
+        github
+            .publish_review_summary("new summary", "new")
+            .await
+            .unwrap();
     }
 }

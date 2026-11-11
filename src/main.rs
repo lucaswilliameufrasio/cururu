@@ -21,6 +21,7 @@ mod repository;
 mod retry;
 mod review;
 mod review_input;
+mod review_usage;
 mod scm;
 
 use anyhow::Context;
@@ -777,7 +778,7 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
             }
-            let result = match review::run_review(&config, source_control.as_ref()).await {
+            let mut result = match review::run_review(&config, source_control.as_ref()).await {
                 Ok(result) => result,
                 Err(error) => {
                     if review::publish_diff_limit_notice(&config, source_control.as_ref(), &error)
@@ -806,6 +807,7 @@ async fn main() -> anyhow::Result<()> {
             let report = quality::evaluate(&result.review, config.review.policy.fail_on);
             write_action_outputs(&report)?;
             write_analysis_outputs(&result.analysis)?;
+            result.attach_pr_usage(source_control.as_ref()).await;
             let inline = matches!(config.review.comment_mode, CommentMode::Inline);
             let candidate = hosted_publication::HostedCandidate::from_review(
                 &config,

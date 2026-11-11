@@ -383,7 +383,9 @@ async fn run_pull_request_review_with_evaluator(
         }
     }
 
-    let result = match review::run_review_with_evaluator(config, source_control, evaluator).await {
+    let mut result = match review::run_review_with_evaluator(config, source_control, evaluator)
+        .await
+    {
         Ok(result) => result,
         Err(error) => {
             if review::publish_diff_limit_notice(config, source_control, &error).await? {
@@ -398,6 +400,7 @@ async fn run_pull_request_review_with_evaluator(
         &result.head_sha,
         &source_control.fetch_head_sha().await?,
     )?;
+    result.attach_pr_usage(source_control).await;
     let inline = match config.review.comment_mode {
         CommentMode::Inline => build_inline_drafts(&result),
         CommentMode::Summary => Vec::new(),
@@ -410,7 +413,7 @@ async fn run_pull_request_review_with_evaluator(
                 head_sha: &candidate.head_sha,
                 external_id: "not-approvable",
                 title: "Candidate cannot be approved",
-                summary: &candidate.approval_instructions(true),
+                summary: &candidate.check_summary(true),
                 text: &candidate.approval_instructions(true),
                 approval_action: false,
             })
@@ -437,7 +440,7 @@ async fn run_pull_request_review_with_evaluator(
             head_sha: &candidate.head_sha,
             external_id: &digest,
             title: "Awaiting publication approval",
-            summary: &candidate.approval_instructions(true),
+            summary: &candidate.check_summary(true),
             text: &preview,
             approval_action: true,
         })

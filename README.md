@@ -377,6 +377,15 @@ context files). Estimated cost per review through OpenRouter pricing:
   show token counts.
 - All costs estimate through OpenRouter pricing. Direct provider pricing may
   differ.
+- Every published review adds a **new** summary comment (earlier summaries stay
+  as history) with the model's summary, this review's tokens/cost and the
+  **PR total**. The total sums every Cururu review run recorded on the PR,
+  including candidates that were never approved or published, and states how
+  many reviews did not report tokens or cost. Each run's usage is stored in a
+  hidden marker on its `Cururu review` check, so the total covers runs from the
+  version that introduced it onward and at most GitHub's 250 listed PR
+  commits; beyond that it is marked as a lower bound. Failed runs (for example,
+  a truncated model response) and evaluator calls are not counted.
 
 ### Review
 

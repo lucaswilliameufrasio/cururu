@@ -10,6 +10,7 @@
 
 use crate::config::AppConfig;
 use crate::review::{self, ReviewOutput};
+use crate::review_usage::UsageRecord;
 use crate::scm::{ReviewCommentDraft, ScmProvider};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,7 @@ pub const ACTION_APPROVAL_PREFIX: &str = "cururu-candidate:";
 pub const DEFAULT_APPROVAL_ENVIRONMENT: &str = "cururu-publish";
 const PREVIEW_MARKER: &str = "<!-- cururu:candidate:v1 -->";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HostedCandidate {
     pub version: u32,
     pub language: String,
@@ -41,6 +42,10 @@ pub struct HostedCandidate {
     pub summary: String,
     pub quality_gate_passed: bool,
     pub findings_count: usize,
+    /// Identifies this review run; its summary is published at most once.
+    pub run_id: String,
+    /// Usage of this run, recorded on its check for PR totals.
+    pub usage: UsageRecord,
 }
 
 impl HostedCandidate {
@@ -80,7 +85,18 @@ impl HostedCandidate {
             summary: crate::output::render_summary_comment(result).replace('\r', ""),
             quality_gate_passed: report.passed,
             findings_count: report.findings_count,
+            run_id: result.run_id.clone(),
+            usage: result.usage_record(),
         }
+    }
+
+    /// Check summary: approval instructions plus the hidden usage record.
+    pub fn check_summary(&self, hosted_app: bool) -> String {
+        format!(
+            "{}\n\n{}",
+            self.approval_instructions(hosted_app),
+            self.usage.marker()
+        )
     }
 
     fn portuguese(&self) -> bool {
@@ -300,7 +316,7 @@ pub async fn publish_candidate(
     }
     review::ensure_review_head_unchanged(head, &source_control.fetch_head_sha().await?)?;
     source_control
-        .upsert_summary_comment(&candidate.summary)
+        .publish_review_summary(&candidate.summary, &candidate.run_id)
         .await?;
     Ok(())
 }
@@ -327,6 +343,8 @@ pub mod tests {
             summary: "<!-- cururu:summary -->\nSummary".into(),
             quality_gate_passed: true,
             findings_count: 1,
+            run_id: "run".into(),
+            usage: UsageRecord::new("run", "head", None),
         }
     }
 

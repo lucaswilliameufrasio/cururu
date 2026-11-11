@@ -1322,32 +1322,35 @@ impl GitHubClient {
     }
 
     pub async fn summary_has_head(&self, head_sha: &str) -> anyhow::Result<bool> {
-        let url = format!(
-            "{}/repos/{}/{}/issues/{}/comments?per_page=100",
-            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
-        );
-        let comments: Vec<IssueComment> = self
-            .client
-            .get(&url)
-            .timeout(Duration::from_secs(15))
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2026-03-10")
-            .bearer_auth(&self.cfg.token)
-            .send()
-            .await
-            .context("failed to list PR comments")?
-            .error_for_status()?
-            .json()
-            .await
-            .context("failed to parse PR comments")?;
+        let comments = self.list_issue_comments().await?;
         let own_login = self.current_login().await;
+        let state = format!("<!-- cururu:state:v1 head={head_sha} -->");
         Ok(comments.iter().any(|comment| {
             Self::issue_comment_is_cururu(comment, own_login.as_deref())
-                && comment.body.as_deref().is_some_and(|body| {
-                    body.contains(output::marker())
-                        && body.contains(&format!("<!-- cururu:state:v1 head={head_sha} -->"))
-                })
+                && comment
+                    .body
+                    .as_deref()
+                    .is_some_and(|body| body.contains(&state))
         }))
+    }
+
+    /// Post a new summary comment for this review run unless it already exists.
+    /// Earlier summaries are kept as review history. Not retried: a lost
+    /// response may already have created the comment.
+    pub async fn publish_review_summary(&self, body: &str, run_id: &str) -> anyhow::Result<()> {
+        let marker = output::run_marker(run_id);
+        let own_login = self.current_login().await;
+        let exists = self.list_issue_comments().await?.iter().any(|comment| {
+            Self::issue_comment_is_cururu(comment, own_login.as_deref())
+                && comment
+                    .body
+                    .as_deref()
+                    .is_some_and(|body| body.contains(&marker))
+        });
+        if exists {
+            return Ok(());
+        }
+        self.create_confirmed_comment_once(body).await
     }
 
     async fn find_existing_summary_comment(&self) -> anyhow::Result<Option<u64>> {
@@ -1474,6 +1477,12 @@ impl GitHubClient {
 
 #[async_trait]
 impl ScmProvider for GitHubClient {
+    async fn review_usage_history(&self) -> anyhow::Result<crate::review_usage::UsageHistory> {
+        Self::review_usage_history(self).await
+    }
+    async fn publish_review_summary(&self, body: &str, run_id: &str) -> anyhow::Result<()> {
+        Self::publish_review_summary(self, body, run_id).await
+    }
     async fn create_candidate_check(
         &self,
         check: &crate::scm::CandidateCheck<'_>,

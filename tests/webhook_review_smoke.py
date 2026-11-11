@@ -38,9 +38,15 @@ class Fake(http.server.BaseHTTPRequestHandler):
                 self.reply(200, {"head": {"sha": state["head"], "ref": "branch"}, "base": {"sha": head, "ref": "main"}})
         elif self.path.startswith("/repos/test/repo/contents/.cururu.toml?"):
             value = "true" if state["changed"] and state["mutate"] else "false"
-            self.reply(200, "version = 1\n[policy]\nsuggested_changes = " + value + "\n")
+            self.reply(200, "version = 1\n[policy]\nsuggested_changes = " + value + "\n[summary]\nshow_cost = true\nshow_usage = true\n")
         elif self.path.startswith("/repos/test/repo/git/ref/heads/"):
             self.reply(200, {"object": {"sha": head}})
+        elif self.path.startswith("/repos/test/repo/pulls/1/commits?"):
+            self.reply(200, [{"sha": head}, {"sha": "b" * 40}])
+        elif "/check-runs?" in self.path and self.path.startswith("/repos/test/repo/commits/"):
+            sha = self.path.split("/")[5]
+            self.reply(200, {"check_runs": [{"id": 900 + index, "external_id": check["external_id"], "output": check["output"]}
+                                            for index, check in enumerate(state["checks"], 1) if check["head_sha"] == sha]})
         elif self.path.startswith("/repos/test/repo/collaborators/"):
             login = self.path.split("/")[5]
             self.reply(200, {"permission": "write" if login == "alice" else "read"})
@@ -62,7 +68,8 @@ class Fake(http.server.BaseHTTPRequestHandler):
             review = {"model": "fixture", "files_reviewed": 1, "summary": "ok", "findings": []}
             if test_evaluator:
                 review["findings"] = [{"severity": "high", "path": "a", "line": 1, "title": "fixture", "message": "issue", "suggestion": "fix", "confidence": 0.99}]
-            self.reply(200, {"choices": [{"message": {"content": json.dumps(review)}, "finish_reason": "stop"}]})
+            self.reply(200, {"choices": [{"message": {"content": json.dumps(review)}, "finish_reason": "stop"}],
+                             "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120, "cost": 0.25}})
         elif self.path == "/synthetic-evaluator":
             assert test_evaluator
             assert self.headers.get("Authorization") == "Bearer fixture-evaluator"
@@ -199,6 +206,9 @@ with tempfile.TemporaryDirectory() as directory:
                 assert "/repos/test/repo/issues/1/comments" in paths, paths
                 summary = [item[1].decode() for item in state["writes"] if item[0] == "/repos/test/repo/issues/1/comments"][0]
                 assert json.loads(summary)["body"] in text
+                assert "**Tokens (this review):** 100 prompt + 20 completion = 120 total" in text, text
+                assert "PR total, 1 review(s)" in text and "`$0.250000`" in text, text
+                assert "cururu:usage:v1" in check["output"]["summary"]
                 assert candidate_state(digest) == "published"
                 assert state["check_updates"][-1][1]["conclusion"] == "success", state["check_updates"]
                 published = len(state["writes"])
@@ -212,7 +222,11 @@ with tempfile.TemporaryDirectory() as directory:
                 send("pull_request", {"action": "synchronize", "installation": installation, "repository": repo, "pull_request": {"number": 1, "draft": False}}, "second-head")
                 wait("second-head", True)
                 assert len(state["checks"]) == 2, state["checks"]
-                stale = hashlib.sha256(state["checks"][1]["output"]["text"].encode()).hexdigest()
+                second_text = state["checks"][1]["output"]["text"]
+                stale = hashlib.sha256(second_text.encode()).hexdigest()
+                # The second run counts the first one, published or not.
+                assert "**Tokens (PR total, 2 review(s)):** 200 prompt + 40 completion = 240 total" in second_text, second_text
+                assert "**Provider-reported cost (PR total, 2 review(s)):** `$0.500000`" in second_text, second_text
                 state["head"] = "c" * 40
                 press(902, "alice", "stale-approval")
                 assert len(state["writes"]) == published, state["writes"]

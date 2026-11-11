@@ -123,6 +123,14 @@ pub trait ScmProvider: Send + Sync {
     async fn create_candidate_check(&self, _check: &CandidateCheck<'_>) -> anyhow::Result<u64> {
         anyhow::bail!("SCM adapter does not support publication candidate checks")
     }
+    /// Usage recorded by earlier Cururu review runs on this change request.
+    async fn review_usage_history(&self) -> anyhow::Result<crate::review_usage::UsageHistory> {
+        Ok(crate::review_usage::UsageHistory::default())
+    }
+    /// Publish one review run's summary as its own comment, at most once.
+    async fn publish_review_summary(&self, body: &str, _run_id: &str) -> anyhow::Result<()> {
+        self.upsert_summary_comment(body).await
+    }
     /// Close a candidate check, removing its approval action.
     async fn finish_candidate_check(
         &self,
