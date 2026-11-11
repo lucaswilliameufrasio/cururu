@@ -2,6 +2,93 @@
 
 All notable changes to this project will be documented in this file.
 
+## [5.0.0] - 2026-11-11
+
+### Breaking Changes
+
+- [**breaking**] Require separate approval for each hosted publication
+
+### Bug Fixes
+
+- Update Cururu PR review action to v4.9.0
+- Pin self-review to latest Cururu commit
+- Satisfy CI clippy duration lint
+- Bound evaluator calls and audit output
+- Preserve SuggestedChange reexport
+- Wrap quick start code to prevent scrolling
+- Satisfy the pinned Rust 1.97 clippy lints
+
+### CI / Build
+
+- Track latest Cururu for self-review
+- Update actions, Node 26.13.0 LTS, pnpm 12.18.0 and images
+
+### Chores
+
+- Pin v4.9.0 OCI digest
+- Pin v4.9.0 OCI digest
+- Bump the docker-actions group across 1 directory with 2 updates
+- Install curated agent skills
+
+### Documentation
+
+- Keep SCM port in application
+- Update base branch before creating feature branches
+
+### Features
+
+- Add optional Jev finding evaluator
+- Add safe PR merge sequence workflow
+- Gate remote reviews and cap evidence
+- Share review agent contract
+- Share OpenAI review adapter
+- Expose canonical review prompt
+- Share portable repository config parsing
+- Accept bounded host-approved review context
+- Carry approved review presentation preferences
+- Admit approved normalized analysis evidence
+- Add provider API review, MCP tools and diff-limit notice
+- Post a summary per review with PR cost totals
+
+### Other
+
+- Update Rust to 1.99.1 and crates to latest majors
+- Update astro to 7.4.8 and patch transitive advisories
+
+### Refactor
+
+- Extract review domain types to core crate
+- Move diff domain types into core crate
+- Move severity domain enums into core
+- Move SCM review values into core
+- Move quality gate evaluation into core
+- Extract evaluator contracts into core
+- Move judgment policy into core
+- Extract static analysis result types
+- Extract review context data types
+- Extract finding consolidation helpers
+- Extract review head consistency guard
+- Extract review diff limit validation
+- Move review candidate collection
+- Extract diff chunking and anchor helpers
+- Move unified diff parser
+- Extract check-run finding mapping
+- Extract SARIF finding mapping
+- Centralize analysis report status
+- Unify analysis path normalization
+- Expose analysis manifest contract
+- Add analysis manifest freshness check
+- Map analysis manifests to report data
+- Define analysis manifest schema version
+- Share context path matching
+- Share pure repository toml composition
+- Share pure auto-context candidate rules
+- Share pure review profile defaults
+- Share pure SARIF parsing
+
+### Testing
+
+- Satisfy Rust 1.99 clippy assertions
 ## [4.9.0] - 2026-09-29
 
 ### Bug Fixes
@@ -12,6 +99,7 @@ All notable changes to this project will be documented in this file.
 ### Chores
 
 - Pin v4.8.0 OCI digest
+- Prepare for v4.9.0
 
 ### Documentation
 
