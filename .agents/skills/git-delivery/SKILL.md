@@ -28,6 +28,16 @@ the user's explicit authorization as the source of truth.
 
 - Use the repository's documented base branch and branch naming. If unclear,
   ask rather than assuming `main`, `develop`, or a particular Git flow.
+- **Before creating a feature branch, update its base branch first.** Confirm the
+  intended remote/upstream and base, fetch that remote, and inspect the worktree
+  and divergence. If the checkout is clean and the local base has no unique
+  commits that would be rewritten, switch to the base and run
+  `git pull --rebase` (or `git pull --rebase <remote> <base>` if tracking is not
+  configured). Verify the base matches the fetched upstream, then branch from
+  that commit. Fetching alone does not update a stale local base. If the worktree
+  is dirty, the base has local-only commits/divergence, or updating would rewrite
+  work, stop and preserve the state; ask before stashing or rebasing those
+  commits. Never force-update a shared base branch.
 - Keep changes focused. Inspect the final diff and stage only intended files.
 - Follow the `conventional-commits` skill for commit messages. Do not commit,
   amend, force-push, or push unless explicitly authorized.
