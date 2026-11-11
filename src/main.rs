@@ -1,5 +1,8 @@
+mod action_publication;
 mod agent;
+mod agent_publication;
 mod analysis;
+mod anthropic;
 mod app;
 mod commands;
 mod config;
@@ -7,12 +10,18 @@ mod context;
 mod diff;
 mod evaluation;
 mod github;
+mod hosted_approval;
+mod hosted_publication;
+mod mcp;
+mod mcp_install;
 mod output;
 mod provider;
 mod quality;
 mod repository;
 mod retry;
 mod review;
+mod review_input;
+mod review_usage;
 mod scm;
 
 use anyhow::Context;
@@ -39,6 +48,109 @@ struct DryRunOutput<'a> {
     evaluation: &'a Option<evaluation::EvaluationReport>,
 }
 
+#[derive(serde::Serialize)]
+struct AgentReviewReceipt<'a> {
+    source: &'a str,
+    revision: &'a str,
+    diff_sha256: &'a str,
+    snapshot_sha256: &'a str,
+    scope: &'a str,
+    ignored_paths: &'a [String],
+    review: &'a agent::ReviewResult,
+}
+
+#[derive(serde::Serialize)]
+struct ApiReviewReceipt<'a> {
+    #[serde(flatten)]
+    receipt: AgentReviewReceipt<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<ApiUsage>,
+}
+
+#[derive(serde::Serialize)]
+struct ApiUsage {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+    cached_tokens: u64,
+    reasoning_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost: Option<f64>,
+}
+
+fn complete_api_usage(results: &[agent::ChunkResult]) -> Option<ApiUsage> {
+    if results.is_empty() || results.iter().any(|result| result.usage.is_none()) {
+        return None;
+    }
+    let mut total = ApiUsage {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        cached_tokens: 0,
+        reasoning_tokens: 0,
+        cost: Some(0.0),
+    };
+    for result in results {
+        let usage = result.usage.as_ref()?;
+        total.prompt_tokens = total
+            .prompt_tokens
+            .checked_add(u64::from(usage.prompt_tokens))?;
+        total.completion_tokens = total
+            .completion_tokens
+            .checked_add(u64::from(usage.completion_tokens))?;
+        total.total_tokens = total
+            .total_tokens
+            .checked_add(u64::from(usage.total_tokens))?;
+        total.cached_tokens = total
+            .cached_tokens
+            .checked_add(u64::from(usage.cached_tokens))?;
+        total.reasoning_tokens = total
+            .reasoning_tokens
+            .checked_add(u64::from(usage.reasoning_tokens))?;
+        total.cost = match (total.cost, usage.cost) {
+            (Some(a), Some(b)) if b.is_finite() && b >= 0.0 && (a + b).is_finite() => Some(a + b),
+            _ => None,
+        };
+    }
+    Some(total)
+}
+
+#[cfg(test)]
+mod api_usage_tests {
+    use super::*;
+
+    fn chunk(usage: Option<cururu_engine::ReviewUsage>) -> agent::ChunkResult {
+        agent::ChunkResult {
+            review: agent::ReviewResult {
+                model: "fixture".into(),
+                files_reviewed: 0,
+                summary: String::new(),
+                findings: vec![],
+            },
+            usage,
+        }
+    }
+
+    #[test]
+    fn usage_is_only_reported_when_all_chunks_report_it() {
+        let usage = cururu_engine::ReviewUsage {
+            prompt_tokens: 10,
+            completion_tokens: 2,
+            total_tokens: 12,
+            cached_tokens: 3,
+            reasoning_tokens: 0,
+            cost: None,
+        };
+        assert!(complete_api_usage(&[chunk(Some(usage.clone())), chunk(None)]).is_none());
+        let total = complete_api_usage(&[chunk(Some(usage.clone())), chunk(Some(usage))]).unwrap();
+        assert_eq!(
+            (total.prompt_tokens, total.total_tokens, total.cached_tokens),
+            (20, 24, 6)
+        );
+        assert!(total.cost.is_none());
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Add a starter configuration and GitHub Actions workflow to this repository.
@@ -50,38 +162,461 @@ enum Command {
         /// Destination path for the backup copy.
         destination: std::path::PathBuf,
     },
-    /// Review the current change request and publish a summary comment.
+    /// Review the current change request and prepare a publication candidate
+    /// for approval; nothing is commented on the change request.
     Review,
+    /// Publish a GitHub Action candidate from a job approved through a
+    /// protected GitHub Environment.
+    PublishApprovedReview,
+    /// Inspect a hosted review candidate and approve exactly that candidate.
+    ApproveHostedReview {
+        /// Pull request number (defaults to `PR_NUMBER`).
+        #[arg(long)]
+        pr: Option<u64>,
+        /// Environment approved for GitHub Action candidates.
+        #[arg(long, default_value = hosted_publication::DEFAULT_APPROVAL_ENVIRONMENT)]
+        environment: String,
+    },
     /// Review the change request and print JSON without publishing comments.
     DryRun,
     /// Fetch and print the change-request diff.
     PrintDiff,
     /// Print the merged configuration.
     PrintConfig,
+    /// Prepare a bounded, read-only review input without invoking an agent.
+    PrepareReview {
+        /// Review tracked staged and unstaged changes against HEAD, not untracked files.
+        #[arg(long, conflicts_with = "pr", required_unless_present = "pr")]
+        local: bool,
+        /// Review the configured hosted change request.
+        #[arg(long, conflicts_with = "local", required_unless_present = "local")]
+        pr: bool,
+        /// Preview an explicitly selected local SARIF file.
+        #[arg(long, requires = "analysis_manifest")]
+        sarif: Option<std::path::PathBuf>,
+        /// Manifest identifying the revision analyzed by the SARIF file.
+        #[arg(long, requires = "sarif")]
+        analysis_manifest: Option<std::path::PathBuf>,
+    },
+    /// Retired: use api-review or an agent's MCP integration instead.
+    AgentReview {
+        #[arg(long, conflicts_with = "pr", required_unless_present = "pr")]
+        local: bool,
+        #[arg(long, conflicts_with = "local", required_unless_present = "local")]
+        pr: bool,
+        /// Explicit HTTP loopback origin of a trusted `OpenCode` V2 server.
+        #[arg(long)]
+        opencode_server: String,
+        /// Confirm sending the diff to the server and its selected provider.
+        #[arg(long)]
+        confirm_send: bool,
+        /// Require the exact snapshot hash previously inspected with prepare-review.
+        #[arg(long)]
+        expected_snapshot: Option<String>,
+        /// Explicit local SARIF evidence (requires --analysis-manifest).
+        #[arg(long, requires = "analysis_manifest")]
+        sarif: Option<std::path::PathBuf>,
+        /// Explicit local manifest tied to the reviewed revision.
+        #[arg(long, requires = "sarif")]
+        analysis_manifest: Option<std::path::PathBuf>,
+    },
+    /// Review local changes or a hosted PR using the configured API, without publishing.
+    ApiReview {
+        /// Review the configured hosted PR instead of local tracked changes.
+        #[arg(long)]
+        pr: bool,
+        /// Confirm sending the review input to the configured API provider.
+        #[arg(long)]
+        confirm_send: bool,
+        /// Require the snapshot previously inspected with prepare-review.
+        #[arg(long)]
+        expected_snapshot: Option<String>,
+        /// Explicit local SARIF evidence (requires --analysis-manifest).
+        #[arg(long, requires = "analysis_manifest")]
+        sarif: Option<std::path::PathBuf>,
+        /// Manifest identifying the revision analyzed by the SARIF file.
+        #[arg(long, requires = "sarif")]
+        analysis_manifest: Option<std::path::PathBuf>,
+    },
+    /// Preview and explicitly confirm posting an agent review to its current PR.
+    PublishAgentReview {
+        /// JSON receipt produced by `api-review --pr` or prepared from MCP results.
+        receipt: std::path::PathBuf,
+        /// Explicit SARIF used to create this receipt.
+        #[arg(long, requires = "analysis_manifest")]
+        sarif: Option<std::path::PathBuf>,
+        /// Explicit manifest used to create this receipt.
+        #[arg(long, requires = "sarif")]
+        analysis_manifest: Option<std::path::PathBuf>,
+    },
+    /// Serve read-only review preparation tools over MCP stdio.
+    Mcp,
+    /// Create a project MCP configuration only if its file does not exist.
+    InstallMcp {
+        #[arg(value_enum)]
+        client: mcp_install::Client,
+        /// Cururu executable visible to the client.
+        #[arg(long, default_value = "cururu")]
+        executable: String,
+    },
+    /// Check command fields in an MCP configuration without starting the client.
+    CheckMcp {
+        #[arg(value_enum)]
+        client: mcp_install::Client,
+        configuration: std::path::PathBuf,
+        #[arg(long, default_value = "cururu")]
+        executable: String,
+    },
+    /// Preview a merge without modifying the existing configuration.
+    PreviewMcpMerge {
+        #[arg(value_enum)]
+        client: mcp_install::Client,
+        configuration: std::path::PathBuf,
+        #[arg(long, default_value = "cururu")]
+        executable: String,
+    },
+    /// Add the server to an existing Codex TOML file without replacing it.
+    UpdateCodexMcp {
+        configuration: std::path::PathBuf,
+        #[arg(long, default_value = "cururu")]
+        executable: String,
+    },
+    /// Write a merged MCP configuration to a new file without replacing the source.
+    WriteMcpMerge {
+        #[arg(value_enum)]
+        client: mcp_install::Client,
+        configuration: std::path::PathBuf,
+        destination: std::path::PathBuf,
+        #[arg(long, default_value = "cururu")]
+        executable: String,
+    },
+    /// Interactively update an existing JSONC configuration with a new backup.
+    UpdateJsoncMcp {
+        #[arg(value_enum)]
+        client: mcp_install::Client,
+        configuration: std::path::PathBuf,
+        /// New backup file; an existing file is never overwritten.
+        #[arg(long)]
+        backup: std::path::PathBuf,
+        #[arg(long, default_value = "cururu")]
+        executable: String,
+    },
 }
 
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    let cli = Cli::parse();
+    if !matches!(
+        cli.command,
+        Command::Mcp
+            | Command::PrepareReview { .. }
+            | Command::AgentReview { .. }
+            | Command::ApiReview { .. }
+            | Command::PublishAgentReview { .. }
+            | Command::ApproveHostedReview { .. }
+            | Command::InstallMcp { .. }
+            | Command::CheckMcp { .. }
+            | Command::PreviewMcpMerge { .. }
+            | Command::UpdateCodexMcp { .. }
+            | Command::WriteMcpMerge { .. }
+            | Command::UpdateJsoncMcp { .. }
+    ) {
+        dotenvy::dotenv().ok();
+    }
     fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
-    let cli = Cli::parse();
     if matches!(cli.command, Command::Init) {
         initialize_repository()?;
         return Ok(());
     }
     match &cli.command {
+        Command::UpdateJsoncMcp {
+            client,
+            configuration,
+            backup,
+            executable,
+        } => {
+            #[cfg(not(unix))]
+            {
+                let _ = (client, configuration, backup, executable);
+                anyhow::bail!("updating active JSONC is only supported on Unix");
+            }
+            #[cfg(unix)]
+            {
+                use std::io::IsTerminal as _;
+                anyhow::ensure!(
+                    std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
+                    "update requires an interactive terminal"
+                );
+                let update =
+                    mcp_install::ActiveJsoncUpdate::prepare(*client, configuration, executable)?;
+                let entry = if matches!(client, mcp_install::Client::Opencode) {
+                    serde_json::json!({"cururu":{"type":"local","command":[executable,"mcp"]}})
+                } else {
+                    serde_json::json!({"cururu":{"type":"stdio","command":executable,"args":["mcp"]}})
+                };
+                eprintln!(
+                    "Will add this entry to {}:\n{}\nBackup: {}. Close clients and editors first; writers ignoring advisory locks can still race. Existing content is not printed because it may contain secrets.",
+                    configuration.display(),
+                    serde_json::to_string_pretty(&entry)?,
+                    backup.display()
+                );
+                eprint!("Type UPDATE to proceed, or anything else to cancel: ");
+                std::io::stderr().flush()?;
+                let mut confirmation = String::new();
+                std::io::stdin().read_line(&mut confirmation)?;
+                anyhow::ensure!(confirmation.trim_end() == "UPDATE", "update cancelled");
+                update.apply(backup)?;
+                println!("Configuration updated; backup created.");
+                return Ok(());
+            }
+        }
         Command::Serve => {
             app::serve().await?;
             return Ok(());
         }
         Command::BackupSqlite { destination } => {
             app::backup_sqlite(destination).await?;
+            return Ok(());
+        }
+        Command::PrepareReview {
+            local,
+            sarif,
+            analysis_manifest,
+            ..
+        } => {
+            let mut prepared = prepare_review_input(*local).await?;
+            if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
+                review_input::attach_local_analysis(&mut prepared, sarif, manifest)?;
+            }
+            println!("{}", serde_json::to_string_pretty(&prepared)?);
+            return Ok(());
+        }
+        Command::ApiReview {
+            pr,
+            confirm_send,
+            expected_snapshot,
+            sarif,
+            analysis_manifest,
+        } => {
+            anyhow::ensure!(
+                *confirm_send,
+                "sending source code requires --confirm-send; inspect prepare-review first"
+            );
+            let (config, mut prepared) = prepare_api_review(*pr).await?;
+            if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
+                review_input::attach_local_analysis(&mut prepared, sarif, manifest)?;
+            }
+            config.require_llm_api_key()?;
+            if let Some(expected) = expected_snapshot {
+                anyhow::ensure!(
+                    expected == &prepared.snapshot_sha256,
+                    "review snapshot differs from the expected snapshot; nothing was sent"
+                );
+            }
+            review_input::ensure_reviewable(&prepared)?;
+            let evidence = serde_json::json!({"repository_context":prepared.repository_context, "prior_feedback":prepared.prior_feedback, "analyzer_evidence":prepared.analyzer_evidence, "suggested_changes":prepared.policy.suggested_changes});
+            let evidence_text = serde_json::to_string(&evidence)?;
+            anyhow::ensure!(
+                evidence_text.len() <= 768 * 1024,
+                "review evidence exceeds byte limit"
+            );
+            let agent: Box<dyn cururu_engine::ReviewAgent> = if matches!(
+                config.llm.provider,
+                config::LlmProvider::Anthropic
+            ) {
+                Box::new(anthropic::AnthropicAgent::new(
+                    &config.llm,
+                    prepared.review_instructions.into(),
+                    Some(
+                        serde_json::json!({"preferences":prepared.review_preferences, "evidence":evidence}),
+                    ),
+                )?)
+            } else {
+                Box::new(
+                    cururu_engine::OpenAiCompatibleAgent::new(
+                        cururu_engine::OpenAiCompatibleSettings {
+                            base_url: config.llm.base_url.clone(),
+                            api_key: config.llm.api_key.clone(),
+                            model: config.llm.model.clone(),
+                            temperature: config.llm.temperature,
+                            max_output_tokens: config.llm.max_output_tokens,
+                        },
+                        prepared.review_instructions.into(),
+                    )?
+                    .with_review_preferences(
+                        &cururu_engine::review_preferences::ReviewPreferences {
+                            language: Some(config.review.language.clone()),
+                            tone: Some(config.review.tone.clone()),
+                            technical_level: Some(config.review.technical_level.clone()),
+                            suggestion_detail: Some(config.review.suggestion_detail.clone()),
+                        },
+                    )?
+                    .with_review_context(&cururu_engine::review_context::ReviewContext {
+                        focus: config.review.policy.focus.clone(),
+                        files: vec![],
+                    })?
+                    .with_host_review_evidence(&evidence_text)?,
+                )
+            };
+            eprintln!(
+                "Sending {} diff chunk(s) and configured context, prior feedback and analyzer evidence to the configured API. No review will be published.",
+                prepared.chunks.len()
+            );
+            let results = cururu_engine::review_chunks(agent.as_ref(), &prepared.chunks).await?;
+            let usage = complete_api_usage(&results);
+            let reviews = results
+                .into_iter()
+                .zip(&prepared.chunks)
+                .map(|(result, chunk)| review_input::ChunkReview {
+                    chunk_index: chunk.index,
+                    review: result.review,
+                })
+                .collect();
+            let (_, mut current) = prepare_api_review(*pr).await?;
+            if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
+                review_input::attach_local_analysis(&mut current, sarif, manifest)?;
+            }
+            let result =
+                review_input::assemble_review(&current, &prepared.snapshot_sha256, reviews)?;
+            let receipt = AgentReviewReceipt {
+                source: current.source,
+                revision: &current.revision,
+                diff_sha256: &current.diff_sha256,
+                snapshot_sha256: &current.snapshot_sha256,
+                scope: current.scope,
+                ignored_paths: &current.ignored_paths,
+                review: &result,
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&ApiReviewReceipt { receipt, usage })?
+            );
+            return Ok(());
+        }
+        Command::AgentReview { .. } => anyhow::bail!(
+            "agent-review is retired and sends nothing. Use api-review with your configured API key, or invoke Cururu's MCP tools from your agent."
+        ),
+        Command::Mcp => {
+            mcp::serve().await?;
+            return Ok(());
+        }
+        Command::CheckMcp {
+            client,
+            configuration,
+            executable,
+        } => {
+            use std::io::Read as _;
+            let file = std::fs::File::open(configuration).context("cannot open configuration")?;
+            anyhow::ensure!(
+                file.metadata()?.is_file(),
+                "configuration must be a regular file"
+            );
+            let mut input = String::new();
+            file.take(1_048_577)
+                .read_to_string(&mut input)
+                .context("cannot read configuration as UTF-8")?;
+            anyhow::ensure!(input.len() <= 1_048_576, "configuration exceeds size limit");
+            mcp_install::check_entry(*client, &input, executable)?;
+            println!(
+                "Command fields match. This does not verify other settings, client connection, or trust."
+            );
+            return Ok(());
+        }
+        Command::InstallMcp { client, executable } => {
+            let path = mcp_install::install(std::path::Path::new("."), *client, executable)?;
+            println!(
+                "Created {}. Check client trust, working directory and model disclosure before use.",
+                path.display()
+            );
+            return Ok(());
+        }
+        Command::UpdateCodexMcp {
+            configuration,
+            executable,
+        } => {
+            mcp_install::update_codex(configuration, executable)?;
+            println!(
+                "Added the Cururu MCP server to {}. Review client trust and disclosure before use.",
+                configuration.display()
+            );
+            return Ok(());
+        }
+        Command::WriteMcpMerge {
+            client,
+            configuration,
+            destination,
+            executable,
+        } => {
+            mcp_install::write_merge_proposal(*client, configuration, destination, executable)?;
+            println!(
+                "Created {}. The original is unchanged; review the proposal before applying it.",
+                destination.display()
+            );
+            return Ok(());
+        }
+        Command::PreviewMcpMerge {
+            client,
+            configuration,
+            executable,
+        } => {
+            let input = std::fs::read_to_string(configuration)
+                .context("failed to read client configuration")?;
+            let preview = mcp_install::merge_preview(*client, &input, executable)?;
+            eprintln!("Preview only; original unchanged. Review before applying.");
+            println!("{preview}");
+            return Ok(());
+        }
+        Command::ApproveHostedReview { pr, environment } => {
+            return hosted_approval::approve(*pr, environment).await;
+        }
+        Command::PublishAgentReview {
+            receipt,
+            sarif,
+            analysis_manifest,
+        } => {
+            use std::io::IsTerminal;
+            anyhow::ensure!(
+                std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
+                "publication requires an interactive terminal; no comment was published"
+            );
+            let receipt = agent_publication::read_receipt(receipt)?;
+            let mut config = AppConfig::from_env()?;
+            let scm = github::GitHubClient::from_scm_config(&config.source_control)?;
+            merge_repository_config(&mut config, &scm).await?;
+            let evidence =
+                sarif
+                    .as_ref()
+                    .zip(analysis_manifest.as_ref())
+                    .map(|(sarif, manifest)| agent_publication::LocalEvidence {
+                        sarif: sarif.clone(),
+                        manifest: manifest.clone(),
+                    });
+            let preview =
+                agent_publication::preview(&config, &scm, &receipt, evidence.as_ref()).await?;
+            eprintln!(
+                "Target: {}\n\n{}\n",
+                agent_publication::target(&config)?,
+                preview.body
+            );
+            eprint!("Type PUBLISH to post this exact comment, or anything else to cancel: ");
+            std::io::stderr().flush()?;
+            let mut confirmation = String::new();
+            std::io::stdin().read_line(&mut confirmation)?;
+            anyhow::ensure!(
+                confirmation.trim_end() == "PUBLISH",
+                "publication cancelled"
+            );
+            let mut current_config = AppConfig::from_env()?;
+            merge_repository_config(&mut current_config, &scm).await?;
+            agent_publication::publish(&current_config, &scm, &preview).await?;
+            println!("Comment submitted. Verify it in the PR conversation.");
             return Ok(());
         }
         _ => {}
@@ -164,7 +699,7 @@ async fn main() -> anyhow::Result<()> {
     // Load trusted configuration only for commands that use review settings.
     if matches!(
         cli.command,
-        Command::PrintConfig | Command::Review | Command::DryRun
+        Command::PrintConfig | Command::Review | Command::DryRun | Command::PublishApprovedReview
     ) {
         let loaded = merge_repository_config(&mut config, source_control.as_ref()).await?;
         if matches!(cli.command, Command::PrintConfig) {
@@ -189,7 +724,21 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve | Command::BackupSqlite { .. } => {
             unreachable!("handled before loading review configuration")
         }
-        Command::Init => unreachable!("handled before loading runtime configuration"),
+        Command::Init
+        | Command::PrepareReview { .. }
+        | Command::AgentReview { .. }
+        | Command::ApiReview { .. }
+        | Command::PublishAgentReview { .. }
+        | Command::ApproveHostedReview { .. }
+        | Command::InstallMcp { .. }
+        | Command::PreviewMcpMerge { .. }
+        | Command::UpdateCodexMcp { .. }
+        | Command::WriteMcpMerge { .. }
+        | Command::CheckMcp { .. }
+        | Command::UpdateJsoncMcp { .. }
+        | Command::Mcp => {
+            unreachable!("handled before loading runtime configuration")
+        }
         Command::PrintDiff => {
             let (diff, truncated) = source_control.fetch_diff_with_limit(usize::MAX).await?;
             anyhow::ensure!(
@@ -229,47 +778,57 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
             }
-            let result = review::run_review(&config, source_control.as_ref()).await?;
+            let mut result = match review::run_review(&config, source_control.as_ref()).await {
+                Ok(result) => result,
+                Err(error) => {
+                    if review::publish_diff_limit_notice(&config, source_control.as_ref(), &error)
+                        .await?
+                    {
+                        if let Some(path) = std::env::var_os("GITHUB_OUTPUT") {
+                            let mut file = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open(path)?;
+                            writeln!(file, "review_status=skipped_diff_limit")?;
+                            writeln!(file, "quality_gate=not_run")?;
+                            writeln!(file, "quality_gate_passed=false")?;
+                        }
+                        println!(
+                            "Cururu: review not performed because the diff exceeded the configured limit"
+                        );
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
+            };
             if let Some(expected) = &expected_head_sha {
                 review::ensure_review_head_unchanged(expected, &result.head_sha)?;
             }
             let report = quality::evaluate(&result.review, config.review.policy.fail_on);
             write_action_outputs(&report)?;
             write_analysis_outputs(&result.analysis)?;
-
-            match config.review.comment_mode {
-                CommentMode::Inline => {
-                    review::ensure_review_head_unchanged(
-                        &result.head_sha,
-                        &source_control.fetch_head_sha().await?,
-                    )?;
-                    let drafts = build_inline_drafts(&result);
-                    source_control
-                        .reconcile_review_comments(&result.head_sha, &drafts)
-                        .await?;
-                    // Keep a compact summary in the PR conversation as well.
-                    review::ensure_review_head_unchanged(
-                        &result.head_sha,
-                        &source_control.fetch_head_sha().await?,
-                    )?;
-                    let body = output::render_summary_comment(&result);
-                    source_control.upsert_summary_comment(&body).await?;
-                }
-                CommentMode::Summary => {
-                    review::ensure_review_head_unchanged(
-                        &result.head_sha,
-                        &source_control.fetch_head_sha().await?,
-                    )?;
-                    let body = output::render_summary_comment(&result);
-                    source_control.upsert_summary_comment(&body).await?;
-                }
-            }
+            result.attach_pr_usage(source_control.as_ref()).await;
+            let inline = matches!(config.review.comment_mode, CommentMode::Inline);
+            let candidate = hosted_publication::HostedCandidate::from_review(
+                &config,
+                &result,
+                if inline {
+                    build_inline_drafts(&result)
+                } else {
+                    Vec::new()
+                },
+                inline,
+                false,
+            );
             review::ensure_review_head_unchanged(
                 &result.head_sha,
                 &source_control.fetch_head_sha().await?,
             )?;
-
-            println!("{}", serde_json::to_string_pretty(&result.review)?);
+            action_publication::prepare(&candidate, source_control.as_ref()).await?;
+            println!(
+                "Cururu: candidate {} prepared; nothing was published. Approve the publication job to publish it.",
+                candidate.digest()
+            );
             if !report.passed {
                 anyhow::bail!(
                     "quality gate failed: {} finding(s) at or above configured threshold",
@@ -277,9 +836,55 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
         }
+        Command::PublishApprovedReview => {
+            let github = github::GitHubClient::from_scm_config(&config.source_control)?;
+            action_publication::publish_approved(&config, &github).await?;
+        }
     }
 
     Ok(())
+}
+
+async fn prepare_api_review(pr: bool) -> anyhow::Result<(AppConfig, review_input::PreparedReview)> {
+    if pr {
+        let mut config = AppConfig::from_env()?;
+        let scm = github::GitHubClient::from_scm_config(&config.source_control)?;
+        merge_repository_config(&mut config, &scm).await?;
+        let prepared = review_input::prepare_agent_pr(&config, &scm).await?;
+        Ok((config, prepared))
+    } else {
+        let config = local_review_config()?;
+        let prepared = review_input::prepare_local(&config, std::path::Path::new("."))?;
+        Ok((config, prepared))
+    }
+}
+
+async fn prepare_review_input(local: bool) -> anyhow::Result<review_input::PreparedReview> {
+    if local {
+        let config = local_review_config()?;
+        review_input::prepare_local(&config, std::path::Path::new("."))
+    } else {
+        let mut config = AppConfig::from_env()?;
+        let scm = github::GitHubClient::from_scm_config(&config.source_control)?;
+        merge_repository_config(&mut config, &scm).await?;
+        review_input::prepare_agent_pr(&config, &scm).await
+    }
+}
+
+fn local_review_config() -> anyhow::Result<AppConfig> {
+    let mut config = AppConfig::from_local_env()?;
+    match std::fs::read_to_string(".cururu.toml") {
+        Ok(raw) => {
+            anyhow::ensure!(
+                AppConfig::shared_base_from_toml(&raw)?.is_none(),
+                "local review does not support shared configuration bases"
+            );
+            config.merge_toml_str(&raw)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("failed to read local configuration"),
+    }
+    Ok(config)
 }
 
 async fn merge_repository_config(
@@ -302,6 +907,8 @@ async fn merge_repository_config_with_shared_token(
         .await
         .context("failed to resolve trusted PR base")?;
     let Some(local_raw) = source_control.fetch_config_toml(&base_sha).await? else {
+        config.trusted_config_snapshot = Some((base_sha, None));
+        config.shared_config_snapshot = None;
         return Ok(false);
     };
 
@@ -312,7 +919,7 @@ async fn merge_repository_config_with_shared_token(
         if let Some(token) = shared_token {
             shared_github_config.token = token.to_string();
         }
-        let shared_github: Box<dyn scm::ScmProvider> = Box::new(
+        let shared_github: std::sync::Arc<dyn scm::ScmProvider> = std::sync::Arc::new(
             github::GitHubClient::from_scm_config(&shared_github_config)?,
         );
         let shared_raw = shared_github
@@ -329,9 +936,17 @@ async fn merge_repository_config_with_shared_token(
             .context("invalid shared base configuration")?;
         let effective = AppConfig::compose_toml(&shared_raw, &local_raw)?;
         config.merge_toml_str(&effective)?;
+        config.shared_config_snapshot = Some(config::SharedConfigSnapshot {
+            source: shared,
+            hash: review::trusted_config_hash(&shared_raw),
+            client: shared_github,
+        });
     } else {
         config.merge_toml_str(&local_raw)?;
+        config.shared_config_snapshot = None;
     }
+    config.trusted_config_snapshot =
+        Some((base_sha, Some(review::trusted_config_hash(&local_raw))));
     Ok(true)
 }
 

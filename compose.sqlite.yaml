@@ -19,7 +19,7 @@ services:
       - github_app_private_key
 
   nginx:
-    image: nginx:1.30.4-alpine
+    image: nginx:1.30.6-alpine
     restart: unless-stopped
     ports:
       - "127.0.0.1:18082:80"

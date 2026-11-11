@@ -20,45 +20,184 @@ pull_request event
 
 ## Quick start
 
-Add `.github/workflows/cururu-review.yml` to any repository:
+### Agent review input (experimental)
 
-```yaml
-name: Cururu PR Review
-on: pull_request_target
-permissions:
-  contents: read
-  checks: read
-  pull-requests: write
-  issues: write
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check LLM API key
-        id: llm_key
-        env:
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-        run: |
-          if [ -z "$LLM_API_KEY" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::LLM_API_KEY is not configured — skipping Cururu review."
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Review PR
-        if: steps.llm_key.outputs.skip == 'false'
-        uses: lucaswilliameufrasio/cururu@601b4e125b7dd865c6adab289d2d8948f1e5c841 # v4.8.0
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          llm_api_key: ${{ secrets.LLM_API_KEY }}
-          expected_head_sha: ${{ github.event.pull_request.head.sha || '' }}
-          cururu_language: pt-BR
-          cururu_profile: balanced
-          cururu_fail_on: off
-```
+`cururu prepare-review --local` emits a bounded JSON snapshot of tracked staged
+and unstaged changes relative to HEAD. It excludes untracked files and lists
+paths ignored by Cururu. `cururu prepare-review --pr` uses the configured GitHub
+change request and checks that its head did not change during collection.
+Both commands only prepare input: they do not call an agent or publish. Their
+output contains source code; treat it as sensitive. Local review currently
+rejects shared configuration bases rather than silently ignoring them.
 
-Set `LLM_API_KEY` as a repository secret. That is it — if the secret is not
+`cururu mcp` offers the same read-only `prepare_review` tool to MCP hosts over
+stdio, plus `validate_review` to check finding shape and anchors against a
+fresh matching effective snapshot hash. `assemble_review` combines exactly one
+validated result for each chunk; incomplete, reordered or stale results fail.
+It strips agent-supplied analyzer provenance and follows the configured policy
+for executable suggestions.
+Validation does not establish correctness or approve
+the change. The tools do not publish, and an MCP host may send tool output to
+its configured model: only request a review when that disclosure is approved.
+See [MCP client setup](docs/agent-mcp-setup.md) for non-destructive configuration
+examples for OpenCode V2, Codex, Cursor, and Claude Code.
+The snapshot describes its scope, ignored paths, SHA-256 and Cururu's review
+instructions. Repository content is untrusted data, never an instruction.
+
+The former experimental `agent-review` OpenCode server command is retired and
+fails without contacting the server, even when `--confirm-send` is supplied.
+Use `api-review` with your own configured API credentials, or ask your agent to
+use Cururu's MCP tools with the agent's own authentication and permissions.
+
+The existing API review pipeline uses `CURURU_PROVIDER` (`openrouter`, `openai`,
+`groq`, `deepseek`, `zai`, or `anthropic`) and `LLM_API_KEY`; `LLM_MODEL` and `LLM_BASE_URL`
+can override the selected defaults. Treat the key as a secret and configure it
+through your environment or secret manager, not in repository files. An unknown
+provider is rejected instead of silently sending data to a different service.
+DeepSeek and Z.AI use their OpenAI-compatible APIs; provider compatibility has
+not yet been verified with live accounts. To review local tracked changes,
+inspect `cururu prepare-review --local`, then run `cururu api-review
+--confirm-send --expected-snapshot <snapshot_sha256>`. For a hosted PR, inspect
+`cururu prepare-review --pr` and use `cururu api-review --pr --confirm-send
+--expected-snapshot <snapshot_sha256>` instead. Hosted reviews also send the
+configured repository context, prior feedback and analyzer evidence as untrusted
+data; inspect them before consenting. This sends the diff to
+the configured API, returns an advisory JSON receipt, and never publishes. The
+hash option is optional but rejects changes made since the preview; results are
+also rejected if the snapshot changes during the review. Local untracked files,
+binary files and submodules are excluded or rejected as described by the scope.
+Anthropic uses its native Messages API with an Anthropic API key; this initial
+adapter has not been verified against a live account. `api-review` includes
+token usage when every chunk reports it; otherwise the total is omitted. For
+Anthropic, input totals include cache writes and reads, and cost is unavailable.
+An
+agent's subscription or login is used by that agent through MCP, not by this API
+pipeline.
+The initial adapter sends bounded diff chunks, Cururu's canonical prompt and
+configured review preferences (language, tone, audience, suggestion detail and
+focus). For hosted PRs it also collects explicitly configured repository context
+from the base revision and sends it as untrusted data; the snapshot includes the
+context and its truncation/skipped diagnostics. Inspect `prepare-review --pr`
+before confirming disclosure. Local review does not collect repository context.
+When automatic context is enabled, the adapter also includes selected base files
+within its configured limits; review these additional files before consenting.
+Paths absent from the base tree are reported as skipped (including new or renamed
+paths); a truncated tree or failure to read a file known to exist stops the review.
+The adapter also includes prior review feedback as untrusted evidence, with a
+bounded size and snapshot binding. Inspect `prepare-review --pr` before sending:
+feedback can contain names and comments. When feedback exceeds limits on threads,
+replies, individual comment length, location length, or total bytes, collection
+fails instead of silently dropping or shortening it. When analysis and check runs are enabled,
+matching check-run annotations are bounded, snapshot-bound and sent as untrusted
+evidence. `prepare-review` accepts explicitly chosen local `--sarif FILE
+--analysis-manifest FILE`; the manifest must identify the reviewed HEAD, and
+paths inside it are never followed. Supply the same two options to `api-review`;
+the evidence is sent only after `--confirm-send` and both files are re-read before
+the result is accepted. A matching HEAD does not prove a SARIF file analyzed
+uncommitted changes. To publish a receipt with local evidence, pass the same
+explicit `--sarif` and `--analysis-manifest` options to `publish-agent-review`;
+both files are revalidated before the preview and again after confirmation.
+Selected analyzer evidence is promoted into findings subject to the configured
+review policy. API assembly applies the
+shared confidence, severity, maximum-findings and synthesis policies, but differs
+from the hosted pipeline: both validate findings against their chunks and strip
+model-supplied analyzer provenance and honor the configured suggested-changes
+policy; API assembly does not run the optional evaluator. These flows are not
+equivalent. Binary and submodule changes are rejected.
+Configured repository context, prior feedback, and check-run evidence are
+collected before an API review and included in its snapshot; explicit local
+SARIF is included only when selected. The hosted pipeline also loads configured
+SARIF paths and manifest paths, whereas `api-review` does not follow those paths
+implicitly. OpenAI-compatible review requests currently retry failed transport,
+HTTP, and response-parsing calls up to three times; a provider may have processed
+an earlier attempt, so retries can incur additional usage. Anthropic's native
+review adapter does not currently retry. A failed chunk returns no review receipt.
+If configured analyzer evidence exceeds the finding limit, the hosted review
+fails explicitly rather than silently discarding excess SARIF or annotations;
+the API review also rejects excess explicitly selected evidence.
+The hosted pipeline combines analyzer findings after model inference and does
+not send those findings to the model. By contrast, `api-review` sends its
+selected analyzer evidence as untrusted input and also includes it in the
+candidate findings. These are distinct disclosure behaviors.
+The hosted review rechecks the trusted base revision and hashes of both the
+repository configuration and any shared base configuration before and after
+model inference. A changed or unreadable shared configuration stops the review;
+the shared configuration client uses the same access identity as the initial load.
+
+### Review flow differences
+
+| Boundary | `api-review` | MCP | Hosted pipeline |
+| --- | --- | --- | --- |
+| Inference and disclosure | Configured API; explicit `--confirm-send` | Client chooses its model and handles disclosure | Configured automation invokes its API |
+| Analyzer evidence | Selected evidence is sent and promoted | Exposes prepared check-run evidence to the client and promotes it | Configured evidence is collected and promoted; not sent to the model |
+| Executable suggestions | Governed by review policy | Governed by review policy | Governed by review policy |
+| Evaluator | Not invoked | Not invoked | Optional configured evaluator; filtering is not part of the approved rollout |
+| Publication | Separate interactive confirmation for PR receipts | No publication tool; separate CLI confirmation | Candidate shown in a Check Run; published only after a separate approval per candidate (GitHub or CLI) |
+
+The API/MCP disclosure and separate-publication boundaries are intentional. The
+other differences describe current behavior, not a decision that exact parity is
+unnecessary. Evaluator filtering remains disabled pending approved data,
+metrics, thresholds and rollout. Setting `CURURU_EVALUATOR_MODE=filter` causes the
+hosted review to fail before collecting the review input or calling a model;
+observe mode is unaffected. Synthetic tests do not establish model quality
+or prove that an agent reviewed every file.
+
+Local journey verification is covered by `tests/agent_review.rs` (CLI consent,
+PR snapshot revalidation and interactive publication), `tests/mcp_stdio.rs`
+(MCP protocol and chunk assembly), and the signed-webhook tests using a real
+local SQLite queue and fake GitHub and model servers. The test-only webhook
+evaluator scenario also exercises the HTTP evaluator adapter: a configuration
+change during its response blocks all publication; an unchanged configuration
+completes. The loopback evaluator endpoint exists only in test builds. These
+checks do not verify live provider compatibility, real user experience, or the
+GitHub API's non-atomic interval between the final check and publication.
+The [local acceptance map](docs/local-review-acceptance.md) traces the agreed
+requirements to entry points, tests, differences and verification limits.
+
+This is an experimental protocol surface. For a PR receipt, `cururu
+publish-agent-review receipt.json` fetches the current PR, checks the receipt's
+target-bound snapshot and finding anchors, displays the exact comment and
+target, and requires typing `PUBLISH` on an interactive terminal. It reloads
+the trusted repository configuration and rechecks the snapshot after confirmation
+before creating a new advisory conversation comment;
+it never approves the PR or replaces earlier reviews. A receipt is editable and
+its permitted single-line replacement is shown as escaped advisory text in the
+preview and comment, not as an automatically applicable GitHub suggestion.
+The policy is checked again; disabled or unsafe replacements are omitted. A
+receipt is not cryptographic proof that an agent performed the work: read the preview.
+The GitHub comment API cannot atomically condition posting on a PR revision, so
+a change between the final check and the POST can still make the comment stale.
+Submission is never automatically retried; on an uncertain result, check the PR
+before retrying. The
+MCP process uses its working directory and explicit environment, and does not
+automatically load `.env`.
+
+Add [`docs/examples/cururu-review.yml`](docs/examples/cururu-review.yml) as
+`.github/workflows/cururu-review.yml` (or run `cururu init`), set `LLM_API_KEY`
+as a repository secret, and create a `cururu-publish` environment
+(**Settings → Environments**) with required reviewers. If the secret is not
 configured, the review is skipped with a notice instead of failing the PR.
+
+Publication requires a separate approval for every review (Cururu v5 and
+later; v4 publishes directly):
+
+1. The `review` job reviews the PR and comments **nothing**. It shows the exact
+   candidate (summary and every inline comment) in the job summary and in a
+   `Cururu review` check, and outputs its `candidate_digest`.
+2. The `publish` job uses the `cururu-publish` environment, so it waits for a
+   required reviewer. Approve it on the run page, or inspect and approve from a
+   terminal with your own token: `cururu approve-hosted-review --pr <number>`.
+3. Before posting, the job checks that the environment requires reviewers, that
+   the run was approved, that any approval naming a candidate names this one,
+   that the candidate file matches the review job's digest, and that the PR head
+   and trusted configuration are unchanged. Otherwise nothing is published.
+
+The workflow needs `checks: write` and `actions: read` in addition to the PR and
+issue permissions. A new push cancels a run still waiting for approval. The
+diff-limit notice is the only comment posted without approval; it contains no
+code or review content. The candidate is visible to anyone who can read the
+repository's checks and run summaries before approval. See
+[hosted publication approval](docs/hosted-publication-approval.md).
 
 ## Integration discovery prompt
 
@@ -238,6 +377,15 @@ context files). Estimated cost per review through OpenRouter pricing:
   show token counts.
 - All costs estimate through OpenRouter pricing. Direct provider pricing may
   differ.
+- Every published review adds a **new** summary comment (earlier summaries stay
+  as history) with the model's summary, this review's tokens/cost and the
+  **PR total**. The total sums every Cururu review run recorded on the PR,
+  including candidates that were never approved or published, and states how
+  many reviews did not report tokens or cost. Each run's usage is stored in a
+  hidden marker on its `Cururu review` check, so the total covers runs from the
+  version that introduced it onward and at most GitHub's 250 listed PR
+  commits; beyond that it is marked as a lower bound. Failed runs (for example,
+  a truncated model response) and evaluator calls are not counted.
 
 ### Review
 
@@ -403,15 +551,21 @@ through repository configuration.
 | `CURURU_PROFILE` | no | `balanced` | Review profile |
 | `CURURU_FAIL_ON` | no | `off` | Fail the action at a severity threshold |
 | `CURURU_EVALUATOR_MODE` | no | disabled | Enable TypeSafe Jev in `observe` or `filter` mode |
+| `CURURU_EVALUATOR_ALLOWED_REPOSITORIES` | when evaluator is enabled | — | Comma-separated local allowlist (`owner/repo` or full Git remote identity) authorizing code to be sent to TypeSafe |
 | `TYPESAFE_API_KEY` | when evaluator is enabled | — | TypeSafe API key; keep in a local secret store or CI secret |
 | `TYPESAFE_MODEL` | no | `jev-latest` | TypeSafe model alias or version |
 
 ### Optional Jev evaluator
 
-The evaluator is disabled unless `CURURU_EVALUATOR_MODE` is explicitly set.
-When enabled, Cururu sends each finding and its changed-code hunk to TypeSafe's
-`/v1/systemone` API to judge defect probability and severity. Do not enable it
-for repositories whose code must not be sent to this remote service.
+The evaluator is disabled unless `CURURU_EVALUATOR_MODE` is explicitly set and
+the current repository is listed in `CURURU_EVALUATOR_ALLOWED_REPOSITORIES`.
+Keep that allowlist in the operator's local environment or trusted CI settings;
+it is intentionally not accepted from `.cururu.toml`. When enabled, Cururu sends
+finding metadata and changed-code evidence to TypeSafe's `/v1/systemone` API to
+judge defect probability and severity. Do not authorize repositories whose code
+must not be sent to this remote service. Each request is limited to 100 findings,
+8,000 evidence characters per finding, and 64,000 evidence characters total;
+findings beyond those limits remain unevaluated.
 
 - `observe` records and displays Jev's judgments without changing which findings
   Cururu publishes.
@@ -421,9 +575,11 @@ for repositories whose code must not be sent to this remote service.
   comment's audit section.
 
 An evaluator request/configuration error fails the review rather than silently
-falling back to unfiltered publication. Jev's probability/confidence is a model
-judgment, not proof that a finding is correct. Keep the evaluator key outside
-`.cururu.toml`; repo-controlled configuration cannot enable it or provide keys.
+falling back to unfiltered publication. Cururu uses a two-minute request timeout
+with no internal retries; the webhook delivery queue may retry a failed review
+up to five times. Jev's probability/confidence is a model judgment, not proof
+that a finding is correct. Keep the evaluator key outside `.cururu.toml`;
+repo-controlled configuration cannot enable it or provide keys.
 
 The optional Action input `expected_head_sha` pins a run to the head SHA from
 its triggering event. Cururu refuses to publish if that SHA no longer matches
@@ -553,6 +709,11 @@ Automatic reviews run for `opened`, `synchronize`, `reopened`, and
 reviewed when changed to ready; authorized collaborators can still request a
 manual review with `/cururu review`.
 
+With the self-hosted GitHub App, `/cururu approve <digest>` approves exactly the
+candidate shown in the `Cururu review` check (the full 64-character digest is
+required). Mention answers are posted directly, because a collaborator asked
+for them explicitly.
+
 Only exact commands are accepted. The commenter must have `write`, `maintain`,
 or `admin` permission, and comment text cannot change the model, endpoint,
 prompt, or secrets.
@@ -563,7 +724,9 @@ prompt, or secrets.
 cururu init           Add a starter .cururu.toml and GitHub Actions workflow
   cururu print-diff     Print the change-request diff
 cururu dry-run        Review and print JSON, do not post comment
-cururu review         Review and post summary comment
+cururu review         Review and prepare a candidate for approval (no comment)
+cururu publish-approved-review   Publish an Action candidate from an approved job
+cururu approve-hosted-review     Inspect and approve a hosted candidate
 cururu print-config   Print merged configuration
 ```
 

@@ -7,15 +7,42 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+mod analysis;
+mod analysis_annotations;
+mod analysis_findings;
+mod analysis_paths;
+mod context;
+mod diff_limits;
+mod diff_ops;
+mod evaluation;
+mod findings;
 mod quality;
+mod review_guard;
 mod scm_types;
 mod severity;
+mod unified_diff;
 
+pub use analysis::{AnalysisManifest, AnalysisManifestTool, AnalysisReport, AnalysisTool};
+pub use analysis_annotations::annotations_to_findings;
+pub use analysis_findings::sarif_finding;
+pub use analysis_paths::normalize_analysis_path;
+pub use context::{ContextFile, ContextStore, context_path_matches};
+pub use diff_limits::{ReviewInputError, ensure_review_diff_limits};
+pub use diff_ops::{chunk_files, is_valid_anchor};
+pub use evaluation::{
+    EvaluatedFinding, EvaluationError, EvaluationMode, EvaluationReport, EvaluationUsage,
+    FindingJudgment, SeverityJudgment, apply_judgments, mark_published,
+};
+pub use findings::{
+    CandidateOptions, collect_review_candidates, deduplicate_review_findings, sort_review_findings,
+};
 pub use quality::{QualityReport, evaluate_quality};
+pub use review_guard::{ReviewHeadChanged, ensure_review_head_unchanged};
 pub use scm_types::{
     FindingAnnotation, PriorReviewComment, PriorReviewFeedback, ReviewCommentDraft,
 };
 pub use severity::{FailOn, Severity};
+pub use unified_diff::parse_unified_diff;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ReviewResult {

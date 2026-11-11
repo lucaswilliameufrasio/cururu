@@ -1,0 +1,35 @@
+{
+  "skill_name": "http-api-conventions",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "A request contains valid JSON but its field violates a business rule. Design the HTTP error response and status under the house convention.",
+      "expected_output": "Uses HTTP 422, the standard error body, a stable validation code, and a non-empty extra.validation_errors array with field/message entries; contains no JSON null values.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "The JSON body cannot be parsed. Should this be a 422? Show the correct error response shape.",
+      "expected_output": "Uses HTTP 400 with MALFORMED_REQUEST, distinguishes parsing failure from semantic validation, and does not include JSON null values.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "An upstream service returns a vendor-specific rejection code and internal diagnostic text. What should our API expose?",
+      "expected_output": "Returns 502 with an API-owned stable integration code, optionally includes only a safe upstream code in extra, and never exposes internal diagnostics or stack traces.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "A signed webhook fails verification if we parse and reserialize its JSON first. What should the handler do?",
+      "expected_output": "Verifies the signature against the exact protocol-defined request bytes before parsing, normalization, or mapping; only then converts into internal types.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "Our application API is unversioned and the load balancer expects a health probe. How should route versioning apply?",
+      "expected_output": "Recommends application routes under /v1 by default while allowing platform health/readiness probes outside the versioned API path when required.",
+      "files": []
+    }
+  ]
+}

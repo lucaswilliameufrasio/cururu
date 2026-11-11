@@ -1,148 +1,11 @@
-pub use cururu_core::{ChangedFile, DiffChunk};
+pub use cururu_core::{ChangedFile, chunk_files, is_valid_anchor, parse_unified_diff};
 use globset::GlobSet;
-use regex::Regex;
-
-pub fn parse_unified_diff(diff: &str) -> Vec<ChangedFile> {
-    let header_re = Regex::new(r"(?m)^diff --git a/(.*?) b/(.*?)$").expect("valid regex");
-    let mut files = Vec::new();
-    let matches: Vec<_> = header_re.find_iter(diff).collect();
-
-    for (idx, m) in matches.iter().enumerate() {
-        let start = m.start();
-        let end = matches.get(idx + 1).map_or(diff.len(), regex::Match::start);
-        let raw = &diff[start..end];
-        let path = header_re
-            .captures(m.as_str())
-            .and_then(|caps| caps.get(2))
-            .map_or_else(|| "unknown".to_string(), |v| v.as_str().to_string());
-        let right_lines = new_file_right_lines(raw);
-        files.push(ChangedFile {
-            path,
-            patch: raw.to_string(),
-            right_lines,
-        });
-    }
-
-    files
-}
-
-/// Track the right-side (new) line numbers covered by a unified diff.
-///
-/// Hunks look like:
-///   @@ -<old>,<oldcount> +<new>,<newcount> @@
-/// Every following line is either context (` `), addition (`+`), or deletion
-/// (`-`). Deletions only advance the old line counter; context and additions
-/// advance both. The new-side line number is recorded for every line that
-/// exists in the new file (context and additions), so review comments can be
-/// anchored to those lines.
-fn new_file_right_lines(diff: &str) -> Vec<u32> {
-    let hunk_re = Regex::new(r"(?m)^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@.*$").expect("valid regex");
-    let mut lines = Vec::new();
-
-    // Collect hunk header match ranges so each body can be sliced precisely.
-    let hunks: Vec<_> = hunk_re.find_iter(diff).collect();
-    for (idx, m) in hunks.iter().enumerate() {
-        let hunk_new_start: u32 = hunk_re
-            .captures(m.as_str())
-            .and_then(|c| c.get(1))
-            .and_then(|v| v.as_str().parse().ok())
-            .unwrap_or(0);
-
-        let body_start = m.end();
-        let body_end = hunks.get(idx + 1).map_or(diff.len(), regex::Match::start);
-        let body = &diff[body_start..body_end];
-
-        let mut new_line = hunk_new_start;
-        for line in body.lines() {
-            let Some(first) = line.chars().next() else {
-                continue;
-            };
-            match first {
-                // Additions and context lines exist on the new side.
-                '+' | ' ' => {
-                    lines.push(new_line);
-                    new_line += 1;
-                }
-                // Deletions and "\ No newline..." markers advance only old side.
-                '-' | '\\' => {}
-                _ => break,
-            }
-        }
-    }
-
-    lines
-}
 
 pub fn filter_ignored(files: Vec<ChangedFile>, ignore: &GlobSet) -> Vec<ChangedFile> {
     files
         .into_iter()
         .filter(|f| !ignore.is_match(&f.path))
         .collect()
-}
-
-/// Check whether a (path, line) pair is a valid anchor for a review comment:
-/// the file must be in the diff and the line must exist on the right side.
-pub fn is_valid_anchor(files: &[ChangedFile], path: &str, line: u32) -> bool {
-    files
-        .iter()
-        .any(|f| f.path == path && f.right_lines.contains(&line))
-}
-
-pub fn chunk_files(
-    files: &[ChangedFile],
-    chunk_bytes: usize,
-    max_diff_bytes: usize,
-) -> Vec<DiffChunk> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    let mut current_files = Vec::new();
-    let mut total = 0usize;
-
-    for file in files {
-        let patch = if file.patch.len() > chunk_bytes {
-            truncate_at_boundary(&file.patch, chunk_bytes)
-        } else {
-            file.patch.clone()
-        };
-
-        if total + patch.len() > max_diff_bytes {
-            break;
-        }
-
-        if !current.is_empty() && current.len() + patch.len() > chunk_bytes {
-            chunks.push(DiffChunk {
-                index: chunks.len(),
-                text: std::mem::take(&mut current),
-                files: std::mem::take(&mut current_files),
-            });
-        }
-
-        current.push_str(&patch);
-        current.push('\n');
-        current_files.push(file.path.clone());
-        total += patch.len();
-    }
-
-    if !current.is_empty() {
-        chunks.push(DiffChunk {
-            index: chunks.len(),
-            text: current,
-            files: current_files,
-        });
-    }
-
-    chunks
-}
-
-fn truncate_at_boundary(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}\n\n[diff truncated by cururu]\n", &s[..end])
 }
 
 #[cfg(test)]
@@ -169,7 +32,7 @@ mod tests {
             patch: "x".into(),
             right_lines: vec![],
         }];
-        assert!(filter_ignored(files, &set).is_empty());
+        assert_eq!(filter_ignored(files, &set).len(), 0);
     }
 
     #[test]

@@ -1,0 +1,17 @@
+{
+  "skill_name": "git-delivery",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Deliver this completed feature as a PR. The repository may have its own base-branch rules; inspect them, run the right checks, and do not merge.",
+      "expected_output": "Inspects repository state and workflow, preserves unrelated changes, validates the full change, opens a correctly targeted PR only with authorization, and does not merge.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Prepare a release from the changes on the current branch. Do not assume a develop branch or publish anything without asking.",
+      "expected_output": "Inspects release documentation and version impact, uses SemVer guidance, avoids assuming branch model, and pauses before unauthorized tags/publication.",
+      "files": []
+    }
+  ]
+}

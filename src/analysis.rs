@@ -1,111 +1,27 @@
-use crate::{
-    agent::ReviewFinding,
-    config::AnalysisConfig,
-    diff::ChangedFile,
-    scm::{FindingAnnotation, ScmProvider},
-};
+use crate::{agent::ReviewFinding, config::AnalysisConfig, diff::ChangedFile, scm::ScmProvider};
 use anyhow::Context;
+use cururu_core::annotations_to_findings;
+pub use cururu_core::{AnalysisManifest, AnalysisReport, AnalysisTool};
 use globset::{Glob, GlobSetBuilder};
-use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Deserialize)]
-struct Sarif {
-    #[serde(default)]
-    runs: Vec<SarifRun>,
-}
+const MAX_ANALYSIS_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
-#[derive(Debug, Deserialize)]
-struct SarifRun {
-    tool: SarifTool,
-    #[serde(default)]
-    results: Vec<SarifResult>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifTool {
-    driver: SarifDriver,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifDriver {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifResult {
-    #[serde(rename = "ruleId")]
-    rule_id: Option<String>,
-    level: Option<String>,
-    message: SarifMessage,
-    #[serde(default)]
-    locations: Vec<SarifLocation>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifMessage {
-    text: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifLocation {
-    #[serde(rename = "physicalLocation")]
-    physical_location: Option<SarifPhysicalLocation>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifPhysicalLocation {
-    #[serde(rename = "artifactLocation")]
-    artifact_location: Option<SarifArtifactLocation>,
-    region: Option<SarifRegion>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifArtifactLocation {
-    uri: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SarifRegion {
-    #[serde(rename = "startLine")]
-    start_line: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AnalysisReport {
-    pub status: String,
-    pub tools: Vec<AnalysisTool>,
-    pub findings: Vec<ReviewFinding>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct AnalysisTool {
-    pub name: String,
-    pub status: String,
-    pub exit_code: Option<i32>,
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Manifest {
-    #[serde(default)]
-    schema_version: u32,
-    #[serde(default)]
-    commit_sha: Option<String>,
-    #[serde(default)]
-    tools: Vec<ManifestTool>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManifestTool {
-    name: String,
-    status: String,
-    #[serde(default)]
-    exit_code: Option<i32>,
-    #[serde(default)]
-    message: Option<String>,
-    #[serde(default)]
-    sarif_path: Option<String>,
+pub fn read_bounded(path: &Path) -> anyhow::Result<String> {
+    let file = std::fs::File::open(path).context("failed to open analysis file")?;
+    anyhow::ensure!(
+        file.metadata()?.is_file(),
+        "analysis input must be a regular file"
+    );
+    let mut bytes = Vec::new();
+    file.take(MAX_ANALYSIS_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        u64::try_from(bytes.len())? <= MAX_ANALYSIS_FILE_BYTES,
+        "analysis input exceeds byte limit"
+    );
+    String::from_utf8(bytes).context("analysis input must be UTF-8")
 }
 
 pub async fn load_evidence(
@@ -125,39 +41,27 @@ pub async fn load_evidence(
     let mut tools = Vec::new();
     let mut sarif_paths = config.sarif_paths.clone();
     if let Some(manifest_path) = &config.manifest {
-        let raw = std::fs::read_to_string(manifest_path)
+        let raw = read_bounded(Path::new(manifest_path))
             .with_context(|| format!("failed to read analysis manifest {manifest_path}"))?;
-        let manifest: Manifest = serde_json::from_str(&raw)
+        let manifest: AnalysisManifest = serde_json::from_str(&raw)
             .with_context(|| format!("failed to parse analysis manifest {manifest_path}"))?;
-        if manifest.schema_version != 1 {
+        if !manifest.has_supported_schema_version() {
             anyhow::bail!(
-                "unsupported analysis manifest version {} (expected 1)",
-                manifest.schema_version
+                "unsupported analysis manifest version {} (expected {})",
+                manifest.schema_version,
+                AnalysisManifest::CURRENT_SCHEMA_VERSION
             );
         }
-        if config.require_current_head
-            && manifest
-                .commit_sha
-                .as_deref()
-                .is_some_and(|sha| sha != expected_head)
-        {
+        if config.require_current_head && manifest.is_stale_for(expected_head) {
             return Ok(AnalysisReport {
                 status: "stale".into(),
                 tools: Vec::new(),
                 findings: Vec::new(),
             });
         }
-        for tool in manifest.tools {
-            if let Some(path) = tool.sarif_path {
-                sarif_paths.push(path);
-            }
-            tools.push(AnalysisTool {
-                name: tool.name,
-                status: tool.status,
-                exit_code: tool.exit_code,
-                message: tool.message,
-            });
-        }
+        let (manifest_tools, manifest_sarif_paths) = manifest.into_analysis_data();
+        tools.extend(manifest_tools);
+        sarif_paths.extend(manifest_sarif_paths);
     }
 
     let mut findings = load_sarif_paths(&sarif_paths, changed_files, config.max_findings)?;
@@ -165,8 +69,11 @@ pub async fn load_evidence(
         let annotations = source_control
             .list_finding_annotations(expected_head, &config.check_run_names)
             .await?;
-        let mut check_findings = annotations_to_findings(&annotations, changed_files);
-        check_findings.truncate(config.max_findings.saturating_sub(findings.len()));
+        let check_findings = annotations_to_findings(&annotations, changed_files);
+        anyhow::ensure!(
+            check_findings.len() <= config.max_findings.saturating_sub(findings.len()),
+            "analyzer evidence exceeds finding limit; increase analysis.max_findings or reduce evidence"
+        );
         findings.extend(check_findings);
         if !annotations.is_empty()
             && tools.iter().all(|tool| tool.status != "failed")
@@ -181,63 +88,7 @@ pub async fn load_evidence(
         }
     }
 
-    let status = if tools.iter().any(|tool| tool.status == "failed") {
-        "failed"
-    } else if tools.iter().any(|tool| tool.status == "not_run") {
-        "partial"
-    } else if tools.is_empty() && findings.is_empty() {
-        "no_evidence"
-    } else {
-        "passed"
-    };
-    Ok(AnalysisReport {
-        status: status.into(),
-        tools,
-        findings,
-    })
-}
-
-fn annotations_to_findings(
-    annotations: &[FindingAnnotation],
-    changed_files: &[ChangedFile],
-) -> Vec<ReviewFinding> {
-    let mut findings = Vec::new();
-    for annotation in annotations {
-        let path = normalize_path(&annotation.path);
-        if !changed_files.iter().any(|file| file.path == path) {
-            continue;
-        }
-        let line = annotation.line;
-        let rule = annotation
-            .title
-            .clone()
-            .unwrap_or_else(|| "check-run".into());
-        let severity = match annotation.severity.as_str() {
-            "failure" => "high",
-            "warning" => "medium",
-            _ => "low",
-        };
-        let message = if annotation.message.is_empty() {
-            annotation.details.clone().unwrap_or_else(|| rule.clone())
-        } else {
-            annotation.message.clone()
-        };
-        findings.push(ReviewFinding {
-            severity: severity.into(),
-            path,
-            line,
-            title: format!("check-run: {rule}"),
-            message,
-            suggestion:
-                "See the check-run annotation and project configuration for the recommended fix."
-                    .into(),
-            confidence: 1.0,
-            suggested_change: None,
-            source: Some("check-runs".into()),
-            rule: Some(rule),
-        });
-    }
-    findings
+    Ok(AnalysisReport::from_parts(tools, findings))
 }
 
 fn load_sarif_paths(
@@ -248,74 +99,23 @@ fn load_sarif_paths(
     let paths = expand_paths(configured_paths)?;
     let mut findings = Vec::new();
     for path in paths {
-        let raw = std::fs::read_to_string(&path)
+        let raw = read_bounded(&path)
             .with_context(|| format!("failed to read SARIF file {}", path.display()))?;
-        let sarif: Sarif = serde_json::from_str(&raw)
-            .with_context(|| format!("failed to parse SARIF file {}", path.display()))?;
-        for run in sarif.runs {
-            for result in run.results {
-                let Some(location) = result.locations.first() else {
-                    continue;
-                };
-                let Some(physical) = &location.physical_location else {
-                    continue;
-                };
-                let Some(path) = physical
-                    .artifact_location
-                    .as_ref()
-                    .and_then(|location| location.uri.as_deref())
-                    .map(normalize_path)
-                else {
-                    continue;
-                };
-                if !changed_files.iter().any(|file| file.path == path) {
-                    continue;
-                }
-                let line = physical
-                    .region
-                    .as_ref()
-                    .and_then(|region| region.start_line);
-                let message = result
-                    .message
-                    .text
-                    .unwrap_or_else(|| "Static analysis reported an issue.".into());
-                let rule = result.rule_id.unwrap_or_else(|| "unknown".into());
-                let tool = run.tool.driver.name.clone();
-                findings.push(ReviewFinding {
-                    severity: normalize_level(result.level.as_deref()),
-                    path,
-                    line,
-                    title: format!("{tool}: {rule}"),
-                    message,
-                    suggestion: "See the analyzer diagnostic and project configuration for the recommended fix.".into(),
-                    confidence: 1.0,
-                    suggested_change: None,
-                    source: Some(tool),
-                    rule: Some(rule),
-                });
-                if findings.len() >= max_findings {
-                    return Ok(findings);
-                }
-            }
-        }
+        let parsed = cururu_engine::sarif::parse_findings(
+            &raw,
+            changed_files,
+            max_findings
+                .saturating_sub(findings.len())
+                .saturating_add(1),
+        )
+        .with_context(|| format!("failed to parse SARIF file {}", path.display()))?;
+        anyhow::ensure!(
+            parsed.len() <= max_findings.saturating_sub(findings.len()),
+            "analyzer evidence exceeds finding limit; increase analysis.max_findings or reduce evidence"
+        );
+        findings.extend(parsed);
     }
     Ok(findings)
-}
-
-fn normalize_level(level: Option<&str>) -> String {
-    match level.unwrap_or("warning").to_ascii_lowercase().as_str() {
-        "error" | "failure" => "high",
-        "warning" | "warn" => "medium",
-        _ => "low",
-    }
-    .into()
-}
-
-fn normalize_path(uri: &str) -> String {
-    uri.strip_prefix("file://")
-        .unwrap_or(uri)
-        .trim_start_matches("./")
-        .to_string()
 }
 
 fn expand_paths(patterns: &[String]) -> anyhow::Result<Vec<PathBuf>> {
@@ -361,6 +161,22 @@ mod tests {
     use crate::github::GitHubClient;
     use tempfile::tempdir;
 
+    #[test]
+    fn analysis_input_rejects_oversized_and_invalid_utf8() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("evidence.sarif");
+        std::fs::write(
+            &path,
+            vec![b'x'; usize::try_from(MAX_ANALYSIS_FILE_BYTES).unwrap() + 1],
+        )
+        .unwrap();
+        assert!(read_bounded(&path).is_err());
+        std::fs::write(&path, [0xff]).unwrap();
+        assert!(read_bounded(&path).is_err());
+        std::fs::write(&path, "{}\n").unwrap();
+        assert_eq!(read_bounded(&path).unwrap(), "{}\n");
+    }
+
     fn dummy_github() -> GitHubClient {
         GitHubClient::new(&GitHubConfig {
             token: "token".into(),
@@ -384,6 +200,109 @@ mod tests {
             check_runs: false,
             check_run_names: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn malformed_sarif_is_not_treated_as_empty_evidence() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("malformed.sarif");
+        std::fs::write(&path, "{}").unwrap();
+        let mut config = base_config();
+        config.sarif_paths = vec![path.to_string_lossy().into()];
+        assert!(
+            load_evidence(&config, &[], "head", &dummy_github())
+                .await
+                .is_err()
+        );
+        std::fs::write(&path, r#"{"runs":[]}"#).unwrap();
+        assert!(
+            load_evidence(&config, &[], "head", &dummy_github())
+                .await
+                .is_ok()
+        );
+    }
+
+    struct AnnotationScm;
+
+    #[async_trait::async_trait]
+    impl ScmProvider for AnnotationScm {
+        async fn fetch_head_sha(&self) -> anyhow::Result<String> {
+            Ok("head".into())
+        }
+
+        async fn fetch_diff_with_limit(&self, _: usize) -> anyhow::Result<(String, bool)> {
+            Ok((String::new(), false))
+        }
+
+        async fn list_finding_annotations(
+            &self,
+            _: &str,
+            _: &[String],
+        ) -> anyhow::Result<Vec<cururu_core::FindingAnnotation>> {
+            Ok(vec![cururu_core::FindingAnnotation {
+                path: "src/main.rs".into(),
+                line: Some(7),
+                severity: "warning".into(),
+                message: "annotation".into(),
+                title: Some("fixture".into()),
+                details: None,
+            }])
+        }
+    }
+
+    #[tokio::test]
+    async fn evidence_limit_is_never_silently_truncated() {
+        let directory = tempdir().unwrap();
+        let first = directory.path().join("first.sarif");
+        let second = directory.path().join("second.sarif");
+        let raw = r#"{"runs":[{"tool":{"driver":{"name":"fixture"}},"results":[{"message":{"text":"finding"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/main.rs"},"region":{"startLine":7}}}]}]}]}"#;
+        std::fs::write(&first, raw).unwrap();
+        std::fs::write(&second, raw).unwrap();
+        let changed = vec![ChangedFile {
+            path: "src/main.rs".into(),
+            patch: String::new(),
+            right_lines: vec![7],
+        }];
+        let mut config = base_config();
+        config.sarif_paths = vec![first.to_string_lossy().into()];
+        config.max_findings = 1;
+        assert_eq!(
+            load_evidence(&config, &changed, "head", &AnnotationScm)
+                .await
+                .unwrap()
+                .findings
+                .len(),
+            1
+        );
+        config.max_findings = 0;
+        assert!(
+            load_evidence(&config, &changed, "head", &AnnotationScm)
+                .await
+                .is_err()
+        );
+        config.max_findings = 1;
+        config.sarif_paths.push(second.to_string_lossy().into());
+        assert!(
+            load_evidence(&config, &changed, "head", &AnnotationScm)
+                .await
+                .is_err()
+        );
+        config.sarif_paths.pop();
+        config.check_runs = true;
+        assert!(
+            load_evidence(&config, &changed, "head", &AnnotationScm)
+                .await
+                .is_err()
+        );
+        config.max_findings = 2;
+        assert_eq!(
+            load_evidence(&config, &changed, "head", &AnnotationScm)
+                .await
+                .unwrap()
+                .findings
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]

@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::time::Duration;
 
+mod approval;
+pub use approval::{CandidateCheckRun, RunApproval};
+
 fn url_encode(value: &str) -> String {
     value
         .replace('%', "%25")
@@ -163,7 +166,6 @@ struct GitHubCheckAnnotation {
 
 #[derive(Debug, Deserialize)]
 struct CheckRunList {
-    #[serde(default)]
     check_runs: Vec<CheckRun>,
 }
 
@@ -580,11 +582,10 @@ impl GitHubClient {
             3,
         )
         .await?;
-        if tree.truncated {
-            tracing::warn!(
-                "source-control tree response was truncated; context matching may be incomplete"
-            );
-        }
+        anyhow::ensure!(
+            !tree.truncated,
+            "source-control tree response was truncated; context matching cannot be complete"
+        );
         Ok(tree
             .tree
             .into_iter()
@@ -709,45 +710,19 @@ impl GitHubClient {
         head_sha: &str,
         names: &[String],
     ) -> anyhow::Result<Vec<FindingAnnotation>> {
-        let runs_url = format!(
-            "{}/repos/{}/{}/commits/{}/check-runs?per_page=100",
-            self.cfg.api_url, self.cfg.owner, self.cfg.repo, head_sha
-        );
-        let list: CheckRunList = retry_with_backoff(
-            || async {
-                self.client
-                    .get(&runs_url)
-                    .timeout(Duration::from_secs(15))
-                    .header("Accept", "application/vnd.github+json")
-                    .header("X-GitHub-Api-Version", "2026-03-10")
-                    .bearer_auth(&self.cfg.token)
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .json::<CheckRunList>()
-                    .await
-                    .context("failed to list check runs")
-            },
-            3,
-        )
-        .await?;
-
-        let mut annotations = Vec::new();
-        for run in list.check_runs {
-            if !names.is_empty() && !names.iter().any(|n| n == &run.name) {
-                continue;
-            }
-            if run.conclusion.as_deref() == Some("success") {
-                continue;
-            }
-            let ann_url = format!(
-                "{}/repos/{}/{}/check-runs/{}/annotations?per_page=100",
-                self.cfg.api_url, self.cfg.owner, self.cfg.repo, run.id
+        const PAGE_SIZE: usize = 100;
+        const MAX_PAGES: usize = 100;
+        let mut runs = Vec::new();
+        let mut complete = false;
+        for page in 1..=MAX_PAGES {
+            let runs_url = format!(
+                "{}/repos/{}/{}/commits/{}/check-runs?per_page={PAGE_SIZE}&page={page}",
+                self.cfg.api_url, self.cfg.owner, self.cfg.repo, head_sha
             );
-            let page: Vec<GitHubCheckAnnotation> = retry_with_backoff(
+            let mut list: CheckRunList = retry_with_backoff(
                 || async {
                     self.client
-                        .get(&ann_url)
+                        .get(&runs_url)
                         .timeout(Duration::from_secs(15))
                         .header("Accept", "application/vnd.github+json")
                         .header("X-GitHub-Api-Version", "2026-03-10")
@@ -755,21 +730,75 @@ impl GitHubClient {
                         .send()
                         .await?
                         .error_for_status()?
-                        .json::<Vec<GitHubCheckAnnotation>>()
+                        .json::<CheckRunList>()
                         .await
-                        .context("failed to list check annotations")
+                        .context("failed to list check runs")
                 },
                 3,
             )
             .await?;
-            annotations.extend(page.into_iter().map(|annotation| FindingAnnotation {
-                path: annotation.path,
-                line: annotation.start_line.or(annotation.end_line),
-                severity: annotation.annotation_level,
-                title: annotation.title,
-                message: annotation.message,
-                details: annotation.raw_details,
-            }));
+            let end_of_pages = list.check_runs.len() < PAGE_SIZE;
+            runs.append(&mut list.check_runs);
+            if end_of_pages {
+                complete = true;
+                break;
+            }
+        }
+        anyhow::ensure!(
+            complete,
+            "check-run history exceeds the supported pagination limit"
+        );
+
+        let mut annotations = Vec::new();
+        for run in runs {
+            if !names.is_empty() && !names.iter().any(|n| n == &run.name) {
+                continue;
+            }
+            if run.conclusion.as_deref() == Some("success") {
+                continue;
+            }
+            let mut complete = false;
+            for page_number in 1..=MAX_PAGES {
+                let ann_url = format!(
+                    "{}/repos/{}/{}/check-runs/{}/annotations?per_page={PAGE_SIZE}&page={page_number}",
+                    self.cfg.api_url, self.cfg.owner, self.cfg.repo, run.id
+                );
+                let page: Vec<GitHubCheckAnnotation> = retry_with_backoff(
+                    || async {
+                        self.client
+                            .get(&ann_url)
+                            .timeout(Duration::from_secs(15))
+                            .header("Accept", "application/vnd.github+json")
+                            .header("X-GitHub-Api-Version", "2026-03-10")
+                            .bearer_auth(&self.cfg.token)
+                            .send()
+                            .await?
+                            .error_for_status()?
+                            .json::<Vec<GitHubCheckAnnotation>>()
+                            .await
+                            .context("failed to list check annotations")
+                    },
+                    3,
+                )
+                .await?;
+                let last = page.len() < PAGE_SIZE;
+                annotations.extend(page.into_iter().map(|annotation| FindingAnnotation {
+                    path: annotation.path,
+                    line: annotation.start_line.or(annotation.end_line),
+                    severity: annotation.annotation_level,
+                    title: annotation.title,
+                    message: annotation.message,
+                    details: annotation.raw_details,
+                }));
+                if last {
+                    complete = true;
+                    break;
+                }
+            }
+            anyhow::ensure!(
+                complete,
+                "check-run annotations exceed the supported pagination limit"
+            );
         }
         Ok(annotations)
     }
@@ -835,13 +864,9 @@ impl GitHubClient {
                         let is_cururu = user.login.eq_ignore_ascii_case(&root.user.as_ref()?.login);
                         (user.kind != "Bot" || is_cururu).then(|| PriorReviewComment {
                             author: user.login.clone(),
-                            body: truncate_chars(
-                                reply.body.as_deref().unwrap_or_default(),
-                                MAX_COMMENT_CHARS,
-                            ),
+                            body: reply.body.as_deref().unwrap_or_default().to_owned(),
                         })
                     })
-                    .take(MAX_REPLIES_PER_THREAD)
                     .collect();
                 (!replies.is_empty()).then(|| {
                     let line = root
@@ -853,7 +878,7 @@ impl GitHubClient {
                             .user
                             .as_ref()
                             .map_or_else(|| "Cururu".into(), |u| u.login.clone()),
-                        body: truncate_chars(root_body, MAX_COMMENT_CHARS),
+                        body: root_body.to_owned(),
                     });
                     discussion.extend(replies);
                     (
@@ -866,12 +891,25 @@ impl GitHubClient {
                 })
             })
             .collect();
+        anyhow::ensure!(
+            roots.len() <= MAX_THREADS,
+            "prior review feedback exceeds thread limit"
+        );
+        for (_, thread) in &roots {
+            anyhow::ensure!(
+                thread.comments.len() <= MAX_REPLIES_PER_THREAD + 1,
+                "prior review feedback exceeds replies per thread limit"
+            );
+            anyhow::ensure!(
+                thread
+                    .comments
+                    .iter()
+                    .all(|comment| comment.body.chars().count() <= MAX_COMMENT_CHARS),
+                "prior review feedback exceeds comment character limit"
+            );
+        }
         roots.sort_by_key(|(id, _)| std::cmp::Reverse(*id));
-        let mut feedback: Vec<_> = roots
-            .into_iter()
-            .take(MAX_THREADS)
-            .map(|(_, feedback)| feedback)
-            .collect();
+        let mut feedback: Vec<_> = roots.into_iter().map(|(_, feedback)| feedback).collect();
         feedback.reverse();
 
         if let Some(issue_feedback) = self
@@ -880,7 +918,8 @@ impl GitHubClient {
         {
             feedback.push(issue_feedback);
         }
-        Ok(bound_review_feedback(feedback, 12_000))
+        validate_review_feedback_bounds(&feedback, 12_000)?;
+        Ok(feedback)
     }
 
     async fn fetch_issue_comment_feedback(
@@ -913,20 +952,26 @@ impl GitHubClient {
                         comment.id,
                         PriorReviewComment {
                             author: user.login.clone(),
-                            body: truncate_chars(
-                                comment.body.as_deref().unwrap_or_default(),
-                                MAX_COMMENT_CHARS,
-                            ),
+                            body: comment.body.as_deref().unwrap_or_default().to_owned(),
                         },
                     )
                 })
             })
             .collect();
+        anyhow::ensure!(
+            replies.len() <= MAX_COMMENTS,
+            "prior PR discussion exceeds comment limit"
+        );
+        anyhow::ensure!(
+            replies
+                .iter()
+                .all(|(_, comment)| comment.body.chars().count() <= MAX_COMMENT_CHARS),
+            "prior PR discussion exceeds comment character limit"
+        );
         replies.sort_by_key(|(id, _)| *id);
         let replies: Vec<_> = replies
             .into_iter()
             .rev()
-            .take(MAX_COMMENTS)
             .map(|(_, comment)| comment)
             .collect::<Vec<_>>()
             .into_iter()
@@ -942,28 +987,39 @@ impl GitHubClient {
     }
 
     async fn list_issue_comments(&self) -> anyhow::Result<Vec<IssueComment>> {
-        let url = format!(
-            "{}/repos/{}/{}/issues/{}/comments?per_page=100&direction=desc",
-            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
-        );
-        retry_with_backoff(
-            || async {
-                self.client
-                    .get(&url)
-                    .timeout(Duration::from_secs(15))
-                    .header("Accept", "application/vnd.github+json")
-                    .header("X-GitHub-Api-Version", "2026-03-10")
-                    .bearer_auth(&self.cfg.token)
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .json::<Vec<IssueComment>>()
-                    .await
-                    .context("failed to list PR discussion comments")
-            },
-            3,
-        )
-        .await
+        const PAGE_SIZE: usize = 100;
+        const MAX_PAGES: usize = 100;
+        let mut comments = Vec::new();
+        for page in 1..=MAX_PAGES {
+            let url = format!(
+                "{}/repos/{}/{}/issues/{}/comments?per_page={PAGE_SIZE}&direction=desc&page={page}",
+                self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+            );
+            let mut result: Vec<IssueComment> = retry_with_backoff(
+                || async {
+                    self.client
+                        .get(&url)
+                        .timeout(Duration::from_secs(15))
+                        .header("Accept", "application/vnd.github+json")
+                        .header("X-GitHub-Api-Version", "2026-03-10")
+                        .bearer_auth(&self.cfg.token)
+                        .send()
+                        .await?
+                        .error_for_status()?
+                        .json::<Vec<IssueComment>>()
+                        .await
+                        .context("failed to list PR discussion comments")
+                },
+                3,
+            )
+            .await?;
+            let last = result.len() < PAGE_SIZE;
+            comments.append(&mut result);
+            if last {
+                return Ok(comments);
+            }
+        }
+        anyhow::bail!("PR discussion history exceeds the supported pagination limit")
     }
 
     pub async fn create_review_comment(
@@ -1227,33 +1283,74 @@ impl GitHubClient {
         }
     }
 
-    pub async fn summary_has_head(&self, head_sha: &str) -> anyhow::Result<bool> {
-        let url = format!(
-            "{}/repos/{}/{}/issues/{}/comments?per_page=100",
-            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
-        );
-        let comments: Vec<IssueComment> = self
-            .client
-            .get(&url)
-            .timeout(Duration::from_secs(15))
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2026-03-10")
-            .bearer_auth(&self.cfg.token)
-            .send()
-            .await
-            .context("failed to list PR comments")?
-            .error_for_status()?
-            .json()
-            .await
-            .context("failed to parse PR comments")?;
+    pub async fn upsert_limit_notice(&self, body: &str) -> anyhow::Result<()> {
         let own_login = self.current_login().await;
+        for page in 1..=100 {
+            let url = format!(
+                "{}/repos/{}/{}/issues/{}/comments?per_page=100&page={page}",
+                self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+            );
+            let comments: Vec<IssueComment> = self
+                .client
+                .get(&url)
+                .timeout(Duration::from_secs(15))
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2026-03-10")
+                .bearer_auth(&self.cfg.token)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await
+                .context("failed to list diff limit notices")?;
+            let count = comments.len();
+            for comment in comments {
+                if Self::user_is_cururu(comment.user.as_ref(), own_login.as_deref())
+                    && comment
+                        .body
+                        .as_deref()
+                        .is_some_and(|value| value.contains(output::LIMIT_MARKER))
+                {
+                    return self.update_issue_comment(comment.id, body).await;
+                }
+            }
+            if count < 100 {
+                return self.create_issue_comment(body).await;
+            }
+        }
+        anyhow::bail!("too many PR comments to safely locate the diff limit notice")
+    }
+
+    pub async fn summary_has_head(&self, head_sha: &str) -> anyhow::Result<bool> {
+        let comments = self.list_issue_comments().await?;
+        let own_login = self.current_login().await;
+        let state = format!("<!-- cururu:state:v1 head={head_sha} -->");
         Ok(comments.iter().any(|comment| {
             Self::issue_comment_is_cururu(comment, own_login.as_deref())
-                && comment.body.as_deref().is_some_and(|body| {
-                    body.contains(output::marker())
-                        && body.contains(&format!("<!-- cururu:state:v1 head={head_sha} -->"))
-                })
+                && comment
+                    .body
+                    .as_deref()
+                    .is_some_and(|body| body.contains(&state))
         }))
+    }
+
+    /// Post a new summary comment for this review run unless it already exists.
+    /// Earlier summaries are kept as review history. Not retried: a lost
+    /// response may already have created the comment.
+    pub async fn publish_review_summary(&self, body: &str, run_id: &str) -> anyhow::Result<()> {
+        let marker = output::run_marker(run_id);
+        let own_login = self.current_login().await;
+        let exists = self.list_issue_comments().await?.iter().any(|comment| {
+            Self::issue_comment_is_cururu(comment, own_login.as_deref())
+                && comment
+                    .body
+                    .as_deref()
+                    .is_some_and(|body| body.contains(&marker))
+        });
+        if exists {
+            return Ok(());
+        }
+        self.create_confirmed_comment_once(body).await
     }
 
     async fn find_existing_summary_comment(&self) -> anyhow::Result<Option<u64>> {
@@ -1322,6 +1419,35 @@ impl GitHubClient {
         .await
     }
 
+    /// Never retry: a lost response can mean the comment was already created.
+    pub async fn create_confirmed_comment_once(&self, body: &str) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/comments",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        let response = self
+            .client
+            .post(url)
+            .timeout(Duration::from_secs(15))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .json(&CreateIssueComment { body })
+            .send()
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "comment submission outcome is unknown; check the PR before retrying"
+                )
+            })?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "comment submission failed (HTTP {}); check the PR before retrying",
+            response.status().as_u16()
+        );
+        Ok(())
+    }
+
     async fn update_issue_comment(&self, id: u64, body: &str) -> anyhow::Result<()> {
         let url = format!(
             "{}/repos/{}/{}/issues/comments/{id}",
@@ -1351,6 +1477,28 @@ impl GitHubClient {
 
 #[async_trait]
 impl ScmProvider for GitHubClient {
+    async fn review_usage_history(&self) -> anyhow::Result<crate::review_usage::UsageHistory> {
+        Self::review_usage_history(self).await
+    }
+    async fn publish_review_summary(&self, body: &str, run_id: &str) -> anyhow::Result<()> {
+        Self::publish_review_summary(self, body, run_id).await
+    }
+    async fn create_candidate_check(
+        &self,
+        check: &crate::scm::CandidateCheck<'_>,
+    ) -> anyhow::Result<u64> {
+        self.create_candidate_check_run(check).await
+    }
+    async fn finish_candidate_check(
+        &self,
+        check_id: u64,
+        conclusion: &str,
+        title: &str,
+        summary: &str,
+    ) -> anyhow::Result<()> {
+        self.finish_candidate_check_run(check_id, conclusion, title, summary)
+            .await
+    }
     async fn fetch_head_sha(&self) -> anyhow::Result<String> {
         Self::fetch_head_sha(self).await
     }
@@ -1406,8 +1554,16 @@ impl ScmProvider for GitHubClient {
         Self::upsert_summary_comment(self, body).await
     }
 
+    async fn upsert_limit_notice(&self, body: &str) -> anyhow::Result<()> {
+        Self::upsert_limit_notice(self, body).await
+    }
+
     async fn create_issue_comment(&self, body: &str) -> anyhow::Result<()> {
         Self::create_issue_comment(self, body).await
+    }
+
+    async fn create_confirmed_comment_once(&self, body: &str) -> anyhow::Result<()> {
+        Self::create_confirmed_comment_once(self, body).await
     }
 
     async fn reply_review_comment(&self, comment_id: u64, body: &str) -> anyhow::Result<()> {
@@ -1460,10 +1616,6 @@ impl ScmProvider for GitHubClient {
     }
 }
 
-fn truncate_chars(value: &str, max_chars: usize) -> String {
-    value.chars().take(max_chars).collect()
-}
-
 async fn read_response_prefix(response: &mut reqwest::Response, max_bytes: usize) -> Vec<u8> {
     let mut body = Vec::with_capacity(max_bytes.min(1024));
     while body.len() < max_bytes {
@@ -1476,48 +1628,27 @@ async fn read_response_prefix(response: &mut reqwest::Response, max_bytes: usize
     body
 }
 
-fn bound_review_feedback(
-    feedback: Vec<PriorReviewFeedback>,
+fn validate_review_feedback_bounds(
+    feedback: &[PriorReviewFeedback],
     max_bytes: usize,
-) -> Vec<PriorReviewFeedback> {
-    let mut remaining = max_bytes;
-    let mut bounded = Vec::new();
-    for mut thread in feedback.into_iter().rev() {
-        let mut comments = Vec::new();
-        for mut comment in thread.comments.drain(..).rev() {
-            if remaining == 0 {
-                break;
-            }
-            if comment.body.len() > remaining {
-                comment.body = truncate_utf8(&comment.body, remaining);
-            }
-            remaining = remaining.saturating_sub(comment.body.len());
-            comments.push(comment);
-        }
-        if !comments.is_empty() {
-            comments.reverse();
-            thread.comments = comments;
-            thread.location = truncate_chars(&thread.location, 512);
-            remaining = remaining.saturating_sub(thread.location.len());
-            bounded.push(thread);
-        }
-        if remaining == 0 {
-            break;
+) -> anyhow::Result<()> {
+    let mut total = 0usize;
+    for thread in feedback {
+        anyhow::ensure!(
+            thread.location.chars().count() <= 512,
+            "prior feedback location exceeds character limit"
+        );
+        total = total
+            .checked_add(thread.location.len())
+            .context("prior feedback exceeds byte limit")?;
+        for comment in &thread.comments {
+            total = total
+                .checked_add(comment.body.len())
+                .context("prior feedback exceeds byte limit")?;
         }
     }
-    bounded.reverse();
-    bounded
-}
-
-fn truncate_utf8(value: &str, max_bytes: usize) -> String {
-    if value.len() <= max_bytes {
-        return value.to_string();
-    }
-    value
-        .char_indices()
-        .take_while(|(index, _)| *index < max_bytes)
-        .map(|(_, character)| character)
-        .collect()
+    anyhow::ensure!(total <= max_bytes, "prior feedback exceeds byte limit");
+    Ok(())
 }
 
 fn normalize_finding_content(body: &str) -> String {
@@ -1552,6 +1683,335 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
         matchers::{body_json, header, method, path, query_param},
     };
+
+    #[test]
+    fn check_run_list_requires_the_collection_field() {
+        assert!(serde_json::from_str::<CheckRunList>(r#"{"check_runs":[]}"#).is_ok());
+        assert!(serde_json::from_str::<CheckRunList>("{}").is_err());
+        assert!(serde_json::from_str::<CheckRunList>(r#"{"check_runs":null}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn truncated_base_tree_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/git/trees/base"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"truncated":true,"tree":[]})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "fixture".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://example.invalid".into(),
+        })
+        .unwrap();
+        assert!(
+            client
+                .list_repository_paths_at_revision("base")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("truncated")
+        );
+    }
+
+    #[tokio::test]
+    async fn pr_conversation_limits_reject_excess_without_truncating() {
+        for (count, chars, expected) in [
+            (10, 1, true),
+            (11, 1, false),
+            (1, 2000, true),
+            (1, 2001, false),
+        ] {
+            let server = MockServer::start().await;
+            let mut comments = vec![
+                serde_json::json!({"id":1,"body":output::marker(),"user":{"login":"cururu[bot]","type":"Bot"}}),
+            ];
+            for index in 0..count {
+                comments.push(serde_json::json!({"id":index + 2,"body":"é".repeat(chars),"user":{"login":"human","type":"User"}}));
+            }
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/issues/1/comments"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(comments))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client = GitHubClient::new(&GitHubConfig {
+                token: "fixture".into(),
+                repository: "owner/repo".into(),
+                owner: "owner".into(),
+                repo: "repo".into(),
+                pr_number: 1,
+                api_url: server.uri(),
+                server_url: "https://example.invalid".into(),
+            })
+            .unwrap();
+            let result = client
+                .fetch_issue_comment_feedback(Some("cururu[bot]"))
+                .await;
+            assert_eq!(result.is_ok(), expected, "count={count} chars={chars}");
+            if let Ok(Some(feedback)) = result {
+                assert_eq!(feedback.comments.len(), count);
+                assert_eq!(feedback.comments[0].body.chars().count(), chars);
+            }
+        }
+    }
+
+    #[test]
+    fn feedback_byte_and_location_limits_reject_instead_of_truncating() {
+        let mut feedback = vec![PriorReviewFeedback {
+            location: "a".into(),
+            comments: vec![PriorReviewComment {
+                author: "fixture".into(),
+                body: "é".repeat(6),
+            }],
+        }];
+        assert!(validate_review_feedback_bounds(&feedback, 13).is_ok());
+        assert!(validate_review_feedback_bounds(&feedback, 12).is_err());
+        feedback[0].location = "x".repeat(513);
+        assert!(validate_review_feedback_bounds(&feedback, 10_000).is_err());
+    }
+
+    #[tokio::test]
+    async fn feedback_rejects_oversized_threads_replies_and_comments() {
+        for (threads, replies, chars, expected_ok) in [
+            (1, 1, 2000, true),
+            (1, 1, 2001, false),
+            (1, 11, 1, false),
+            (21, 1, 1, false),
+        ] {
+            let server = MockServer::start().await;
+            let mut comments = Vec::new();
+            for thread in 0..threads {
+                let root_id = 1000 + thread * 100;
+                comments.push(serde_json::json!({"id":root_id,"body":"<!-- cururu:finding --> fixture","user":{"login":"cururu[bot]","type":"Bot"},"path":"a","line":1}));
+                for reply in 0..replies {
+                    comments.push(serde_json::json!({"id":root_id + reply + 1,"in_reply_to_id":root_id,"body":"x".repeat(chars),"user":{"login":"user","type":"User"},"path":"a","line":1}));
+                }
+            }
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/pulls/1/comments"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(comments))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/repos/owner/repo/issues/1/comments"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(Vec::<serde_json::Value>::new()),
+                )
+                .mount(&server)
+                .await;
+            let client = GitHubClient::new(&GitHubConfig {
+                token: "fixture".into(),
+                repository: "owner/repo".into(),
+                owner: "owner".into(),
+                repo: "repo".into(),
+                pr_number: 1,
+                api_url: server.uri(),
+                server_url: "https://example.invalid".into(),
+            })
+            .unwrap();
+            let result = client.fetch_prior_review_feedback().await;
+            assert_eq!(
+                result.is_ok(),
+                expected_ok,
+                "threads={threads} replies={replies} chars={chars}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn check_runs_and_annotations_read_additional_pages() {
+        let server = MockServer::start().await;
+        let runs: Vec<_> = (0..100)
+            .map(|id| serde_json::json!({"id":id,"name":"skip","conclusion":"success"}))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/commits/head/check-runs"))
+            .and(query_param("page", "1"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"check_runs":runs})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).and(path("/repos/owner/repo/commits/head/check-runs")).and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"check_runs":[{"id":101,"name":"fixture","conclusion":"failure"}]}))).expect(1).mount(&server).await;
+        let annotation = serde_json::json!({"path":"a","start_line":1,"annotation_level":"warning","message":"fixture"});
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/check-runs/101/annotations"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(vec![annotation.clone(); 100]))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/check-runs/101/annotations"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(vec![annotation]))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "fixture".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://example.invalid".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            client
+                .list_check_annotations("head", &[])
+                .await
+                .unwrap()
+                .len(),
+            101
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_comment_pagination_propagates_later_page_failure() {
+        let server = MockServer::start().await;
+        let comments: Vec<_> = (0..100).map(|id| serde_json::json!({"id":id,"body":"fixture","user":{"login":"user","type":"User"}})).collect();
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1/comments"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(comments))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1/comments"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(4)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "fixture".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://example.invalid".into(),
+        })
+        .unwrap();
+        assert!(client.list_issue_comments().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn issue_comment_pagination_limit_fails_instead_of_returning_partial_history() {
+        let server = MockServer::start().await;
+        let comments: Vec<_> = (0..100)
+            .map(|id| serde_json::json!({"id":id,"body":"fixture","user":{"login":"user","type":"User"}}))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(comments))
+            .expect(100)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "fixture".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://example.invalid".into(),
+        })
+        .unwrap();
+        assert!(
+            client
+                .list_issue_comments()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("pagination limit")
+        );
+    }
+
+    #[tokio::test]
+    async fn confirmed_comment_failure_is_not_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/repos/owner/repo/issues/1/comments"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("sensitive upstream detail"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+        let error = client
+            .create_confirmed_comment_once("test")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("check the PR before retrying"));
+        assert!(!error.contains("sensitive upstream detail"));
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn limit_notice_updates_only_its_own_comment() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"login": "cururu"})),
+            )
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1/comments"))
+            .and(query_param("page", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": 10, "body": "<!-- cururu:summary --> old review", "user": {"login":"cururu", "type":"User"}},
+                {"id": 11, "body": "<!-- cururu:diff-limit:v1 --> old notice", "user": {"login":"cururu", "type":"User"}}
+            ])))
+            .expect(2).mount(&server).await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/owner/repo/issues/comments/11"))
+            .and(body_json(serde_json::json!({"body":"new notice"})))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "token".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://github.com".into(),
+        })
+        .unwrap();
+        client.upsert_limit_notice("new notice").await.unwrap();
+        client.upsert_limit_notice("new notice").await.unwrap();
+        server.verify().await;
+    }
 
     #[tokio::test]
     async fn bounded_pr_diff_stops_reading_at_the_byte_limit() {

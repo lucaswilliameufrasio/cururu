@@ -3,6 +3,9 @@ pub enum LlmProvider {
     OpenAI,
     OpenRouter,
     Groq,
+    DeepSeek,
+    Zai,
+    Anthropic,
 }
 
 impl LlmProvider {
@@ -11,6 +14,9 @@ impl LlmProvider {
             Self::OpenAI => "https://api.openai.com/v1",
             Self::OpenRouter => "https://openrouter.ai/api/v1",
             Self::Groq => "https://api.groq.com/openai/v1",
+            Self::DeepSeek => "https://api.deepseek.com",
+            Self::Zai => "https://api.z.ai/api/paas/v4",
+            Self::Anthropic => "https://api.anthropic.com/v1",
         }
     }
 
@@ -19,6 +25,9 @@ impl LlmProvider {
             Self::OpenAI => "gpt-6-luna",
             Self::OpenRouter => "openai/gpt-6-luna",
             Self::Groq => "openai/gpt-oss-120b",
+            Self::DeepSeek => "deepseek-flash",
+            Self::Zai => "glm-5.3",
+            Self::Anthropic => "claude-sonnet-4-6",
         }
     }
 
@@ -27,6 +36,9 @@ impl LlmProvider {
             "openai" => Some(Self::OpenAI),
             "openrouter" => Some(Self::OpenRouter),
             "groq" => Some(Self::Groq),
+            "deepseek" => Some(Self::DeepSeek),
+            "zai" | "z.ai" => Some(Self::Zai),
+            "anthropic" => Some(Self::Anthropic),
             _ => None,
         }
     }

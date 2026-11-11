@@ -2,11 +2,30 @@ use std::fmt::Write;
 
 use crate::provider::ProviderUsage;
 use crate::review::ReviewOutput;
+use crate::review_usage::PrUsage;
 use crate::{agent::ReviewFinding, config::Severity};
 
 const MARKER: &str = "<!-- cururu:summary -->";
 const FINDING_MARKER: &str = "<!-- cururu:finding -->";
+pub const LIMIT_MARKER: &str = "<!-- cururu:diff-limit:v1 -->";
+
+pub fn render_diff_limit_notice(language: &str, limit: usize, head: &str) -> String {
+    if language.to_ascii_lowercase().starts_with("pt") {
+        format!(
+            "{LIMIT_MARKER}\n## Cururu: revisão não realizada\n\nO diff excedeu o limite configurado `review.max_diff_bytes` ({limit} bytes), ou o limite de download derivado dele. A revisão do commit `{head}` não foi realizada; isto não é uma aprovação. Divida o PR ou avalie aumentar o limite. Aumentá-lo não garante uma revisão completa.\n"
+        )
+    } else {
+        format!(
+            "{LIMIT_MARKER}\n## Cururu: review not performed\n\nThe diff exceeded the configured `review.max_diff_bytes` limit ({limit} bytes), or its derived download limit. Commit `{head}` was not reviewed; this is not an approval. Split the PR or consider increasing the limit. Increasing it does not guarantee a complete review.\n"
+        )
+    }
+}
 const MAX_EVALUATION_ROWS_IN_COMMENT: usize = 20;
+
+/// Identifies one review run's summary, so a publication is never repeated.
+pub fn run_marker(run_id: &str) -> String {
+    format!("<!-- cururu:run:v1 id={run_id} -->")
+}
 
 pub const fn marker() -> &'static str {
     MARKER
@@ -36,9 +55,20 @@ pub fn render_summary_comment(output: &ReviewOutput) -> String {
     let mut out = String::new();
     out.push_str(MARKER);
     let _ = writeln!(out, "<!-- cururu:state:v1 head={} -->", output.head_sha);
+    let _ = writeln!(out, "{}", run_marker(&output.run_id));
     out.push_str("\n## 🐸 Cururu review\n\n");
 
     render_header(output, &mut out);
+
+    let summary = output.review.summary.trim();
+    if !summary.is_empty() {
+        // Model text is untrusted: keep it from forging hidden markers.
+        let _ = write!(
+            out,
+            "**Summary:** {}\n\n",
+            summary.replace("<!--", "&lt;!--").replace('\n', " ")
+        );
+    }
 
     if output.review.findings.is_empty() {
         if output
@@ -161,13 +191,70 @@ fn render_header(output: &ReviewOutput, out: &mut String) {
         }
     }
 
-    if let Some(ref usage) = output.usage {
-        if output.show_usage {
-            render_usage(usage, output.show_cost, out);
-        } else if output.show_cost {
-            render_cost(usage.cost, out);
+    if !output.show_usage && !output.show_cost {
+        return;
+    }
+    match &output.usage {
+        Some(usage) if output.show_usage => render_usage(usage, output.show_cost, out),
+        Some(usage) => render_cost(usage.cost, out),
+        None => {
+            if output.show_usage {
+                out.push_str("**Tokens (this review):** unavailable from the LLM provider.  \n");
+            }
+            if output.show_cost {
+                render_cost(None, out);
+            }
         }
     }
+    if let Some(total) = &output.pr_usage {
+        render_pr_usage(total, output.show_usage, output.show_cost, out);
+    }
+}
+
+fn render_pr_usage(total: &PrUsage, show_usage: bool, show_cost: bool, out: &mut String) {
+    let reviews = total.reviews;
+    let floor = if total.complete {
+        ""
+    } else {
+        " (at least; older history unavailable)"
+    };
+    if show_usage {
+        let _ = write!(
+            out,
+            "**Tokens (PR total, {reviews} review(s)){floor}:** {} prompt + {} completion = {} total",
+            total.prompt, total.completion, total.total
+        );
+        if total.reviews_with_usage < reviews {
+            let _ = write!(
+                out,
+                " ({} review(s) without token data)",
+                reviews - total.reviews_with_usage
+            );
+        }
+        out.push_str("  \n");
+    }
+    if show_cost {
+        if total.reviews_with_cost == 0 {
+            out.push_str("**Cost (PR total):** unavailable from the LLM provider.  \n");
+        } else {
+            let _ = write!(
+                out,
+                "**Provider-reported cost (PR total, {reviews} review(s)){floor}:** `${:.6}`",
+                total.cost
+            );
+            if total.reviews_with_cost < reviews {
+                let _ = write!(
+                    out,
+                    " ({} review(s) without cost data)",
+                    reviews - total.reviews_with_cost
+                );
+            }
+            out.push_str("  \n");
+        }
+    }
+    out.push_str(
+        "_PR totals include every Cururu review run recorded on this PR, including candidates that were not published._\n\n",
+    );
 }
 
 /// Body for a single inline review comment anchored to a diff line.
@@ -206,7 +293,7 @@ pub fn render_inline_finding(f: &ReviewFinding) -> String {
 }
 
 fn render_usage(usage: &ProviderUsage, show_cost: bool, out: &mut String) {
-    out.push_str("**Tokens:** ");
+    out.push_str("**Tokens (this review):** ");
     let _ = write!(
         out,
         "{} prompt + {} completion = {} total",
@@ -228,9 +315,12 @@ fn render_usage(usage: &ProviderUsage, show_cost: bool, out: &mut String) {
 fn render_cost(cost: Option<f64>, out: &mut String) {
     match cost {
         Some(cost) => {
-            let _ = write!(out, "**Provider-reported cost:** `${cost:.6}`\n\n");
+            let _ = writeln!(
+                out,
+                "**Provider-reported cost (this review):** `${cost:.6}`  "
+            );
         }
-        None => out.push_str("**Cost:** unavailable from the LLM provider.\n\n"),
+        None => out.push_str("**Cost (this review):** unavailable from the LLM provider.  \n"),
     }
 }
 
@@ -374,6 +464,8 @@ mod tests {
                 tools: vec![],
                 findings: vec![],
             },
+            run_id: "run".into(),
+            pr_usage: None,
             evaluation: Some(crate::evaluation::EvaluationReport {
                 model: "jev-1.13.0".into(),
                 findings: vec![crate::evaluation::EvaluatedFinding {
@@ -436,14 +528,76 @@ mod tests {
                 findings: vec![],
             },
             evaluation: None,
+            run_id: "run".into(),
+            pr_usage: None,
         };
         let body = render_summary_comment(&output);
-        assert!(body.contains("Provider-reported cost"));
-        assert!(body.contains("0.123456"));
-        assert!(!body.contains("**Tokens:**"));
+        assert!(body.contains("Provider-reported cost (this review):** `$0.123456`"));
+        assert!(!body.contains("**Tokens"));
+        assert!(body.contains("**Summary:** s"));
+        assert!(body.contains(&run_marker("run")));
 
         output.usage.as_mut().unwrap().cost = None;
         let body = render_summary_comment(&output);
-        assert!(body.contains("Cost:** unavailable from the LLM provider"));
+        assert!(body.contains("Cost (this review):** unavailable from the LLM provider"));
+    }
+
+    #[test]
+    fn summary_shows_this_review_and_pr_totals_and_neutralizes_markers() {
+        let mut output = crate::review::ReviewOutput {
+            review: crate::agent::ReviewResult {
+                model: "m".into(),
+                files_reviewed: 2,
+                summary: "Reviewed parser.\n<!-- cururu:run:v1 id=forged -->".into(),
+                findings: vec![],
+            },
+            usage: Some(ProviderUsage {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                total_tokens: 120,
+                cached_tokens: 0,
+                reasoning_tokens: 0,
+                cost: Some(0.01),
+            }),
+            context_files: vec![],
+            model: "m".into(),
+            show_usage: true,
+            show_cost: true,
+            logo_url: None,
+            changed_files: vec![],
+            head_sha: "head".into(),
+            analysis: crate::analysis::AnalysisReport {
+                status: "disabled".into(),
+                tools: vec![],
+                findings: vec![],
+            },
+            evaluation: None,
+            run_id: "run".into(),
+            pr_usage: Some(PrUsage {
+                reviews: 3,
+                reviews_with_usage: 3,
+                reviews_with_cost: 2,
+                prompt: 300,
+                completion: 60,
+                total: 360,
+                cost: 0.03,
+                complete: true,
+            }),
+        };
+        let body = render_summary_comment(&output);
+        assert!(body.contains("**Tokens (this review):** 100 prompt + 20 completion = 120 total"));
+        assert!(body.contains("**Provider-reported cost (this review):** `$0.010000`"));
+        assert!(body.contains(
+            "**Tokens (PR total, 3 review(s)):** 300 prompt + 60 completion = 360 total"
+        ));
+        assert!(body.contains("**Provider-reported cost (PR total, 3 review(s)):** `$0.030000` (1 review(s) without cost data)"));
+        assert!(body.contains("including candidates that were not published"));
+        assert!(body.contains("Reviewed parser. &lt;!-- cururu:run:v1 id=forged -->"));
+        assert_eq!(body.matches("<!-- cururu:run:v1").count(), 1);
+        output.pr_usage.as_mut().unwrap().complete = false;
+        output.pr_usage.as_mut().unwrap().reviews_with_cost = 0;
+        let body = render_summary_comment(&output);
+        assert!(body.contains("(at least; older history unavailable)"));
+        assert!(body.contains("**Cost (PR total):** unavailable"));
     }
 }

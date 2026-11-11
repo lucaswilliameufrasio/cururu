@@ -70,8 +70,14 @@ pub trait ScmProvider: Send + Sync {
     async fn upsert_summary_comment(&self, _body: &str) -> anyhow::Result<()> {
         anyhow::bail!("SCM adapter does not support summary comments")
     }
+    async fn upsert_limit_notice(&self, _body: &str) -> anyhow::Result<()> {
+        anyhow::bail!("SCM adapter does not support diff limit notices")
+    }
     async fn create_issue_comment(&self, _body: &str) -> anyhow::Result<()> {
         anyhow::bail!("SCM adapter does not support issue comments")
+    }
+    async fn create_confirmed_comment_once(&self, _body: &str) -> anyhow::Result<()> {
+        anyhow::bail!("SCM adapter does not support confirmed comments")
     }
     async fn reply_review_comment(&self, _comment_id: u64, _body: &str) -> anyhow::Result<()> {
         anyhow::bail!("SCM adapter does not support discussion replies")
@@ -112,6 +118,41 @@ pub trait ScmProvider: Send + Sync {
     fn is_cururu_review_comment(&self, _comment: &ReviewComment, _login: Option<&str>) -> bool {
         false
     }
+    /// Show a publication candidate for inspection without commenting on the
+    /// change request. Returns the provider's check identifier.
+    async fn create_candidate_check(&self, _check: &CandidateCheck<'_>) -> anyhow::Result<u64> {
+        anyhow::bail!("SCM adapter does not support publication candidate checks")
+    }
+    /// Usage recorded by earlier Cururu review runs on this change request.
+    async fn review_usage_history(&self) -> anyhow::Result<crate::review_usage::UsageHistory> {
+        Ok(crate::review_usage::UsageHistory::default())
+    }
+    /// Publish one review run's summary as its own comment, at most once.
+    async fn publish_review_summary(&self, body: &str, _run_id: &str) -> anyhow::Result<()> {
+        self.upsert_summary_comment(body).await
+    }
+    /// Close a candidate check, removing its approval action.
+    async fn finish_candidate_check(
+        &self,
+        _check_id: u64,
+        _conclusion: &str,
+        _title: &str,
+        _summary: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("SCM adapter does not support publication candidate checks")
+    }
+}
+
+/// An inspection surface for a hosted publication candidate.
+pub struct CandidateCheck<'a> {
+    pub head_sha: &'a str,
+    pub external_id: &'a str,
+    pub title: &'a str,
+    pub summary: &'a str,
+    /// The canonical preview; its SHA-256 is the candidate digest.
+    pub text: &'a str,
+    /// Offer an in-check approval action (GitHub App only).
+    pub approval_action: bool,
 }
 
 #[cfg(test)]
@@ -149,19 +190,17 @@ mod tests {
     #[tokio::test]
     async fn basic_adapter_can_omit_optional_capabilities() {
         let adapter = MinimalScm;
-        assert!(
-            adapter
-                .fetch_prior_review_feedback()
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            adapter.fetch_prior_review_feedback().await.unwrap().len(),
+            0
         );
-        assert!(
+        assert_eq!(
             adapter
                 .list_finding_annotations("revision", &[])
                 .await
                 .unwrap()
-                .is_empty()
+                .len(),
+            0
         );
         assert!(
             adapter

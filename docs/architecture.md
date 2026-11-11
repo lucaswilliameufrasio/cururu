@@ -8,6 +8,12 @@ currently shipped adapters; a new host or model provider should implement the
 relevant interface instead of adding platform-specific branches throughout the
 review pipeline.
 
+`cururu-core` remains the provider- and UI-independent domain crate. Shared
+asynchronous review execution contracts live in the separate `cururu-engine`
+workspace crate, which may depend on runtime/error crates without expanding the
+core's dependency surface. Desktop consumers pin the Cururu Git revision and do
+not require a published crate.
+
 ## Composition and review pipeline
 
 ```text
@@ -20,7 +26,9 @@ CLI / GitHub App webhook adapter
             -> OpenAI-compatible LLM adapter (current implementation)
   -> quality.rs   severity/confidence/policy filtering
   -> output.rs    summary and finding comments
-  -> ScmProvider  publish comments and summaries
+  -> hosted_publication.rs  candidate preview + digest, shown as a check
+  -> (separate approval: Environment, check button, /cururu approve or CLI)
+  -> ScmProvider  publish the approved candidate after revalidation
 ```
 
 The CLI and self-hosted GitHub App are composition roots. The App webhook
@@ -39,6 +47,15 @@ requests, media types and payloads. GitHub-specific environment aliases and
 webhook shapes are translated at the adapter boundary; core review code uses
 `ScmConfig` and `ScmProvider` rather than GitHub owner/repository API fields.
 
+`ScmProvider` remains an application-level composition contract in
+`src/scm.rs`; `cururu-core` does not own this async I/O interface. The core
+exports provider-neutral domain values and pure review operations, while each
+application composes those operations with its own SCM adapter.
+
+Context path matching (exact paths and globs) is a pure core operation shared
+by applications. Configuration loading, pattern ordering, byte limits, file
+fetching, and prompt rendering remain application responsibilities.
+
 Local repository discovery prefers `CURURU_REPOSITORY`, then the checkout's
 Git `origin`; `GITHUB_REPOSITORY` remains a compatibility input for existing
 Actions workflows. Generic SCM configuration uses `CURURU_SCM_PROVIDER`,
@@ -47,12 +64,14 @@ Actions workflows. Generic SCM configuration uses `CURURU_SCM_PROVIDER`,
 provider adapter may expose different capabilities, so optional operations
 must be documented rather than assumed universal.
 
-`src/agent.rs` exposes `ReviewAgent`, which returns Cururu's normalized review
-domain model. The current OpenAI-compatible adapter in `agent.rs` obtains
-responses through `provider.rs`; provider-specific request metadata is mapped
-to neutral usage fields. Structured response validation and normalization stay
-in Cururu so providers that only guarantee syntactically valid JSON do not
-break the core contract.
+`cururu-engine` exposes `ReviewAgent`, sequential bounded-chunk orchestration,
+the canonical `DEFAULT_REVIEW_PROMPT`, and the shared OpenAI-compatible adapter.
+Applications provide the endpoint, model, credential, generation settings, and
+system prompt. The engine owns HTTP request/response handling, bounded
+conversation inputs, retry behavior for code review chunks, and structured-result
+validation. Provider usage is mapped to a neutral value. The desktop can compose
+this adapter with its own secure settings and local-repository workflow without
+copying review protocol logic.
 
 ## Diff limits and diagnostics
 
@@ -61,7 +80,13 @@ the monolithic representation with HTTP 406, it falls back to paginated changed
 file patches. If the host omits a patch for any changed file or the configured
 file limit is exceeded, Cururu fails rather than silently claiming a complete
 review. Review download, per-file chunk, and total diff limits are checked
-before invoking the model; an over-limit review fails with a generic message.
+before invoking the model. When the download or filtered total exceeds the
+configured total limit, publication-capable workflows upsert a separate,
+localized incomplete-review notice without replacing prior review comments.
+The notice is not an approval; `review_status=skipped_diff_limit` and
+`quality_gate_passed=false` distinguish it from a completed review. A stale
+head or failed publication remains an error. Per-file chunk limit errors and
+other failures remain errors. Dry-run never publishes the notice.
 Provider error details are bounded and scrubbed of credentials, repository
 identifiers, host URLs and change-request numbers before being surfaced.
 
@@ -112,3 +137,10 @@ context paths and automatic-context inclusion/exclusion lists combine uniquely,
 base first then local. Other arrays replace rather than append. `cururu init`
 scaffolds local configuration and the current GitHub workflow adapter;
 `cururu print-config` shows effective settings without secrets.
+## Shared repository configuration
+
+The portable `.cururu.toml` schema and version-aware parser are exposed by
+`cururu-engine::config` (ADR 006). Hosts own environment precedence, runtime
+policy, credentials, SCM, filesystem/network reads and user consent. The CLI
+reuses this schema through `src/config/schema.rs`; parsing a repository file
+never grants execution or data-sending permissions.

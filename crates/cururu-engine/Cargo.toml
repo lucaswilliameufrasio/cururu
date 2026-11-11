@@ -1,0 +1,37 @@
+[package]
+name = "cururu-engine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+description = "Reusable execution contracts for Cururu code review"
+repository = "https://github.com/lucaswilliameufrasio/cururu"
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+cururu-core = { path = "../cururu-core", version = "0.1.0" }
+globset = "0.4"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_path_to_error = "0.1"
+toml = "1.2"
+thiserror = "2.0"
+tokio = { version = "1.54", features = ["time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.54", features = ["macros", "rt"] }
+wiremock = "0.6"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

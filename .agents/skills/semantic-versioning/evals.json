@@ -1,0 +1,23 @@
+{
+  "skill_name": "semantic-versioning",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "A stable library release adds a backwards-compatible public method. Recommend the SemVer bump and explain why; don't publish it.",
+      "expected_output": "Recommends a minor bump for a backwards-compatible public feature and does not perform publication.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "A release removes a public field. The proposed version is a patch bump. Check it against SemVer and tell me what to do before editing files.",
+      "expected_output": "Flags the incompatible change as requiring a major bump for a stable API, explains the mismatch, and asks/pauses before changing files.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Prepare release 0.4.2 for an API-breaking change in a pre-1.0 library. Is patch definitely correct under SemVer?",
+      "expected_output": "Explains that pre-1.0 public APIs are unstable under SemVer but checks the project's stated compatibility policy and does not claim patch is automatically correct.",
+      "files": []
+    }
+  ]
+}

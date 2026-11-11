@@ -26,6 +26,24 @@ pub struct SharedBaseConfig {
     pub path: String,
 }
 
+#[derive(Clone)]
+pub struct SharedConfigSnapshot {
+    pub source: SharedBaseConfig,
+    pub hash: String,
+    pub client: std::sync::Arc<dyn crate::scm::ScmProvider>,
+}
+
+impl std::fmt::Debug for SharedConfigSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SharedConfigSnapshot")
+            .field("source", &self.source)
+            .field("hash", &self.hash)
+            .field("client", &"[redacted]")
+            .finish()
+    }
+}
+
 use anyhow::{Context, bail};
 use schema::CururuToml;
 
@@ -34,6 +52,7 @@ pub struct EvaluatorConfig {
     pub mode: Option<crate::evaluation::EvaluationMode>,
     pub api_key: String,
     pub model: String,
+    pub repository_allowed: bool,
 }
 
 impl std::fmt::Debug for EvaluatorConfig {
@@ -43,12 +62,16 @@ impl std::fmt::Debug for EvaluatorConfig {
             .field("mode", &self.mode)
             .field("api_key", &"[redacted]")
             .field("model", &self.model)
+            .field("repository_allowed", &self.repository_allowed)
             .finish()
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    /// Trusted repository base revision and hash of the loaded configuration.
+    pub trusted_config_snapshot: Option<(String, Option<String>)>,
+    pub shared_config_snapshot: Option<SharedConfigSnapshot>,
     pub source_control: ScmConfig,
     pub llm: LlmConfig,
     pub review: ReviewConfig,
@@ -59,11 +82,27 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    pub fn authorize_evaluator_for_repository(
+        &mut self,
+        identity: &crate::repository::RepositoryIdentity,
+    ) -> anyhow::Result<()> {
+        self.evaluator.repository_allowed = if self.evaluator.mode.is_some() {
+            evaluator_repository_is_allowed(
+                Some(identity),
+                env::env_optional("CURURU_EVALUATOR_ALLOWED_REPOSITORIES").as_deref(),
+            )?
+        } else {
+            false
+        };
+        Ok(())
+    }
+
     pub fn from_local_env() -> anyhow::Result<Self> {
-        let provider = env::env_optional("CURURU_PROVIDER")
-            .as_deref()
-            .and_then(LlmProvider::from_name)
-            .unwrap_or(LlmProvider::OpenRouter);
+        let provider = match env::env_optional("CURURU_PROVIDER") {
+            Some(name) => LlmProvider::from_name(&name)
+                .context("unsupported CURURU_PROVIDER; refusing to select a different provider")?,
+            None => LlmProvider::OpenRouter,
+        };
         let base_url = env::env_optional("LLM_BASE_URL")
             .unwrap_or_else(|| provider.default_base_url().to_string());
         let model =
@@ -100,6 +139,14 @@ impl AppConfig {
         } else {
             String::new()
         };
+        let evaluator_repository_allowed = if evaluator_mode.is_some() {
+            evaluator_repository_is_allowed(
+                identity.as_ref(),
+                env::env_optional("CURURU_EVALUATOR_ALLOWED_REPOSITORIES").as_deref(),
+            )?
+        } else {
+            false
+        };
         let (api_url, server_url) = identity.as_ref().map_or_else(
             || {
                 let default_identity = crate::repository::RepositoryIdentity {
@@ -111,6 +158,8 @@ impl AppConfig {
             crate::repository::github_host_urls,
         );
         Ok(Self {
+            trusted_config_snapshot: None,
+            shared_config_snapshot: None,
             source_control: ScmConfig {
                 provider: scm_provider,
                 token: env::env_optional("CURURU_SCM_TOKEN")
@@ -148,27 +197,17 @@ impl AppConfig {
                 mode: evaluator_mode,
                 api_key: env::env_optional("TYPESAFE_API_KEY").unwrap_or_default(),
                 model: env::env_optional("TYPESAFE_MODEL").unwrap_or_else(|| "jev-latest".into()),
+                repository_allowed: evaluator_repository_allowed,
             },
         })
     }
 
     pub fn compose_toml(base: &str, local: &str) -> anyhow::Result<String> {
-        let base: toml::Value = toml::from_str(base).context("invalid shared base TOML")?;
-        let local: toml::Value = toml::from_str(local).context("invalid local TOML")?;
-        toml::to_string(&merge_values(base, local, ""))
-            .context("failed to serialize effective configuration")
+        cururu_engine::config::compose_toml(base, local)
     }
 
     pub fn shared_base_from_toml(raw: &str) -> anyhow::Result<Option<SharedBaseConfig>> {
-        let de = toml::Deserializer::new(raw);
-        let parsed: CururuToml =
-            serde_path_to_error::deserialize(de).context("failed to parse .cururu.toml")?;
-        if parsed.version != 1 {
-            bail!(
-                "unsupported .cururu.toml version {} (expected 1)",
-                parsed.version
-            );
-        }
+        let parsed = CururuToml::parse(raw)?;
         let Some(source) = parsed.config else {
             return Ok(None);
         };
@@ -250,16 +289,7 @@ impl AppConfig {
 
     #[allow(clippy::too_many_lines)]
     pub fn merge_toml_str(&mut self, raw: &str) -> anyhow::Result<()> {
-        let de = toml::Deserializer::new(raw);
-        let parsed: CururuToml =
-            serde_path_to_error::deserialize(de).context("failed to parse .cururu.toml")?;
-
-        if parsed.version != 1 {
-            bail!(
-                "unsupported .cururu.toml version {} (expected 1)",
-                parsed.version
-            );
-        }
+        let parsed = CururuToml::parse(raw)?;
         anyhow::ensure!(
             parsed.evaluator.is_none(),
             "[evaluator] is local-only; configure CURURU_EVALUATOR_MODE and TYPESAFE_API_KEY outside .cururu.toml"
@@ -269,8 +299,10 @@ impl AppConfig {
         if let Some(tp) = parsed.provider {
             if env::env_optional("CURURU_PROVIDER").is_none()
                 && let Some(name) = tp.name
-                && let Some(p) = LlmProvider::from_name(&name)
             {
+                let p = LlmProvider::from_name(&name).context(
+                    "unsupported provider name; refusing to select a different provider",
+                )?;
                 self.llm.provider = p;
                 if env::env_optional("LLM_BASE_URL").is_none() {
                     self.llm.base_url = p.default_base_url().to_string();
@@ -317,14 +349,18 @@ impl AppConfig {
                 self.review.language = lang;
             }
             if let Some(tone) = tr.tone {
-                validate_choice("review.tone", &tone, &["neutral", "direct", "didactic"])?;
+                validate_choice(
+                    "review.tone",
+                    &tone,
+                    cururu_engine::review_preferences::TONES,
+                )?;
                 self.review.tone = tone;
             }
             if let Some(level) = tr.technical_level {
                 validate_choice(
                     "review.technical_level",
                     &level,
-                    &["beginner", "intermediate", "expert"],
+                    cururu_engine::review_preferences::TECHNICAL_LEVELS,
                 )?;
                 self.review.technical_level = level;
             }
@@ -332,7 +368,7 @@ impl AppConfig {
                 validate_choice(
                     "review.suggestion_detail",
                     &detail,
-                    &["concise", "standard", "detailed"],
+                    cururu_engine::review_preferences::SUGGESTION_DETAILS,
                 )?;
                 self.review.suggestion_detail = detail;
             }
@@ -483,53 +519,43 @@ impl AppConfig {
     }
 }
 
-fn merge_values(base: toml::Value, local: toml::Value, path: &str) -> toml::Value {
-    match (base, local) {
-        (toml::Value::Table(mut base), toml::Value::Table(local)) => {
-            for (key, local_value) in local {
-                let child_path = if path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{path}.{key}")
-                };
-                let value = base.remove(&key).map_or_else(
-                    || local_value.clone(),
-                    |base_value| merge_values(base_value, local_value.clone(), &child_path),
-                );
-                base.insert(key, value);
-            }
-            toml::Value::Table(base)
+fn evaluator_repository_is_allowed(
+    identity: Option<&crate::repository::RepositoryIdentity>,
+    allowlist: Option<&str>,
+) -> anyhow::Result<bool> {
+    let Some(identity) = identity else {
+        return Ok(false);
+    };
+    let Some(allowlist) = allowlist else {
+        return Ok(false);
+    };
+    let current_key = evaluator_repository_key(identity)?;
+    let mut allowed = false;
+
+    for entry in allowlist.split(',') {
+        let entry = entry.trim();
+        anyhow::ensure!(
+            !entry.is_empty(),
+            "CURURU_EVALUATOR_ALLOWED_REPOSITORIES contains an empty entry"
+        );
+        let allowed_identity =
+            crate::repository::RepositoryIdentity::parse(entry).with_context(|| {
+                format!("invalid repository in CURURU_EVALUATOR_ALLOWED_REPOSITORIES: {entry}")
+            })?;
+        if evaluator_repository_key(&allowed_identity)? == current_key {
+            allowed = true;
         }
-        (toml::Value::Array(mut base), toml::Value::Array(local))
-            if matches!(
-                path,
-                "review.ignore"
-                    | "policy.focus"
-                    | "context.conventions"
-                    | "context.specifications"
-                    | "context.skills"
-                    | "context.additional"
-                    | "context.auto.include"
-                    | "context.auto.exclude"
-            ) =>
-        {
-            for value in local {
-                if !base.contains(&value) {
-                    base.push(value);
-                }
-            }
-            toml::Value::Array(base)
-        }
-        (_, local) => local,
     }
+
+    Ok(allowed)
 }
 
-fn validate_choice(field: &str, value: &str, choices: &[&str]) -> anyhow::Result<()> {
-    if !choices.contains(&value) {
-        bail!(
-            "invalid {field}: {value}; expected one of {}",
-            choices.join(", ")
-        );
-    }
-    Ok(())
+fn evaluator_repository_key(
+    identity: &crate::repository::RepositoryIdentity,
+) -> anyhow::Result<String> {
+    let (owner, repository) = identity.owner_and_repository()?;
+    let host = identity.host.as_deref().unwrap_or("github.com");
+    Ok(format!("{host}/{owner}/{repository}"))
 }
+
+use cururu_engine::config::validate_choice;

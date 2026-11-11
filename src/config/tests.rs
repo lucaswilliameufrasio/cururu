@@ -8,6 +8,8 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn base_config() -> AppConfig {
     AppConfig {
+        trusted_config_snapshot: None,
+        shared_config_snapshot: None,
         source_control: ScmConfig {
             provider: "github".into(),
             token: "test-token".into(),
@@ -43,6 +45,7 @@ fn base_config() -> AppConfig {
             mode: None,
             api_key: String::new(),
             model: "jev-latest".into(),
+            repository_allowed: false,
         },
     }
 }
@@ -78,7 +81,7 @@ fn evaluator_settings_are_rejected_from_repository_toml() {
         .unwrap_err();
     assert!(error.to_string().contains("local-only"));
     assert!(cfg.evaluator.mode.is_none());
-    assert!(cfg.evaluator.api_key.is_empty());
+    assert_eq!(cfg.evaluator.api_key, "");
     assert_eq!(cfg.evaluator.model, "jev-latest");
 }
 
@@ -89,6 +92,40 @@ fn evaluator_debug_output_redacts_the_api_key() {
     let debug = format!("{:?}", cfg.evaluator);
     assert!(debug.contains("[redacted]"));
     assert!(!debug.contains("secret-evaluator-key"));
+}
+
+#[test]
+fn evaluator_repository_permission_requires_an_exact_local_allowlist_match() {
+    let github_repository = crate::repository::RepositoryIdentity::parse("owner/repo").unwrap();
+    let other_repository = crate::repository::RepositoryIdentity::parse("owner/other").unwrap();
+    let enterprise_repository =
+        crate::repository::RepositoryIdentity::parse("git@github.example.com:owner/repo").unwrap();
+
+    assert!(!evaluator_repository_is_allowed(Some(&github_repository), None).unwrap());
+    assert!(
+        evaluator_repository_is_allowed(
+            Some(&github_repository),
+            Some("https://github.com/owner/repo, owner/another")
+        )
+        .unwrap()
+    );
+    assert!(
+        !evaluator_repository_is_allowed(Some(&github_repository), Some("owner/other")).unwrap()
+    );
+    assert!(
+        !evaluator_repository_is_allowed(Some(&enterprise_repository), Some("owner/repo")).unwrap()
+    );
+    assert!(!evaluator_repository_is_allowed(None, Some("owner/repo")).unwrap());
+    assert!(evaluator_repository_is_allowed(Some(&other_repository), Some("owner/other")).unwrap());
+}
+
+#[test]
+fn evaluator_repository_permission_rejects_malformed_allowlist_entries() {
+    let identity = crate::repository::RepositoryIdentity::parse("owner/repo").unwrap();
+
+    let error = evaluator_repository_is_allowed(Some(&identity), Some("owner/repo,")).unwrap_err();
+
+    assert!(error.to_string().contains("empty entry"));
 }
 
 #[test]
@@ -200,6 +237,12 @@ fn provider_from_name() {
     );
     assert_eq!(LlmProvider::from_name("groq"), Some(LlmProvider::Groq));
     assert_eq!(LlmProvider::from_name("GROQ"), Some(LlmProvider::Groq));
+    assert_eq!(
+        LlmProvider::from_name("deepseek"),
+        Some(LlmProvider::DeepSeek)
+    );
+    assert_eq!(LlmProvider::from_name("z.ai"), Some(LlmProvider::Zai));
+    assert_eq!(LlmProvider::from_name("zai"), Some(LlmProvider::Zai));
     assert_eq!(LlmProvider::from_name("invalid"), None);
     assert_eq!(LlmProvider::from_name(""), None);
 }
@@ -221,6 +264,32 @@ fn provider_defaults() {
         "https://api.groq.com/openai/v1"
     );
     assert_eq!(LlmProvider::Groq.default_model(), "openai/gpt-oss-120b");
+    assert_eq!(
+        LlmProvider::DeepSeek.default_base_url(),
+        "https://api.deepseek.com"
+    );
+    assert_eq!(LlmProvider::DeepSeek.default_model(), "deepseek-flash");
+    assert_eq!(
+        LlmProvider::Zai.default_base_url(),
+        "https://api.z.ai/api/paas/v4"
+    );
+    assert_eq!(LlmProvider::Zai.default_model(), "glm-5.3");
+}
+
+#[test]
+fn invalid_provider_never_silently_selects_another_service() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    temp_env::with_var("CURURU_PROVIDER", Some("not-a-provider"), || {
+        assert!(AppConfig::from_local_env().is_err());
+    });
+    temp_env::with_var("CURURU_PROVIDER", None::<&str>, || {
+        let mut config = base_config();
+        assert!(
+            config
+                .merge_toml_str("version = 1\n[provider]\nname = 'not-a-provider'\n")
+                .is_err()
+        );
+    });
 }
 
 #[test]
@@ -438,7 +507,7 @@ fn loading_scm_context_does_not_require_llm_credentials_for_diff_only_commands()
                             temp_env::with_var("LLM_API_KEY", None::<&str>, || {
                                 let config = AppConfig::from_env().unwrap();
                                 assert_eq!(config.source_control.change_request_number, 42);
-                                assert!(config.llm.api_key.is_empty());
+                                assert_eq!(config.llm.api_key, "");
                                 assert!(config.require_llm_api_key().is_err());
                             });
                         });

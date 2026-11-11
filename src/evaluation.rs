@@ -1,140 +1,89 @@
 use crate::{agent::ReviewFinding, diff::ChangedFile};
+pub use cururu_core::{
+    EvaluatedFinding, EvaluationMode, EvaluationReport, EvaluationUsage, FindingJudgment,
+    SeverityJudgment, apply_judgments, mark_published,
+};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvaluationMode {
-    Observe,
-    Filter,
+const JEV_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
+
+#[async_trait::async_trait]
+pub trait ReviewEvaluator: Send + Sync {
+    async fn evaluate(
+        &self,
+        findings: &[ReviewFinding],
+        changed_files: &[ChangedFile],
+    ) -> anyhow::Result<EvaluationReport>;
 }
 
-impl EvaluationMode {
-    pub fn from_name(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "observe" => Some(Self::Observe),
-            "filter" => Some(Self::Filter),
-            _ => None,
+struct JevEvaluator {
+    client: reqwest::Client,
+    endpoint: String,
+    api_key: String,
+    model: String,
+}
+
+impl JevEvaluator {
+    fn new(client: reqwest::Client, api_key: String, model: String) -> Self {
+        #[cfg(test)]
+        let endpoint = std::env::var("CURURU_TEST_JEV_ENDPOINT")
+            .ok()
+            .filter(|value| {
+                url::Url::parse(value)
+                    .is_ok_and(|url| url.scheme() == "http" && url.host_str() == Some("127.0.0.1"))
+            })
+            .unwrap_or_else(|| JEV_ENDPOINT.into());
+        #[cfg(not(test))]
+        let endpoint = JEV_ENDPOINT.into();
+        Self {
+            client,
+            endpoint,
+            api_key,
+            model,
+        }
+    }
+
+    #[cfg(test)]
+    const fn with_endpoint(
+        client: reqwest::Client,
+        endpoint: String,
+        api_key: String,
+        model: String,
+    ) -> Self {
+        Self {
+            client,
+            endpoint,
+            api_key,
+            model,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FindingJudgment {
-    pub defect_probability: f32,
-    pub severity: Option<SeverityJudgment>,
-    pub severity_confidence: Option<f32>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SeverityJudgment {
-    Critical,
-    High,
-    Medium,
-    Low,
-    Ignore,
-}
-
-impl SeverityJudgment {
-    pub const fn as_str(self) -> Option<&'static str> {
-        match self {
-            Self::Critical => Some("critical"),
-            Self::High => Some("high"),
-            Self::Medium => Some("medium"),
-            Self::Low => Some("low"),
-            Self::Ignore => None,
-        }
+#[async_trait::async_trait]
+impl ReviewEvaluator for JevEvaluator {
+    async fn evaluate(
+        &self,
+        findings: &[ReviewFinding],
+        changed_files: &[ChangedFile],
+    ) -> anyhow::Result<EvaluationReport> {
+        evaluate_with_jev_at(
+            &self.client,
+            &self.endpoint,
+            &self.api_key,
+            &self.model,
+            findings,
+            changed_files,
+        )
+        .await
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvaluatedFinding {
-    pub finding: ReviewFinding,
-    pub judgment: FindingJudgment,
-    pub suppressed: bool,
-    #[serde(default)]
-    pub published: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvaluationReport {
-    pub model: String,
-    pub findings: Vec<EvaluatedFinding>,
-    #[serde(default)]
-    pub omitted_findings: usize,
-    pub usage: Option<EvaluationUsage>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvaluationUsage {
-    pub input_tokens: Option<u32>,
-    pub output_tokens: Option<u32>,
-}
-
-pub fn apply_judgments(
-    findings: Vec<ReviewFinding>,
-    judgments: Vec<FindingJudgment>,
-    mode: EvaluationMode,
-) -> anyhow::Result<(Vec<ReviewFinding>, EvaluationReport)> {
-    anyhow::ensure!(
-        findings.len() == judgments.len(),
-        "evaluator returned a different number of judgments than findings"
-    );
-
-    let mut accepted = Vec::with_capacity(findings.len());
-    let mut evaluated = Vec::with_capacity(findings.len());
-    for (mut finding, judgment) in findings.into_iter().zip(judgments) {
-        anyhow::ensure!(
-            judgment.defect_probability.is_finite()
-                && (0.0..=1.0).contains(&judgment.defect_probability),
-            "evaluator returned an invalid defect probability"
-        );
-        anyhow::ensure!(
-            judgment
-                .severity_confidence
-                .is_none_or(|value| value.is_finite() && (0.0..=1.0).contains(&value)),
-            "evaluator returned an invalid severity confidence"
-        );
-        if mode == EvaluationMode::Filter
-            && let Some(name) = judgment.severity.and_then(SeverityJudgment::as_str)
-        {
-            finding.severity = name.into();
-        }
-        let suppressed = mode == EvaluationMode::Filter
-            && (judgment.defect_probability < 0.5
-                || judgment.severity == Some(SeverityJudgment::Ignore));
-        if !suppressed {
-            accepted.push(finding.clone());
-        }
-        evaluated.push(EvaluatedFinding {
-            finding,
-            judgment,
-            suppressed,
-            published: false,
-        });
-    }
-
-    Ok((
-        accepted,
-        EvaluationReport {
-            model: String::new(),
-            findings: evaluated,
-            omitted_findings: 0,
-            usage: None,
-        },
-    ))
-}
-
-pub fn mark_published(report: &mut EvaluationReport, findings: &[ReviewFinding]) {
-    for evaluated in &mut report.findings {
-        evaluated.published = findings.iter().any(|published| {
-            published.path == evaluated.finding.path
-                && published.line == evaluated.finding.line
-                && published.title == evaluated.finding.title
-                && published.message == evaluated.finding.message
-                && published.source == evaluated.finding.source
-                && published.rule == evaluated.finding.rule
-        });
-    }
+pub fn build_jev_evaluator(
+    client: reqwest::Client,
+    api_key: String,
+    model: String,
+) -> Box<dyn ReviewEvaluator> {
+    Box::new(JevEvaluator::new(client, api_key, model))
 }
 
 #[derive(Debug, Serialize)]
@@ -173,24 +122,6 @@ struct JevAnswer {
     confidence: Option<f32>,
 }
 
-pub async fn evaluate_with_jev(
-    client: &reqwest::Client,
-    api_key: &str,
-    model: &str,
-    findings: &[ReviewFinding],
-    changed_files: &[ChangedFile],
-) -> anyhow::Result<EvaluationReport> {
-    evaluate_with_jev_at(
-        client,
-        "https://api.typesafe.ai/v1/systemone",
-        api_key,
-        model,
-        findings,
-        changed_files,
-    )
-    .await
-}
-
 #[allow(clippy::too_many_lines)]
 async fn evaluate_with_jev_at(
     client: &reqwest::Client,
@@ -213,11 +144,21 @@ async fn evaluate_with_jev_at(
         "TYPESAFE_API_KEY is required when Jev evaluation is enabled"
     );
 
-    let evaluated_findings = &findings[..findings.len().min(MAX_EVALUATED_FINDINGS)];
-    let state: Vec<_> = evaluated_findings
-        .iter()
-        .enumerate()
-        .map(|(id, finding)| JevFindingState {
+    let mut state = Vec::new();
+    let mut evidence_budget = MAX_TOTAL_EVIDENCE_CHARS;
+    for (id, finding) in findings.iter().take(MAX_EVALUATED_FINDINGS).enumerate() {
+        let evidence = changed_files
+            .iter()
+            .find(|file| file.path == finding.path)
+            .map(|file| {
+                relevant_hunk(file, finding.line)
+                    .chars()
+                    .take(MAX_EVIDENCE_CHARS_PER_FINDING.min(evidence_budget))
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        evidence_budget -= evidence.chars().count();
+        state.push(JevFindingState {
             id,
             path: &finding.path,
             line: finding.line,
@@ -225,18 +166,13 @@ async fn evaluate_with_jev_at(
             claim: &finding.message,
             proposed_fix: &finding.suggestion,
             reported_severity: &finding.severity,
-            evidence: changed_files
-                .iter()
-                .find(|file| file.path == finding.path)
-                .map(|file| {
-                    relevant_hunk(file, finding.line)
-                        .chars()
-                        .take(8_000)
-                        .collect()
-                })
-                .unwrap_or_default(),
-        })
-        .collect();
+            evidence,
+        });
+        if evidence_budget == 0 {
+            break;
+        }
+    }
+    let evaluated_findings = &findings[..state.len()];
     let mut questions = serde_json::Map::new();
     for id in 0..evaluated_findings.len() {
         questions.insert(format!("finding_{id}_is_defect"), serde_json::json!({
@@ -373,6 +309,8 @@ fn relevant_hunk(file: &ChangedFile, line: Option<u32>) -> String {
 use anyhow::Context;
 
 pub const MAX_EVALUATED_FINDINGS: usize = 100;
+pub const MAX_EVIDENCE_CHARS_PER_FINDING: usize = 8_000;
+pub const MAX_TOTAL_EVIDENCE_CHARS: usize = 64_000;
 
 #[cfg(test)]
 mod tests {
@@ -514,16 +452,16 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let report = evaluate_with_jev_at(
-            &client,
-            &format!("{}/v1/systemone", server.uri()),
-            "secret-test",
-            "jev-latest",
-            &[finding()],
-            &[changed_file()],
-        )
-        .await
-        .unwrap();
+        let evaluator: Box<dyn ReviewEvaluator> = Box::new(JevEvaluator::with_endpoint(
+            client,
+            format!("{}/v1/systemone", server.uri()),
+            "secret-test".into(),
+            "jev-latest".into(),
+        ));
+        let report = evaluator
+            .evaluate(&[finding()], &[changed_file()])
+            .await
+            .unwrap();
         assert_eq!(report.model, "jev-1.13.0");
         assert!((report.findings[0].judgment.defect_probability - 0.97).abs() < f32::EPSILON);
         assert_eq!(
@@ -641,6 +579,63 @@ mod tests {
             body["questions"].as_object().unwrap().len(),
             MAX_EVALUATED_FINDINGS * 2
         );
+    }
+
+    #[tokio::test]
+    async fn request_caps_aggregate_evidence_and_reports_the_unevaluated_remainder() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        let expected_count = MAX_TOTAL_EVIDENCE_CHARS / MAX_EVIDENCE_CHARS_PER_FINDING;
+        let mut answers = serde_json::Map::new();
+        for id in 0..expected_count {
+            answers.insert(
+                format!("finding_{id}_is_defect"),
+                serde_json::json!({"type":"noul", "noul":0.9}),
+            );
+            answers.insert(
+                format!("finding_{id}_severity"),
+                serde_json::json!({"type":"choice", "choice":"low", "confidence":0.8}),
+            );
+        }
+        Mock::given(method("POST"))
+            .and(path("/v1/systemone"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "model":"jev-test", "answers":answers
+            })))
+            .mount(&server)
+            .await;
+
+        let findings = vec![finding(); expected_count + 3];
+        let mut file = changed_file();
+        file.patch = format!("{}{}", "x".repeat(MAX_TOTAL_EVIDENCE_CHARS + 1), "\n");
+        let report = evaluate_with_jev_at(
+            &reqwest::Client::new(),
+            &format!("{}/v1/systemone", server.uri()),
+            "secret-test",
+            "jev-latest",
+            &findings,
+            &[file],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.findings.len(), expected_count);
+        assert_eq!(report.omitted_findings, 3);
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let state = body["state"].as_array().unwrap();
+        assert_eq!(state.len(), expected_count);
+        let evidence_chars: usize = state
+            .iter()
+            .map(|item| item["evidence"].as_str().unwrap().chars().count())
+            .sum();
+        assert_eq!(evidence_chars, MAX_TOTAL_EVIDENCE_CHARS);
+        assert!(state.iter().all(|item| {
+            item["evidence"].as_str().unwrap().chars().count() <= MAX_EVIDENCE_CHARS_PER_FINDING
+        }));
     }
 
     #[tokio::test]
