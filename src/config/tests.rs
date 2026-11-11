@@ -8,6 +8,8 @@ static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn base_config() -> AppConfig {
     AppConfig {
+        trusted_config_snapshot: None,
+        shared_config_snapshot: None,
         source_control: ScmConfig {
             provider: "github".into(),
             token: "test-token".into(),
@@ -235,6 +237,12 @@ fn provider_from_name() {
     );
     assert_eq!(LlmProvider::from_name("groq"), Some(LlmProvider::Groq));
     assert_eq!(LlmProvider::from_name("GROQ"), Some(LlmProvider::Groq));
+    assert_eq!(
+        LlmProvider::from_name("deepseek"),
+        Some(LlmProvider::DeepSeek)
+    );
+    assert_eq!(LlmProvider::from_name("z.ai"), Some(LlmProvider::Zai));
+    assert_eq!(LlmProvider::from_name("zai"), Some(LlmProvider::Zai));
     assert_eq!(LlmProvider::from_name("invalid"), None);
     assert_eq!(LlmProvider::from_name(""), None);
 }
@@ -256,6 +264,32 @@ fn provider_defaults() {
         "https://api.groq.com/openai/v1"
     );
     assert_eq!(LlmProvider::Groq.default_model(), "openai/gpt-oss-120b");
+    assert_eq!(
+        LlmProvider::DeepSeek.default_base_url(),
+        "https://api.deepseek.com"
+    );
+    assert_eq!(LlmProvider::DeepSeek.default_model(), "deepseek-flash");
+    assert_eq!(
+        LlmProvider::Zai.default_base_url(),
+        "https://api.z.ai/api/paas/v4"
+    );
+    assert_eq!(LlmProvider::Zai.default_model(), "glm-5.3");
+}
+
+#[test]
+fn invalid_provider_never_silently_selects_another_service() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    temp_env::with_var("CURURU_PROVIDER", Some("not-a-provider"), || {
+        assert!(AppConfig::from_local_env().is_err());
+    });
+    temp_env::with_var("CURURU_PROVIDER", None::<&str>, || {
+        let mut config = base_config();
+        assert!(
+            config
+                .merge_toml_str("version = 1\n[provider]\nname = 'not-a-provider'\n")
+                .is_err()
+        );
+    });
 }
 
 #[test]

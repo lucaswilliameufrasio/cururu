@@ -70,8 +70,14 @@ pub trait ScmProvider: Send + Sync {
     async fn upsert_summary_comment(&self, _body: &str) -> anyhow::Result<()> {
         anyhow::bail!("SCM adapter does not support summary comments")
     }
+    async fn upsert_limit_notice(&self, _body: &str) -> anyhow::Result<()> {
+        anyhow::bail!("SCM adapter does not support diff limit notices")
+    }
     async fn create_issue_comment(&self, _body: &str) -> anyhow::Result<()> {
         anyhow::bail!("SCM adapter does not support issue comments")
+    }
+    async fn create_confirmed_comment_once(&self, _body: &str) -> anyhow::Result<()> {
+        anyhow::bail!("SCM adapter does not support confirmed comments")
     }
     async fn reply_review_comment(&self, _comment_id: u64, _body: &str) -> anyhow::Result<()> {
         anyhow::bail!("SCM adapter does not support discussion replies")

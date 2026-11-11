@@ -4,10 +4,9 @@ use crate::{config::ContextConfig, scm::ScmProvider};
 use anyhow::Context;
 use cururu_core::context_path_matches;
 pub use cururu_core::{ContextFile, ContextStore};
-use tracing::warn;
 
 pub fn render(store: &ContextStore) -> String {
-    if store.files.is_empty() {
+    if store.files.is_empty() && store.truncated.is_empty() && store.skipped.is_empty() {
         return String::new();
     }
     let mut out = String::from("\n---\n## Repository context\n\n");
@@ -70,10 +69,14 @@ pub async fn fetch_context(
                     truncated.push((*p).clone());
                     continue;
                 }
-                let Ok(content) = source_control.fetch_file_at_ref(p, base_sha).await else {
-                    warn!("failed to fetch a context file from the SCM provider");
-                    continue;
-                };
+                let content = source_control
+                    .fetch_file_at_ref(p, base_sha)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "failed to fetch configured context file from the SCM provider"
+                        )
+                    })?;
 
                 let remaining = config.max_bytes.saturating_sub(total_bytes);
                 if content.len() > remaining {
@@ -109,7 +112,7 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
     }
     value
         .char_indices()
-        .take_while(|(index, _)| *index < max_bytes)
+        .take_while(|(index, character)| index.saturating_add(character.len_utf8()) <= max_bytes)
         .map(|(_, character)| character)
         .collect()
 }
@@ -117,6 +120,12 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{ContextFile, ContextStore, render};
+
+    #[test]
+    fn truncation_never_exceeds_byte_limit_for_multibyte_text() {
+        assert_eq!(super::truncate_utf8("xéz", 2), "x");
+        assert_eq!(super::truncate_utf8("xéz", 3), "xé");
+    }
 
     #[test]
     fn rendering_preserves_the_existing_prompt_context_format() {
@@ -137,14 +146,44 @@ mod tests {
     }
 
     #[test]
-    fn rendering_empty_context_returns_an_empty_string() {
+    fn rendering_empty_context_preserves_missing_and_truncation_diagnostics() {
         assert_eq!(
             render(&ContextStore {
                 files: Vec::new(),
                 truncated: vec!["large.md".into()],
                 skipped: vec!["missing.md".into()],
             }),
-            ""
+            "\n---\n## Repository context\n\nTruncated files: large.md\nFiles not found: missing.md\n"
         );
+    }
+
+    struct FailedContextScm;
+
+    #[async_trait::async_trait]
+    impl crate::scm::ScmProvider for FailedContextScm {
+        async fn fetch_head_sha(&self) -> anyhow::Result<String> {
+            Ok("head".into())
+        }
+        async fn fetch_diff_with_limit(&self, _: usize) -> anyhow::Result<(String, bool)> {
+            Ok((String::new(), false))
+        }
+        async fn list_repository_paths_at_revision(&self, _: &str) -> anyhow::Result<Vec<String>> {
+            Ok(vec!["rules.md".into()])
+        }
+        async fn fetch_file_at_ref(&self, _: &str, _: &str) -> anyhow::Result<String> {
+            anyhow::bail!("private fixture detail")
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_context_read_failure_is_not_silently_omitted() {
+        let mut config = crate::config::AppConfig::from_local_env().unwrap().context;
+        config.additional = vec!["rules.md".into()];
+        let error = super::fetch_context(&config, &FailedContextScm, "base")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("failed to fetch configured context file"));
+        assert!(!error.contains("private fixture detail"));
     }
 }

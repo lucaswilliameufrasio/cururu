@@ -110,16 +110,24 @@ impl ChatResponse {
 
 #[must_use]
 pub fn merge_usage(results: &[ChunkResult]) -> Option<ReviewUsage> {
-    let mut usages = results.iter().filter_map(|result| result.usage.as_ref());
-    let mut total = usages.next()?.clone();
-    for usage in usages {
-        total.prompt_tokens += usage.prompt_tokens;
-        total.completion_tokens += usage.completion_tokens;
-        total.total_tokens += usage.total_tokens;
-        total.cached_tokens += usage.cached_tokens;
-        total.reasoning_tokens += usage.reasoning_tokens;
+    let mut results = results.iter();
+    let mut total = results.next()?.usage.as_ref()?.clone();
+    total.cost = total.cost.filter(|cost| cost.is_finite() && *cost >= 0.0);
+    for result in results {
+        let usage = result.usage.as_ref()?;
+        total.prompt_tokens = total.prompt_tokens.checked_add(usage.prompt_tokens)?;
+        total.completion_tokens = total
+            .completion_tokens
+            .checked_add(usage.completion_tokens)?;
+        total.total_tokens = total.total_tokens.checked_add(usage.total_tokens)?;
+        total.cached_tokens = total.cached_tokens.checked_add(usage.cached_tokens)?;
+        total.reasoning_tokens = total.reasoning_tokens.checked_add(usage.reasoning_tokens)?;
         total.cost = match (total.cost, usage.cost) {
-            (Some(previous), Some(next)) => Some(previous + next),
+            (Some(previous), Some(next))
+                if next.is_finite() && next >= 0.0 && (previous + next).is_finite() =>
+            {
+                Some(previous + next)
+            }
             _ => None,
         };
     }

@@ -36,6 +36,8 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 url = "2.5"
+jsonc-parser = { version = "0.34.0", features = ["cst"] }
+tempfile = "3.27"
 
 [dev-dependencies]
 insta = { version = "1.43", features = ["json"] }

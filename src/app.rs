@@ -214,10 +214,12 @@ async fn process_delivery(state: &AppState, delivery: &QueuedDelivery) -> anyhow
             ) {
                 return Ok(());
             }
+            review::ensure_evaluator_mode_allowed(&AppConfig::from_local_env()?)?;
             let (config, github) = app_config_for_event(state, &payload, None)
                 .await?
                 .context("PR webhook configuration was not loaded")?;
-            run_pull_request_review(state, &config, &github, action == "opened", false).await
+            run_pull_request_review(&state.app_slug, &config, &github, action == "opened", false)
+                .await
         }
         "issue_comment" => process_issue_comment(state, &payload).await,
         "pull_request_review_comment" => process_review_comment(state, &payload).await,
@@ -241,6 +243,7 @@ async fn github_context(
     let token = state.auth.installation_token(installation_id).await?;
     let mut config = AppConfig::from_local_env()?;
     let identity = RepositoryIdentity::parse(&repository)?;
+    config.authorize_evaluator_for_repository(&identity)?;
     let (api_url, web_url) = github_host_urls(&identity);
     config.source_control = crate::config::ScmConfig {
         provider: "github".into(),
@@ -313,18 +316,38 @@ async fn merge_shared_repository_config(
 }
 
 async fn run_pull_request_review(
-    state: &AppState,
+    app_slug: &str,
     config: &AppConfig,
     source_control: &dyn ScmProvider,
     request_reviewer: bool,
     force: bool,
 ) -> anyhow::Result<()> {
+    run_pull_request_review_with_evaluator(
+        app_slug,
+        config,
+        source_control,
+        request_reviewer,
+        force,
+        None,
+    )
+    .await
+}
+
+async fn run_pull_request_review_with_evaluator(
+    app_slug: &str,
+    config: &AppConfig,
+    source_control: &dyn ScmProvider,
+    request_reviewer: bool,
+    force: bool,
+    evaluator: Option<&dyn crate::evaluation::ReviewEvaluator>,
+) -> anyhow::Result<()> {
+    review::ensure_evaluator_mode_allowed(config)?;
     let head_sha = source_control.fetch_head_sha().await?;
     if !force && source_control.has_summary_for_revision(&head_sha).await? {
         return Ok(());
     }
     if request_reviewer {
-        let login = format!("{}[bot]", state.app_slug);
+        let login = format!("{app_slug}[bot]");
         match source_control.request_cururu_as_reviewer(&login).await {
             Ok(true) => info!("SCM provider accepted Cururu as a requested reviewer"),
             Ok(false) => {
@@ -336,9 +359,13 @@ async fn run_pull_request_review(
         }
     }
 
-    let result = match review::run_review(config, source_control).await {
+    let result = match review::run_review_with_evaluator(config, source_control, evaluator).await {
         Ok(result) => result,
         Err(error) => {
+            if review::publish_diff_limit_notice(config, source_control, &error).await? {
+                info!("Cururu App review skipped because the diff exceeded the configured limit");
+                return Ok(());
+            }
             publish_truncation_diagnostic(config, source_control, &error).await;
             return Err(error);
         }
@@ -360,7 +387,7 @@ async fn run_pull_request_review(
                 .await?;
         }
     }
-    let bot_login = format!("{}[bot]", state.app_slug);
+    let bot_login = format!("{app_slug}[bot]");
     let marker = format!("<!-- cururu:formal-review:v1 head={} -->", result.head_sha);
     if !source_control
         .formal_review_exists(&marker, &bot_login)
@@ -460,7 +487,7 @@ async fn process_issue_comment(state: &AppState, payload: &Value) -> anyhow::Res
         if trimmed == "/cururu review --full" {
             config.review.policy.incremental = false;
         }
-        return run_pull_request_review(state, &config, &github, false, true).await;
+        return run_pull_request_review(&state.app_slug, &config, &github, false, true).await;
     }
     let number = payload["issue"]["number"]
         .as_u64()
@@ -636,6 +663,227 @@ fn required_env(name: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn synthetic_http_test_server() {
+        if std::env::var_os("CURURU_RUN_SYNTHETIC_HTTP_TEST_SERVER").is_some() {
+            super::serve().await.unwrap();
+        }
+    }
+
+    #[test]
+    fn signed_webhook_revalidates_config_after_http_evaluator() {
+        let status = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/webhook_review_smoke.py"
+            ))
+            .arg(std::env::current_exe().unwrap())
+            .arg("--test-evaluator")
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    struct ObserveScm {
+        changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        writes: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl ScmProvider for ObserveScm {
+        async fn fetch_head_sha(&self) -> anyhow::Result<String> {
+            Ok("head".into())
+        }
+        async fn fetch_base_sha(&self) -> anyhow::Result<String> {
+            Ok("base".into())
+        }
+        async fn fetch_config_toml(&self, _: &str) -> anyhow::Result<Option<String>> {
+            use std::sync::atomic::Ordering;
+            Ok(Some(
+                if self.changed.load(Ordering::SeqCst) {
+                    "changed"
+                } else {
+                    "original"
+                }
+                .into(),
+            ))
+        }
+        async fn fetch_diff_with_limit(&self, _: usize) -> anyhow::Result<(String, bool)> {
+            Ok((
+                "diff --git a/a b/a\n@@ -1 +1 @@\n-old\n+new\n".into(),
+                false,
+            ))
+        }
+        async fn reconcile_review_comments(
+            &self,
+            _: &str,
+            _: &[crate::scm::ReviewCommentDraft],
+        ) -> anyhow::Result<()> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn create_pending_formal_review(&self, _: &str, _: &str) -> anyhow::Result<u64> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(1)
+        }
+        async fn submit_formal_review(&self, _: u64) -> anyhow::Result<()> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn upsert_summary_comment(&self, _: &str) -> anyhow::Result<()> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn upsert_limit_notice(&self, _: &str) -> anyhow::Result<()> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn create_issue_comment(&self, _: &str) -> anyhow::Result<()> {
+            self.writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct ObserveEvaluator {
+        changed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        mutate: bool,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::evaluation::ReviewEvaluator for ObserveEvaluator {
+        async fn evaluate(
+            &self,
+            findings: &[crate::agent::ReviewFinding],
+            _: &[crate::diff::ChangedFile],
+        ) -> anyhow::Result<crate::evaluation::EvaluationReport> {
+            assert_eq!(findings.len(), 1);
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.changed
+                .store(self.mutate, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::evaluation::EvaluationReport {
+                model: "fixture".into(),
+                findings: vec![crate::evaluation::EvaluatedFinding {
+                    finding: findings[0].clone(),
+                    judgment: crate::evaluation::FindingJudgment {
+                        defect_probability: 0.9,
+                        severity: Some(crate::evaluation::SeverityJudgment::High),
+                        severity_confidence: Some(0.9),
+                    },
+                    suppressed: false,
+                    published: false,
+                }],
+                omitted_findings: 0,
+                usage: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_observe_config_change_prevents_all_publication() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        let review = serde_json::json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[{"severity":"high","path":"a","line":1,"title":"fixture","message":"issue","suggestion":"fix","confidence":0.99}]}).to_string();
+        Mock::given(method("POST")).and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]})))
+            .expect(2).mount(&server).await;
+        for mutate in [false, true] {
+            let changed = Arc::new(AtomicBool::new(false));
+            let scm = ObserveScm {
+                changed: changed.clone(),
+                writes: AtomicUsize::new(0),
+            };
+            let evaluator = ObserveEvaluator {
+                changed,
+                mutate,
+                calls: AtomicUsize::new(0),
+            };
+            let mut config = AppConfig::from_local_env().unwrap();
+            config.llm.provider = crate::config::LlmProvider::OpenAI;
+            config.llm.base_url = server.uri();
+            config.llm.api_key = "fixture".into();
+            config.evaluator.mode = Some(crate::evaluation::EvaluationMode::Observe);
+            config.evaluator.repository_allowed = true;
+            config.trusted_config_snapshot =
+                Some(("base".into(), Some(review::trusted_config_hash("original"))));
+            let result = run_pull_request_review_with_evaluator(
+                "fixture",
+                &config,
+                &scm,
+                false,
+                true,
+                Some(&evaluator),
+            )
+            .await;
+            assert_eq!(evaluator.calls.load(Ordering::SeqCst), 1);
+            if mutate {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("configuration changed")
+                );
+                assert_eq!(scm.writes.load(Ordering::SeqCst), 0);
+            } else {
+                assert!(result.is_ok(), "{result:?}");
+                assert_eq!(scm.writes.load(Ordering::SeqCst), 4);
+            }
+        }
+    }
+
+    struct BlockedScm;
+
+    #[async_trait::async_trait]
+    impl ScmProvider for BlockedScm {
+        async fn fetch_head_sha(&self) -> anyhow::Result<String> {
+            panic!("blocked webhook review must not access the SCM")
+        }
+        async fn fetch_diff_with_limit(&self, _: usize) -> anyhow::Result<(String, bool)> {
+            panic!("blocked webhook review must not fetch a diff")
+        }
+        async fn request_cururu_as_reviewer(&self, _: &str) -> anyhow::Result<bool> {
+            panic!("blocked webhook review must not request a reviewer")
+        }
+        async fn upsert_summary_comment(&self, _: &str) -> anyhow::Result<()> {
+            panic!("blocked webhook review must not publish")
+        }
+    }
+
+    #[tokio::test]
+    async fn webhook_review_rejects_filter_before_any_side_effect() {
+        use wiremock::MockServer;
+        let server = MockServer::start().await;
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.evaluator.mode = Some(crate::evaluation::EvaluationMode::Filter);
+        config.evaluator.repository_allowed = true;
+        config.llm.base_url = server.uri();
+        config.llm.api_key = "fixture".into();
+        for force in [false, true] {
+            let error = run_pull_request_review("fixture", &config, &BlockedScm, true, force)
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("evaluator filtering is disabled")
+            );
+        }
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
 
     #[test]
     fn mention_matching_accepts_app_identity_and_slug() {

@@ -25,9 +25,19 @@ struct JevEvaluator {
 
 impl JevEvaluator {
     fn new(client: reqwest::Client, api_key: String, model: String) -> Self {
+        #[cfg(test)]
+        let endpoint = std::env::var("CURURU_TEST_JEV_ENDPOINT")
+            .ok()
+            .filter(|value| {
+                url::Url::parse(value)
+                    .is_ok_and(|url| url.scheme() == "http" && url.host_str() == Some("127.0.0.1"))
+            })
+            .unwrap_or_else(|| JEV_ENDPOINT.into());
+        #[cfg(not(test))]
+        let endpoint = JEV_ENDPOINT.into();
         Self {
             client,
-            endpoint: JEV_ENDPOINT.into(),
+            endpoint,
             api_key,
             model,
         }

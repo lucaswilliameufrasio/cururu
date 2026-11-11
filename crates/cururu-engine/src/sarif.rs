@@ -5,7 +5,6 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 struct Sarif {
-    #[serde(default)]
     runs: Vec<SarifRun>,
 }
 
@@ -141,6 +140,12 @@ mod tests {
         assert_eq!(parse_findings(raw, &files, 0).unwrap().len(), 1);
         assert_eq!(parse_findings(raw, &files, 1).unwrap().len(), 1);
         assert!(parse_findings("not-json", &files, 100).is_err());
-        assert!(parse_findings("{}", &files, 100).unwrap().is_empty());
+        assert!(parse_findings("{}", &files, 100).is_err());
+        assert!(parse_findings(r#"{"runs":null}"#, &files, 100).is_err());
+        assert!(
+            parse_findings(r#"{"runs":[]}"#, &files, 100)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

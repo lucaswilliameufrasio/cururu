@@ -26,6 +26,24 @@ pub struct SharedBaseConfig {
     pub path: String,
 }
 
+#[derive(Clone)]
+pub struct SharedConfigSnapshot {
+    pub source: SharedBaseConfig,
+    pub hash: String,
+    pub client: std::sync::Arc<dyn crate::scm::ScmProvider>,
+}
+
+impl std::fmt::Debug for SharedConfigSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SharedConfigSnapshot")
+            .field("source", &self.source)
+            .field("hash", &self.hash)
+            .field("client", &"[redacted]")
+            .finish()
+    }
+}
+
 use anyhow::{Context, bail};
 use schema::CururuToml;
 
@@ -51,6 +69,9 @@ impl std::fmt::Debug for EvaluatorConfig {
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    /// Trusted repository base revision and hash of the loaded configuration.
+    pub trusted_config_snapshot: Option<(String, Option<String>)>,
+    pub shared_config_snapshot: Option<SharedConfigSnapshot>,
     pub source_control: ScmConfig,
     pub llm: LlmConfig,
     pub review: ReviewConfig,
@@ -61,11 +82,27 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    pub fn authorize_evaluator_for_repository(
+        &mut self,
+        identity: &crate::repository::RepositoryIdentity,
+    ) -> anyhow::Result<()> {
+        self.evaluator.repository_allowed = if self.evaluator.mode.is_some() {
+            evaluator_repository_is_allowed(
+                Some(identity),
+                env::env_optional("CURURU_EVALUATOR_ALLOWED_REPOSITORIES").as_deref(),
+            )?
+        } else {
+            false
+        };
+        Ok(())
+    }
+
     pub fn from_local_env() -> anyhow::Result<Self> {
-        let provider = env::env_optional("CURURU_PROVIDER")
-            .as_deref()
-            .and_then(LlmProvider::from_name)
-            .unwrap_or(LlmProvider::OpenRouter);
+        let provider = match env::env_optional("CURURU_PROVIDER") {
+            Some(name) => LlmProvider::from_name(&name)
+                .context("unsupported CURURU_PROVIDER; refusing to select a different provider")?,
+            None => LlmProvider::OpenRouter,
+        };
         let base_url = env::env_optional("LLM_BASE_URL")
             .unwrap_or_else(|| provider.default_base_url().to_string());
         let model =
@@ -121,6 +158,8 @@ impl AppConfig {
             crate::repository::github_host_urls,
         );
         Ok(Self {
+            trusted_config_snapshot: None,
+            shared_config_snapshot: None,
             source_control: ScmConfig {
                 provider: scm_provider,
                 token: env::env_optional("CURURU_SCM_TOKEN")
@@ -260,8 +299,10 @@ impl AppConfig {
         if let Some(tp) = parsed.provider {
             if env::env_optional("CURURU_PROVIDER").is_none()
                 && let Some(name) = tp.name
-                && let Some(p) = LlmProvider::from_name(&name)
             {
+                let p = LlmProvider::from_name(&name).context(
+                    "unsupported provider name; refusing to select a different provider",
+                )?;
                 self.llm.provider = p;
                 if env::env_optional("LLM_BASE_URL").is_none() {
                     self.llm.base_url = p.default_base_url().to_string();

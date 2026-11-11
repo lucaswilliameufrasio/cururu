@@ -39,6 +39,30 @@ mod tests {
     }
 
     #[test]
+    fn missing_usage_and_overflow_never_produce_partial_totals() {
+        let missing = ChunkResult {
+            usage: None,
+            ..chunk(None)
+        };
+        assert!(merge_usage(&[chunk(None), missing]).is_none());
+        assert!(merge_usage(&[]).is_none());
+        let mut huge = chunk(None);
+        huge.usage.as_mut().unwrap().prompt_tokens = u32::MAX;
+        assert!(merge_usage(&[huge, chunk(None)]).is_none());
+    }
+
+    #[test]
+    fn invalid_or_overflowing_cost_is_not_reported() {
+        assert!(merge_usage(&[chunk(Some(-1.0))]).unwrap().cost.is_none());
+        assert!(
+            merge_usage(&[chunk(Some(f64::MAX)), chunk(Some(f64::MAX))])
+                .unwrap()
+                .cost
+                .is_none()
+        );
+    }
+
+    #[test]
     fn reports_provider_error_when_response_has_no_choices() {
         let response: ChatResponse = serde_json::from_str(
             r#"{"error":{"message":"No endpoints found for this model"},"request_id":"req-123"}"#,

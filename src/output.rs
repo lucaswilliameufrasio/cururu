@@ -6,6 +6,19 @@ use crate::{agent::ReviewFinding, config::Severity};
 
 const MARKER: &str = "<!-- cururu:summary -->";
 const FINDING_MARKER: &str = "<!-- cururu:finding -->";
+pub const LIMIT_MARKER: &str = "<!-- cururu:diff-limit:v1 -->";
+
+pub fn render_diff_limit_notice(language: &str, limit: usize, head: &str) -> String {
+    if language.to_ascii_lowercase().starts_with("pt") {
+        format!(
+            "{LIMIT_MARKER}\n## Cururu: revisão não realizada\n\nO diff excedeu o limite configurado `review.max_diff_bytes` ({limit} bytes), ou o limite de download derivado dele. A revisão do commit `{head}` não foi realizada; isto não é uma aprovação. Divida o PR ou avalie aumentar o limite. Aumentá-lo não garante uma revisão completa.\n"
+        )
+    } else {
+        format!(
+            "{LIMIT_MARKER}\n## Cururu: review not performed\n\nThe diff exceeded the configured `review.max_diff_bytes` limit ({limit} bytes), or its derived download limit. Commit `{head}` was not reviewed; this is not an approval. Split the PR or consider increasing the limit. Increasing it does not guarantee a complete review.\n"
+        )
+    }
+}
 const MAX_EVALUATION_ROWS_IN_COMMENT: usize = 20;
 
 pub const fn marker() -> &'static str {

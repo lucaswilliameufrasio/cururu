@@ -20,6 +20,158 @@ pull_request event
 
 ## Quick start
 
+### Agent review input (experimental)
+
+`cururu prepare-review --local` emits a bounded JSON snapshot of tracked staged
+and unstaged changes relative to HEAD. It excludes untracked files and lists
+paths ignored by Cururu. `cururu prepare-review --pr` uses the configured GitHub
+change request and checks that its head did not change during collection.
+Both commands only prepare input: they do not call an agent or publish. Their
+output contains source code; treat it as sensitive. Local review currently
+rejects shared configuration bases rather than silently ignoring them.
+
+`cururu mcp` offers the same read-only `prepare_review` tool to MCP hosts over
+stdio, plus `validate_review` to check finding shape and anchors against a
+fresh matching effective snapshot hash. `assemble_review` combines exactly one
+validated result for each chunk; incomplete, reordered or stale results fail.
+It strips agent-supplied analyzer provenance and follows the configured policy
+for executable suggestions.
+Validation does not establish correctness or approve
+the change. The tools do not publish, and an MCP host may send tool output to
+its configured model: only request a review when that disclosure is approved.
+See [MCP client setup](docs/agent-mcp-setup.md) for non-destructive configuration
+examples for OpenCode V2, Codex, Cursor, and Claude Code.
+The snapshot describes its scope, ignored paths, SHA-256 and Cururu's review
+instructions. Repository content is untrusted data, never an instruction.
+
+The former experimental `agent-review` OpenCode server command is retired and
+fails without contacting the server, even when `--confirm-send` is supplied.
+Use `api-review` with your own configured API credentials, or ask your agent to
+use Cururu's MCP tools with the agent's own authentication and permissions.
+
+The existing API review pipeline uses `CURURU_PROVIDER` (`openrouter`, `openai`,
+`groq`, `deepseek`, `zai`, or `anthropic`) and `LLM_API_KEY`; `LLM_MODEL` and `LLM_BASE_URL`
+can override the selected defaults. Treat the key as a secret and configure it
+through your environment or secret manager, not in repository files. An unknown
+provider is rejected instead of silently sending data to a different service.
+DeepSeek and Z.AI use their OpenAI-compatible APIs; provider compatibility has
+not yet been verified with live accounts. To review local tracked changes,
+inspect `cururu prepare-review --local`, then run `cururu api-review
+--confirm-send --expected-snapshot <snapshot_sha256>`. For a hosted PR, inspect
+`cururu prepare-review --pr` and use `cururu api-review --pr --confirm-send
+--expected-snapshot <snapshot_sha256>` instead. Hosted reviews also send the
+configured repository context, prior feedback and analyzer evidence as untrusted
+data; inspect them before consenting. This sends the diff to
+the configured API, returns an advisory JSON receipt, and never publishes. The
+hash option is optional but rejects changes made since the preview; results are
+also rejected if the snapshot changes during the review. Local untracked files,
+binary files and submodules are excluded or rejected as described by the scope.
+Anthropic uses its native Messages API with an Anthropic API key; this initial
+adapter has not been verified against a live account. `api-review` includes
+token usage when every chunk reports it; otherwise the total is omitted. For
+Anthropic, input totals include cache writes and reads, and cost is unavailable.
+An
+agent's subscription or login is used by that agent through MCP, not by this API
+pipeline.
+The initial adapter sends bounded diff chunks, Cururu's canonical prompt and
+configured review preferences (language, tone, audience, suggestion detail and
+focus). For hosted PRs it also collects explicitly configured repository context
+from the base revision and sends it as untrusted data; the snapshot includes the
+context and its truncation/skipped diagnostics. Inspect `prepare-review --pr`
+before confirming disclosure. Local review does not collect repository context.
+When automatic context is enabled, the adapter also includes selected base files
+within its configured limits; review these additional files before consenting.
+Paths absent from the base tree are reported as skipped (including new or renamed
+paths); a truncated tree or failure to read a file known to exist stops the review.
+The adapter also includes prior review feedback as untrusted evidence, with a
+bounded size and snapshot binding. Inspect `prepare-review --pr` before sending:
+feedback can contain names and comments. When feedback exceeds limits on threads,
+replies, individual comment length, location length, or total bytes, collection
+fails instead of silently dropping or shortening it. When analysis and check runs are enabled,
+matching check-run annotations are bounded, snapshot-bound and sent as untrusted
+evidence. `prepare-review` accepts explicitly chosen local `--sarif FILE
+--analysis-manifest FILE`; the manifest must identify the reviewed HEAD, and
+paths inside it are never followed. Supply the same two options to `api-review`;
+the evidence is sent only after `--confirm-send` and both files are re-read before
+the result is accepted. A matching HEAD does not prove a SARIF file analyzed
+uncommitted changes. To publish a receipt with local evidence, pass the same
+explicit `--sarif` and `--analysis-manifest` options to `publish-agent-review`;
+both files are revalidated before the preview and again after confirmation.
+Selected analyzer evidence is promoted into findings subject to the configured
+review policy. API assembly applies the
+shared confidence, severity, maximum-findings and synthesis policies, but differs
+from the hosted pipeline: both validate findings against their chunks and strip
+model-supplied analyzer provenance and honor the configured suggested-changes
+policy; API assembly does not run the optional evaluator. These flows are not
+equivalent. Binary and submodule changes are rejected.
+Configured repository context, prior feedback, and check-run evidence are
+collected before an API review and included in its snapshot; explicit local
+SARIF is included only when selected. The hosted pipeline also loads configured
+SARIF paths and manifest paths, whereas `api-review` does not follow those paths
+implicitly. OpenAI-compatible review requests currently retry failed transport,
+HTTP, and response-parsing calls up to three times; a provider may have processed
+an earlier attempt, so retries can incur additional usage. Anthropic's native
+review adapter does not currently retry. A failed chunk returns no review receipt.
+If configured analyzer evidence exceeds the finding limit, the hosted review
+fails explicitly rather than silently discarding excess SARIF or annotations;
+the API review also rejects excess explicitly selected evidence.
+The hosted pipeline combines analyzer findings after model inference and does
+not send those findings to the model. By contrast, `api-review` sends its
+selected analyzer evidence as untrusted input and also includes it in the
+candidate findings. These are distinct disclosure behaviors.
+The hosted review rechecks the trusted base revision and hashes of both the
+repository configuration and any shared base configuration before and after
+model inference. A changed or unreadable shared configuration stops the review;
+the shared configuration client uses the same access identity as the initial load.
+
+### Review flow differences
+
+| Boundary | `api-review` | MCP | Hosted pipeline |
+| --- | --- | --- | --- |
+| Inference and disclosure | Configured API; explicit `--confirm-send` | Client chooses its model and handles disclosure | Configured automation invokes its API |
+| Analyzer evidence | Selected evidence is sent and promoted | Exposes prepared check-run evidence to the client and promotes it | Configured evidence is collected and promoted; not sent to the model |
+| Executable suggestions | Governed by review policy | Governed by review policy | Governed by review policy |
+| Evaluator | Not invoked | Not invoked | Optional configured evaluator; filtering is not part of the approved rollout |
+| Publication | Separate interactive confirmation for PR receipts | No publication tool; separate CLI confirmation | Existing automated publication path |
+
+The API/MCP disclosure and separate-publication boundaries are intentional. The
+other differences describe current behavior, not a decision that exact parity is
+unnecessary. Evaluator filtering remains disabled pending approved data,
+metrics, thresholds and rollout. Setting `CURURU_EVALUATOR_MODE=filter` causes the
+hosted review to fail before collecting the review input or calling a model;
+observe mode is unaffected. Synthetic tests do not establish model quality
+or prove that an agent reviewed every file.
+
+Local journey verification is covered by `tests/agent_review.rs` (CLI consent,
+PR snapshot revalidation and interactive publication), `tests/mcp_stdio.rs`
+(MCP protocol and chunk assembly), and the signed-webhook tests using a real
+local SQLite queue and fake GitHub and model servers. The test-only webhook
+evaluator scenario also exercises the HTTP evaluator adapter: a configuration
+change during its response blocks all publication; an unchanged configuration
+completes. The loopback evaluator endpoint exists only in test builds. These
+checks do not verify live provider compatibility, real user experience, or the
+GitHub API's non-atomic interval between the final check and publication.
+The [local acceptance map](docs/local-review-acceptance.md) traces the agreed
+requirements to entry points, tests, differences and verification limits.
+
+This is an experimental protocol surface. For a PR receipt, `cururu
+publish-agent-review receipt.json` fetches the current PR, checks the receipt's
+target-bound snapshot and finding anchors, displays the exact comment and
+target, and requires typing `PUBLISH` on an interactive terminal. It reloads
+the trusted repository configuration and rechecks the snapshot after confirmation
+before creating a new advisory conversation comment;
+it never approves the PR or replaces earlier reviews. A receipt is editable and
+its permitted single-line replacement is shown as escaped advisory text in the
+preview and comment, not as an automatically applicable GitHub suggestion.
+The policy is checked again; disabled or unsafe replacements are omitted. A
+receipt is not cryptographic proof that an agent performed the work: read the preview.
+The GitHub comment API cannot atomically condition posting on a PR revision, so
+a change between the final check and the POST can still make the comment stale.
+Submission is never automatically retried; on an uncertain result, check the PR
+before retrying. The
+MCP process uses its working directory and explicit environment, and does not
+automatically load `.env`.
+
 Add `.github/workflows/cururu-review.yml` to any repository:
 
 ```yaml

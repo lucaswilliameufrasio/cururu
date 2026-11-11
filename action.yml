@@ -44,6 +44,8 @@ inputs:
     required: false
 
 outputs:
+  review_status:
+    description: "Review execution status (completed or skipped_diff_limit); skipped is not an approval"
   quality_gate:
     description: "Quality gate status"
   quality_gate_passed:

@@ -78,7 +78,13 @@ the monolithic representation with HTTP 406, it falls back to paginated changed
 file patches. If the host omits a patch for any changed file or the configured
 file limit is exceeded, Cururu fails rather than silently claiming a complete
 review. Review download, per-file chunk, and total diff limits are checked
-before invoking the model; an over-limit review fails with a generic message.
+before invoking the model. When the download or filtered total exceeds the
+configured total limit, publication-capable workflows upsert a separate,
+localized incomplete-review notice without replacing prior review comments.
+The notice is not an approval; `review_status=skipped_diff_limit` and
+`quality_gate_passed=false` distinguish it from a completed review. A stale
+head or failed publication remains an error. Per-file chunk limit errors and
+other failures remain errors. Dry-run never publishes the notice.
 Provider error details are bounded and scrubbed of credentials, repository
 identifiers, host URLs and change-request numbers before being surfaced.
 

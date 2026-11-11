@@ -9,6 +9,11 @@ pub use cururu_engine::{ChunkResult, InvalidReviewOutput, ReviewAgent};
 use cururu_engine::{OpenAiCompatibleAgent, OpenAiCompatibleSettings};
 
 pub fn build_agent(config: &LlmConfig, prompt: String) -> anyhow::Result<Box<dyn ReviewAgent>> {
+    if matches!(config.provider, crate::config::LlmProvider::Anthropic) {
+        return Ok(Box::new(crate::anthropic::AnthropicAgent::new(
+            config, prompt, None,
+        )?));
+    }
     let settings = OpenAiCompatibleSettings {
         base_url: config.base_url.clone(),
         api_key: config.api_key.clone(),
@@ -17,6 +22,36 @@ pub fn build_agent(config: &LlmConfig, prompt: String) -> anyhow::Result<Box<dyn
         max_output_tokens: config.max_output_tokens,
     };
     Ok(Box::new(OpenAiCompatibleAgent::new(settings, prompt)?))
+}
+
+/// Attach repository content and feedback only as untrusted user data.
+pub fn build_review_agent(
+    config: &LlmConfig,
+    prompt: String,
+    evidence: serde_json::Value,
+) -> anyhow::Result<Box<dyn ReviewAgent>> {
+    let text = serde_json::to_string(&evidence)?;
+    anyhow::ensure!(
+        text.len() <= 768 * 1024,
+        "review evidence exceeds byte limit"
+    );
+    if matches!(config.provider, crate::config::LlmProvider::Anthropic) {
+        return Ok(Box::new(crate::anthropic::AnthropicAgent::new(
+            config,
+            prompt,
+            Some(evidence),
+        )?));
+    }
+    let settings = OpenAiCompatibleSettings {
+        base_url: config.base_url.clone(),
+        api_key: config.api_key.clone(),
+        model: config.model.clone(),
+        temperature: config.temperature,
+        max_output_tokens: config.max_output_tokens,
+    };
+    Ok(Box::new(
+        OpenAiCompatibleAgent::new(settings, prompt)?.with_host_review_evidence(&text)?,
+    ))
 }
 
 /// Answer an authorized conversation request via the configured LLM adapter.
@@ -36,6 +71,11 @@ pub async fn recommend_after_truncation(
     config: &LlmConfig,
     finish_reason: &str,
 ) -> anyhow::Result<(String, Option<ProviderUsage>)> {
+    if matches!(config.provider, crate::config::LlmProvider::Anthropic) {
+        return crate::anthropic::AnthropicAgent::new(config, String::new(), None)?
+            .recommend_after_truncation(finish_reason)
+            .await;
+    }
     let settings = OpenAiCompatibleSettings {
         base_url: config.base_url.clone(),
         api_key: config.api_key.clone(),
@@ -250,6 +290,41 @@ mod tests {
         let message = format!("{error:#}");
         assert!(message.contains("No endpoints found for this model"));
         assert!(!message.contains("missing field `choices`"));
+    }
+
+    #[tokio::test]
+    async fn configured_compatible_providers_send_requested_model_to_selected_endpoint() {
+        use crate::config::{LlmConfig, LlmProvider};
+        for provider in [LlmProvider::DeepSeek, LlmProvider::Zai] {
+            let server = MockServer::start().await;
+            let result = serde_json::json!({"model":"fixture", "files_reviewed":1, "summary":"ok", "findings":[]}).to_string();
+            Mock::given(method("POST"))
+                .and(path("/chat/completions"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "choices":[{"message":{"content":result},"finish_reason":"stop"}]
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let config = LlmConfig {
+                provider,
+                base_url: server.uri(),
+                api_key: "fixture-key".into(),
+                model: provider.default_model().into(),
+                temperature: 0.1,
+                max_output_tokens: 100,
+            };
+            let agent = build_agent(&config, "fixture instructions".into()).unwrap();
+            let chunk = DiffChunk {
+                index: 0,
+                text: "diff --git a/a b/a".into(),
+                files: vec!["a".into()],
+            };
+            assert!(agent.review_chunk(&chunk).await.is_ok());
+            let requests = server.received_requests().await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+            assert_eq!(body["model"], provider.default_model());
+        }
     }
 
     fn tool_finding(path: &str, line: u32, rule: &str, severity: &str) -> ReviewFinding {
