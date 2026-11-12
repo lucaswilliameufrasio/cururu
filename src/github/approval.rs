@@ -172,7 +172,7 @@ impl GitHubClient {
         Ok(crate::review_usage::UsageHistory { records, complete })
     }
 
-    fn api(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+    pub(super) fn api(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         self.client
             .request(
                 method,

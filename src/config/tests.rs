@@ -41,6 +41,7 @@ fn base_config() -> AppConfig {
         context: ContextConfig::default(),
         summary: SummaryConfig::default(),
         analysis: AnalysisConfig::default(),
+        auto_approval: crate::config::AutoApprovalConfig::default(),
         evaluator: EvaluatorConfig {
             mode: None,
             api_key: String::new(),
@@ -743,4 +744,33 @@ fn provider_name_changes_default_url() {
             });
         });
     });
+}
+
+#[test]
+fn auto_approval_is_opt_in_and_validated() {
+    let mut cfg = base_config();
+    assert!(!cfg.auto_approval.enabled);
+    cfg.merge_toml_str(
+        "version = 1\n[auto_approval]\nenabled = true\nallowed_paths = [\"docs/**\"]\nblocked_paths = [\"**/payments/**\"]\nmax_changed_files = 5\nmax_changed_lines = 50\nblock_on = \"medium\"\n",
+    )
+    .unwrap();
+    assert!(cfg.auto_approval.enabled);
+    assert_eq!(cfg.auto_approval.allowed_paths, ["docs/**"]);
+    assert_eq!(cfg.auto_approval.blocked_paths, ["**/payments/**"]);
+    assert_eq!(
+        (
+            cfg.auto_approval.max_changed_files,
+            cfg.auto_approval.max_changed_lines
+        ),
+        (5, 50)
+    );
+    assert_eq!(cfg.auto_approval.block_on, crate::config::Severity::Medium);
+    for invalid in [
+        "version = 1\n[auto_approval]\nblocked_path = [\"x\"]\n",
+        "version = 1\n[auto_approval]\nallowed_paths = [\"[\"]\n",
+        "version = 1\n[auto_approval]\nblock_on = \"severe\"\n",
+        "version = 1\n[auto_approval]\nmax_changed_files = 0\n",
+    ] {
+        assert!(base_config().merge_toml_str(invalid).is_err(), "{invalid}");
+    }
 }

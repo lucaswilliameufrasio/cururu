@@ -371,16 +371,7 @@ async fn run_pull_request_review_with_evaluator(
         return Ok(());
     }
     if request_reviewer {
-        let login = format!("{app_slug}[bot]");
-        match source_control.request_cururu_as_reviewer(&login).await {
-            Ok(true) => info!("SCM provider accepted Cururu as a requested reviewer"),
-            Ok(false) => {
-                info!("SCM provider does not accept Cururu as a requested reviewer");
-            }
-            Err(_) => {
-                warn!("could not request Cururu as a reviewer; continuing");
-            }
-        }
+        request_cururu_as_reviewer(source_control, app_slug).await;
     }
 
     let mut result = match review::run_review_with_evaluator(config, source_control, evaluator)
@@ -401,10 +392,14 @@ async fn run_pull_request_review_with_evaluator(
         &source_control.fetch_head_sha().await?,
     )?;
     result.attach_pr_usage(source_control).await;
+    let route = crate::auto_approval::decide(config, source_control, &mut result).await?;
     let inline = match config.review.comment_mode {
         CommentMode::Inline => build_inline_drafts(&result),
         CommentMode::Summary => Vec::new(),
     };
+    if route == crate::auto_approval::Route::Approved {
+        return publish_auto_approved(config, source_control, &result, inline).await;
+    }
     let candidate = HostedCandidate::from_review(config, &result, inline, true, true);
     let digest = candidate.digest();
     if !candidate.approvable() {
@@ -453,6 +448,31 @@ async fn run_pull_request_review_with_evaluator(
         gate_passed = candidate.quality_gate_passed,
         "Cururu App candidate awaits approval"
     );
+    Ok(())
+}
+
+async fn request_cururu_as_reviewer(source_control: &dyn ScmProvider, app_slug: &str) {
+    let login = format!("{app_slug}[bot]");
+    match source_control.request_cururu_as_reviewer(&login).await {
+        Ok(true) => info!("SCM provider accepted Cururu as a requested reviewer"),
+        Ok(false) => info!("SCM provider does not accept Cururu as a requested reviewer"),
+        Err(_) => warn!("could not request Cururu as a reviewer; continuing"),
+    }
+}
+
+/// The repository's opt-in policy replaces the per-candidate approval; the
+/// APPROVE review already submitted replaces the advisory formal review.
+async fn publish_auto_approved(
+    config: &AppConfig,
+    source_control: &dyn ScmProvider,
+    result: &review::ReviewOutput,
+    inline: Vec<crate::scm::ReviewCommentDraft>,
+) -> anyhow::Result<()> {
+    let candidate = HostedCandidate::from_review(config, result, inline, true, false);
+    hosted_publication::publish_candidate(&candidate, source_control, None)
+        .await
+        .context("the PR was auto-approved but publishing its review did not complete")?;
+    info!("Cururu App auto-approved the PR and published its review");
     Ok(())
 }
 
