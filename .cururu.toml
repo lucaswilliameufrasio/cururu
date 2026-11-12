@@ -9,7 +9,7 @@ model = "openai/gpt-6-luna"
 # Low temperature keeps findings deterministic and reduces review drift.
 temperature = 0.1
 # Maximum completion tokens per LLM call; higher values can increase cost.
-max_output_tokens = 4000
+max_output_tokens = 8000
 
 [review]
 # Hard upper bound for the diff reviewed in one PR.

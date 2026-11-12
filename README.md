@@ -234,7 +234,7 @@ version = 1
 name = "openrouter"
 model = "openai/gpt-6-luna"
 temperature = 0.1
-max_output_tokens = 4000
+max_output_tokens = 8000
 
 [review]
 max_diff_bytes = 180000
@@ -295,8 +295,11 @@ values.
 `temperature` controls how deterministic the review is. Keep it low (`0.0` to
 `0.2`) for consistent, factual code reviews; increase it only when a project
 prefers more varied suggestions. `max_output_tokens` limits the model response
-per call. Use `2000` to `4000` for normal PRs, and increase it for large PRs or
-when findings are being truncated. Larger values can increase cost.
+per call; the default is `8000`. A review that ends with finish reason `length`
+or an unparseable response usually needs a higher value, typically for large PRs
+or many findings. Lower it (for example `4000`) to cap cost on repositories with
+small PRs. You only pay for tokens the model actually generates, so a higher
+limit raises the worst case, not every review.
 
 ### Context files
 
@@ -542,7 +545,7 @@ through repository configuration.
 | `LLM_BASE_URL` | no | provider default | Override API base URL |
 | `LLM_MODEL` | no | provider default | Override model name |
 | `LLM_TEMPERATURE` | no | `0.1` | Override response randomness |
-| `LLM_MAX_OUTPUT_TOKENS` | no | `4000` | Override maximum response tokens |
+| `LLM_MAX_OUTPUT_TOKENS` | no | `8000` | Override maximum response tokens |
 | `CURURU_PROVIDER` | no | `openrouter` | Override provider name |
 | `CURURU_IGNORE` | no | lockfiles, dist, build | Comma-separated globs to skip in diff |
 | `CURURU_MAX_DIFF_BYTES` | no | `180000` | Hard cap for reviewed diff size |
