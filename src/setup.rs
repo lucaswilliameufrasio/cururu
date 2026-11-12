@@ -3,6 +3,7 @@
 
 use crate::config::AppConfig;
 use anyhow::Context;
+use std::fmt::Write as _;
 use std::io::{IsTerminal, Write as _};
 use std::path::Path;
 
@@ -42,6 +43,137 @@ Requirements for Cururu to approve PRs:
     explaining why, and the workflow output auto_approval is needs_human.
   - Workflow outputs for your own notifications: auto_approval (approved, needs_human,
     disabled, not_evaluated), auto_approval_reasons (JSON) and pr_url.";
+
+/// Estimated diff bytes per changed line and per file header; GitHub reports
+/// line counts, not diff sizes, so diff sizes are estimates.
+const ESTIMATED_BYTES_PER_LINE: u64 = 60;
+const ESTIMATED_BYTES_PER_FILE: u64 = 200;
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct LimitSuggestion {
+    pub sampled: usize,
+    pub runs_with_usage: usize,
+    pub largest_completion: Option<u64>,
+    pub output_tokens: Option<u32>,
+    pub largest_estimated_bytes: u64,
+    pub over_diff_limit: usize,
+    pub max_diff_bytes: Option<usize>,
+}
+
+const fn round_up(value: u64, step: u64) -> u64 {
+    value.div_ceil(step) * step
+}
+
+/// Suggest limits from sampled PRs. Output tokens use the largest recorded
+/// completion plus 50% headroom; the diff limit covers the 90th percentile
+/// estimated PR size plus 25%. Only increases are suggested.
+pub fn suggest_limits(
+    samples: &[crate::github::PullSample],
+    config: &AppConfig,
+) -> LimitSuggestion {
+    let largest_completion = samples
+        .iter()
+        .filter_map(|sample| sample.completion_tokens)
+        .max();
+    let output_tokens = largest_completion
+        .map(|tokens| {
+            round_up(tokens.saturating_mul(3) / 2, 1000).clamp(
+                4000,
+                u64::from(crate::diagnostics::MAX_SUGGESTED_OUTPUT_TOKENS),
+            )
+        })
+        .and_then(|tokens| u32::try_from(tokens).ok())
+        // Only raise it: truncated reviews record no usage, so history
+        // underestimates, and a lower limit saves little since only
+        // generated tokens are billed.
+        .filter(|tokens| *tokens > config.llm.max_output_tokens);
+    let mut sizes: Vec<u64> = samples
+        .iter()
+        .map(|sample| {
+            sample.changed_lines * ESTIMATED_BYTES_PER_LINE
+                + sample.changed_files * ESTIMATED_BYTES_PER_FILE
+        })
+        .collect();
+    sizes.sort_unstable();
+    let current = config.review.max_diff_bytes as u64;
+    let over_diff_limit = sizes.iter().filter(|size| **size > current).count();
+    let p90 = sizes
+        .get((sizes.len().saturating_mul(9) / 10).min(sizes.len().saturating_sub(1)))
+        .copied()
+        .unwrap_or_default();
+    let max_diff_bytes = (p90 > current)
+        .then(|| round_up(p90.saturating_mul(5) / 4, 10_000))
+        .and_then(|bytes| usize::try_from(bytes).ok());
+    LimitSuggestion {
+        sampled: samples.len(),
+        runs_with_usage: samples
+            .iter()
+            .filter(|sample| sample.completion_tokens.is_some())
+            .count(),
+        largest_completion,
+        output_tokens,
+        largest_estimated_bytes: sizes.last().copied().unwrap_or_default(),
+        over_diff_limit,
+        max_diff_bytes,
+    }
+}
+
+/// Sample recent PRs and print suggested limits with a TOML snippet.
+pub async fn limits(path: &Path, sample: usize) -> anyhow::Result<()> {
+    let mut config = AppConfig::from_local_env()?;
+    if let Ok(raw) = std::fs::read_to_string(path) {
+        config.merge_toml_str(&raw)?;
+    }
+    anyhow::ensure!(
+        !config.source_control.repository.is_empty() && !config.source_control.token.is_empty(),
+        "set GITHUB_TOKEN (or CURURU_SCM_TOKEN) and CURURU_REPOSITORY, or run inside the repository checkout"
+    );
+    let github = crate::github::GitHubClient::from_scm_config(&config.source_control)?;
+    let samples = github.sample_pull_requests(sample).await?;
+    let suggestion = suggest_limits(&samples, &config);
+    println!(
+        "Sampled {} recent PRs in {}.",
+        suggestion.sampled, config.source_control.repository
+    );
+    println!(
+        "  Output: {} token(s) per call now; {}.",
+        config.llm.max_output_tokens,
+        suggestion.largest_completion.map_or_else(
+            || "no Cururu review usage recorded on these PRs yet".to_string(),
+            |tokens| format!(
+                "largest recorded completion {tokens} token(s) across {} PR(s)",
+                suggestion.runs_with_usage
+            )
+        )
+    );
+    println!(
+        "  Diff: {} bytes now; largest PR is about {} bytes (estimated from line counts); {} of {} sampled PRs would exceed the limit.",
+        config.review.max_diff_bytes,
+        suggestion.largest_estimated_bytes,
+        suggestion.over_diff_limit,
+        suggestion.sampled
+    );
+    let mut snippet = String::new();
+    if let Some(tokens) = suggestion.output_tokens {
+        let _ = writeln!(snippet, "[provider]\nmax_output_tokens = {tokens}");
+    }
+    if let Some(bytes) = suggestion.max_diff_bytes {
+        let _ = writeln!(snippet, "[review]\nmax_diff_bytes = {bytes}");
+    }
+    if snippet.is_empty() {
+        println!(
+            "\nThe current limits fit the sampled PRs; no increase suggested. Reviews that stopped at the output limit record no usage, so also check for \"Review could not complete\" checks."
+        );
+    } else {
+        println!(
+            "\nSuggested values for .cururu.toml (or the organization's shared configuration):\n\n{snippet}"
+        );
+        println!(
+            "Diff sizes are estimates. A larger diff limit reviews bigger PRs at higher cost; splitting large PRs is often better. Only generated tokens are billed, so a higher output limit raises the worst case only."
+        );
+    }
+    Ok(())
+}
 
 fn has_section(raw: &str, section: &str) -> anyhow::Result<bool> {
     let value: toml::Value = toml::from_str(raw).context("invalid .cururu.toml")?;
@@ -255,7 +387,7 @@ pub fn status(path: &Path) -> anyhow::Result<()> {
         }
     );
     println!(
-        "  Limits: diff {} bytes, chunk {} bytes, model output {} tokens per call (raise provider.max_output_tokens if reviews end with finish reason `length`)",
+        "  Limits: diff {} bytes, chunk {} bytes, model output {} tokens per call (suggestions: `cururu setup limits`)",
         config.review.max_diff_bytes, config.review.chunk_bytes, config.llm.max_output_tokens
     );
     println!(
@@ -284,6 +416,42 @@ mod tests {
         );
         assert!(!has_section(base, "auto_approval").unwrap());
         assert!(has_section(&format!("{base}{AUTO_APPROVAL_TEMPLATE}"), "auto_approval").unwrap());
+    }
+
+    #[test]
+    fn limits_use_recorded_usage_and_estimated_sizes() {
+        use crate::github::PullSample;
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.llm.max_output_tokens = 4000;
+        config.review.max_diff_bytes = 100_000;
+        let sample = |lines, tokens| PullSample {
+            number: 1,
+            changed_lines: lines,
+            changed_files: 10,
+            completion_tokens: tokens,
+        };
+        let samples: Vec<_> = (0..9)
+            .map(|_| sample(200, None))
+            .chain([sample(5000, Some(5200))])
+            .collect();
+        let suggestion = suggest_limits(&samples, &config);
+        assert_eq!(suggestion.largest_completion, Some(5200));
+        assert_eq!(suggestion.output_tokens, Some(8000));
+        assert_eq!(suggestion.over_diff_limit, 1);
+        assert_eq!(suggestion.max_diff_bytes, Some(380_000));
+
+        // Nothing recorded and small PRs: no change.
+        let quiet = suggest_limits(&[sample(100, None)], &config);
+        assert_eq!((quiet.output_tokens, quiet.max_diff_bytes), (None, None));
+        // Low recorded usage never lowers the limit.
+        let low = suggest_limits(&[sample(100, Some(900))], &config);
+        assert_eq!(low.output_tokens, None);
+        // Suggestions are capped.
+        let huge = suggest_limits(&[sample(10, Some(100_000))], &config);
+        assert_eq!(
+            huge.output_tokens,
+            Some(crate::diagnostics::MAX_SUGGESTED_OUTPUT_TOKENS)
+        );
     }
 
     #[cfg(unix)]

@@ -315,6 +315,12 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum SetupTarget {
+    /// Suggest diff and model output limits from recent PRs (preview only).
+    Limits {
+        /// Number of recently updated PRs to sample.
+        #[arg(long, default_value_t = 20)]
+        sample: usize,
+    },
     /// Add an opt-in `[auto_approval]` policy to `.cururu.toml` and check requirements.
     AutoApproval {
         /// Append the section after an interactive confirmation (default: preview only).
@@ -356,6 +362,9 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     match &cli.command {
+        Command::Setup {
+            target: SetupTarget::Limits { sample },
+        } => return setup::limits(std::path::Path::new(".cururu.toml"), *sample).await,
         Command::Setup {
             target: SetupTarget::AutoApproval { write },
         } => return setup::auto_approval(std::path::Path::new(".cururu.toml"), *write, true).await,
