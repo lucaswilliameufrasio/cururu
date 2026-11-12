@@ -469,7 +469,7 @@ async fn publish_auto_approved(
     inline: Vec<crate::scm::ReviewCommentDraft>,
 ) -> anyhow::Result<()> {
     let candidate = HostedCandidate::from_review(config, result, inline, true, false);
-    crate::auto_approval::publish_approved(&candidate, source_control).await?;
+    crate::auto_approval::publish_approved(&candidate, source_control, result).await?;
     info!("Cururu App auto-approved the PR and published its review");
     Ok(())
 }
@@ -1252,7 +1252,7 @@ mod tests {
         for (file, expected) in [
             (
                 "docs/guide.md",
-                vec!["approve", "Cururu triage:success", "inline", "summary"],
+                vec!["approve", "inline", "summary", "Cururu triage:success"],
             ),
             (
                 "src/payments/fees.rs",
@@ -1324,7 +1324,7 @@ mod tests {
         );
         assert_eq!(
             scm.calls(),
-            vec!["approve", "Cururu triage:success", "revoke"]
+            vec!["approve", "revoke", "Cururu triage:neutral"]
         );
 
         // An unknown approval outcome revokes any auto-approval.
@@ -1372,7 +1372,12 @@ mod tests {
             error.to_string().contains("revoked its approval"),
             "{error}"
         );
-        assert_eq!(scm.calls().last().map(String::as_str), Some("revoke"));
+        let calls = scm.calls();
+        assert_eq!(
+            &calls[calls.len() - 2..],
+            ["revoke", "Cururu triage:neutral"]
+        );
+        assert!(!calls.iter().any(|call| call == "Cururu triage:success"));
     }
 
     struct BlockedScm;

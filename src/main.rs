@@ -863,7 +863,8 @@ async fn main() -> anyhow::Result<()> {
                 // Publish right after approving: any failure from here on
                 // revokes the approval. The opt-in policy replaces the
                 // per-candidate publication approval.
-                auto_approval::publish_approved(&candidate, source_control.as_ref()).await?;
+                auto_approval::publish_approved(&candidate, source_control.as_ref(), &result)
+                    .await?;
                 write_auto_approval_outputs(&config, &result)?;
                 append_github_output("review_status=completed\n")?;
                 println!(

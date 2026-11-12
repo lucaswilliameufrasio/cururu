@@ -8,6 +8,7 @@
 
 use crate::config::{AppConfig, AutoApprovalConfig, Severity};
 use crate::review::ReviewOutput;
+use anyhow::Context as _;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -58,6 +59,9 @@ pub enum Veto {
     },
     StaleApprovalNotDismissed {
         detail: String,
+    },
+    QualityGateFailed {
+        findings: usize,
     },
 }
 
@@ -244,11 +248,17 @@ pub fn evaluate(
 /// Attach the decision to a review when the policy is enabled.
 pub fn attach(config: &AppConfig, output: &mut ReviewOutput) -> anyhow::Result<()> {
     if config.auto_approval.enabled {
-        output.auto_approval = Some(evaluate(
-            &config.auto_approval,
-            config.analysis.enabled,
-            output,
-        )?);
+        let mut decision = evaluate(&config.auto_approval, config.analysis.enabled, output)?;
+        // Never approve a review that fails the configured quality gate,
+        // whatever `block_on` says.
+        let report = crate::quality::evaluate(&output.review, config.review.policy.fail_on);
+        if !report.passed {
+            decision.approved = false;
+            decision.vetoes.push(Veto::QualityGateFailed {
+                findings: report.findings_count,
+            });
+        }
+        output.auto_approval = Some(decision);
     }
     Ok(())
 }
@@ -351,7 +361,9 @@ pub fn describe(veto: &Veto, language: &str) -> String {
             line,
             title,
         } => {
-            let title = title.replace('\n', " ");
+            // Model-written text: render it literally so Markdown, HTML or
+            // mentions cannot change the message.
+            let title = code(&title.replace('\n', " "));
             if pt {
                 format!(
                     "achado {} em {}: {title}",
@@ -373,7 +385,19 @@ pub fn describe(veto: &Veto, language: &str) -> String {
                 format!("analyzer evidence is {}", code(status))
             }
         }
+        Veto::QualityGateFailed { findings } => {
+            if pt {
+                format!(
+                    "o quality gate configurado (`policy.fail_on`) reprovou o review com {findings} achado(s)"
+                )
+            } else {
+                format!(
+                    "the configured quality gate (`policy.fail_on`) failed with {findings} finding(s)"
+                )
+            }
+        }
         Veto::StaleApprovalNotDismissed { detail } => {
+            let detail = code(detail);
             if pt {
                 format!(
                     "não foi possível dispensar uma aprovação anterior do Cururu ({detail}). Ela pode continuar valendo para a proteção da branch: dispense-a manualmente antes do merge"
@@ -385,6 +409,7 @@ pub fn describe(veto: &Veto, language: &str) -> String {
             }
         }
         Veto::ApprovalNotPermitted { detail } => {
+            let detail = code(detail);
             if pt {
                 format!(
                     "o GitHub recusou a aprovação ({detail}). Em GitHub Actions, habilite *Settings → Actions → General → Allow GitHub Actions to create and approve pull requests*, ou use o GitHub App do Cururu com permissão de escrita em Pull requests"
@@ -564,10 +589,9 @@ pub async fn decide(
             }
         };
         match outcome {
-            crate::scm::ApprovalOutcome::Approved => {
-                report_check(source_control, decision, &language).await;
-                return Ok(Route::Approved);
-            }
+            // The success check is reported by `publish_approved`, once the
+            // review is actually published.
+            crate::scm::ApprovalOutcome::Approved => return Ok(Route::Approved),
             crate::scm::ApprovalOutcome::NotPermitted(detail) => decision.refuse(&detail),
         }
     }
@@ -581,12 +605,18 @@ pub async fn decide(
     Ok(Route::NeedsHuman)
 }
 
-/// Publish an auto-approved review. If publication fails, the approval is
-/// revoked so a PR is never left approved without its published review.
+/// Publish an auto-approved review, then report the successful triage. If
+/// anything fails, the approval is revoked so a PR is never left approved
+/// without its published review, and the triage check says so.
 pub async fn publish_approved(
     candidate: &crate::hosted_publication::HostedCandidate,
     source_control: &dyn crate::scm::ScmProvider,
+    output: &ReviewOutput,
 ) -> anyhow::Result<()> {
+    let decision = output
+        .auto_approval
+        .as_ref()
+        .context("auto-approval decision is missing")?;
     let published = async {
         crate::review::ensure_review_head_unchanged(
             &candidate.head_sha,
@@ -595,9 +625,14 @@ pub async fn publish_approved(
         crate::hosted_publication::publish_candidate(candidate, source_control, None).await
     };
     let Err(error) = published.await else {
+        report_check(source_control, decision, &output.language).await;
         return Ok(());
     };
-    match source_control.revoke_auto_approvals().await {
+    let revoked = source_control.revoke_auto_approvals().await;
+    let mut failed = decision.clone();
+    failed.refuse("the review could not be published; the approval was revoked");
+    report_check(source_control, &failed, &output.language).await;
+    match revoked {
         Ok(_) => Err(error.context(
             "publishing the auto-approved review failed; Cururu revoked its approval and a human review is required",
         )),
@@ -805,6 +840,49 @@ mod tests {
         out.review.findings = vec![finding("medium")];
         let decision = evaluate(&policy(), true, &out).unwrap();
         assert_eq!(decision.vetoes.len(), 1, "{decision:?}");
+    }
+
+    #[test]
+    fn model_text_is_rendered_literally() {
+        let mut hostile = finding("high");
+        hostile.title = "<img src=x> [click](https://evil) @everyone `x`".into();
+        let decision = evaluate(
+            &policy(),
+            false,
+            &output(vec![file("docs/a.md", "docs/a.md", 1)], vec![hostile]),
+        )
+        .unwrap();
+        let text = render_section(&decision, "en");
+        assert!(
+            text.contains("`<img src=x> [click](https://evil) @everyone 'x'`"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_failing_quality_gate_blocks_auto_approval() {
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.auto_approval = policy();
+        config.auto_approval.block_on = Severity::Critical;
+        config.review.policy.fail_on = crate::config::FailOn::Low;
+        let mut out = output(
+            vec![file("docs/a.md", "docs/a.md", 1)],
+            vec![finding("low")],
+        );
+        attach(&config, &mut out).unwrap();
+        let decision = out.auto_approval.unwrap();
+        assert!(!decision.approved);
+        assert_eq!(
+            decision.vetoes,
+            vec![Veto::QualityGateFailed { findings: 1 }]
+        );
+        config.review.policy.fail_on = crate::config::FailOn::Off;
+        let mut out = output(
+            vec![file("docs/a.md", "docs/a.md", 1)],
+            vec![finding("low")],
+        );
+        attach(&config, &mut out).unwrap();
+        assert!(out.auto_approval.unwrap().approved);
     }
 
     #[test]
