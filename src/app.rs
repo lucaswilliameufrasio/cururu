@@ -1123,12 +1123,20 @@ mod tests {
         }
     }
 
+    #[derive(Default, PartialEq, Eq)]
+    enum Fault {
+        #[default]
+        None,
+        Summary,
+        Dismissal,
+        Approval,
+        HeadMovesAfterApproval,
+    }
+
     #[derive(Default)]
     struct AutoScm {
         path: String,
-        fail_summary: bool,
-        fail_dismissal: bool,
-        fail_approval: bool,
+        fault: Fault,
         calls: std::sync::Mutex<Vec<String>>,
     }
 
@@ -1144,6 +1152,11 @@ mod tests {
     #[async_trait::async_trait]
     impl ScmProvider for AutoScm {
         async fn fetch_head_sha(&self) -> anyhow::Result<String> {
+            if self.fault == Fault::HeadMovesAfterApproval
+                && self.calls().iter().any(|call| call == "approve")
+            {
+                return Ok("moved".into());
+            }
             Ok("head".into())
         }
         async fn fetch_diff_with_limit(&self, _: usize) -> anyhow::Result<(String, bool)> {
@@ -1170,7 +1183,7 @@ mod tests {
         }
         async fn upsert_summary_comment(&self, body: &str) -> anyhow::Result<()> {
             assert!(body.contains("Auto-approved"));
-            if self.fail_summary {
+            if self.fault == Fault::Summary {
                 anyhow::bail!("synthetic publication failure");
             }
             self.record("summary");
@@ -1181,7 +1194,7 @@ mod tests {
             Ok(1)
         }
         async fn dismiss_stale_auto_approvals(&self, _: &str) -> anyhow::Result<usize> {
-            if self.fail_dismissal {
+            if self.fault == Fault::Dismissal {
                 anyhow::bail!("synthetic dismissal failure");
             }
             Ok(0)
@@ -1193,7 +1206,7 @@ mod tests {
         ) -> anyhow::Result<crate::scm::ApprovalOutcome> {
             assert_eq!(head, "head");
             assert!(body.contains("head=head"));
-            if self.fail_approval {
+            if self.fault == Fault::Approval {
                 anyhow::bail!("approval outcome is unknown");
             }
             self.record("approve");
@@ -1269,7 +1282,7 @@ mod tests {
         let (_dir, store) = temporary_store().await;
         let scm = AutoScm {
             path: "docs/guide.md".into(),
-            fail_dismissal: true,
+            fault: Fault::Dismissal,
             ..AutoScm::default()
         };
         let mut config = AppConfig::from_local_env().unwrap();
@@ -1287,11 +1300,38 @@ mod tests {
             scm.calls(),
             vec!["notice", "Cururu triage:neutral", "candidate"]
         );
+        // A head that moves right after approving revokes the approval.
+        let (_dir, store) = temporary_store().await;
+        let scm = AutoScm {
+            path: "docs/guide.md".into(),
+            fault: Fault::HeadMovesAfterApproval,
+            ..AutoScm::default()
+        };
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.base_url = server.uri();
+        config.llm.api_key = "fixture".into();
+        config.review.language = "en-US".into();
+        config.source_control.repository = "owner/repo".into();
+        config.source_control.change_request_number = 1;
+        config.auto_approval.enabled = true;
+        let error = run_pull_request_review(&store, "fixture", &config, &scm, false, true)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("revoked its approval"),
+            "{error:#}"
+        );
+        assert_eq!(
+            scm.calls(),
+            vec!["approve", "Cururu triage:success", "revoke"]
+        );
+
         // An unknown approval outcome revokes any auto-approval.
         let (_dir, store) = temporary_store().await;
         let scm = AutoScm {
             path: "docs/guide.md".into(),
-            fail_approval: true,
+            fault: Fault::Approval,
             ..AutoScm::default()
         };
         let mut config = AppConfig::from_local_env().unwrap();
@@ -1314,7 +1354,7 @@ mod tests {
         let (_dir, store) = temporary_store().await;
         let scm = AutoScm {
             path: "docs/guide.md".into(),
-            fail_summary: true,
+            fault: Fault::Summary,
             ..AutoScm::default()
         };
         let mut config = AppConfig::from_local_env().unwrap();

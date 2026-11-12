@@ -847,7 +847,6 @@ async fn main() -> anyhow::Result<()> {
             result.attach_pr_usage(source_control.as_ref()).await;
             let route =
                 auto_approval::decide(&config, source_control.as_ref(), &mut result).await?;
-            write_auto_approval_outputs(&config, &result)?;
             let inline = matches!(config.review.comment_mode, CommentMode::Inline);
             let candidate = hosted_publication::HostedCandidate::from_review(
                 &config,
@@ -860,19 +859,23 @@ async fn main() -> anyhow::Result<()> {
                 inline,
                 false,
             );
-            review::ensure_review_head_unchanged(
-                &result.head_sha,
-                &source_control.fetch_head_sha().await?,
-            )?;
             if route == auto_approval::Route::Approved {
-                // The repository's opt-in policy replaces the per-candidate approval.
+                // Publish right after approving: any failure from here on
+                // revokes the approval. The opt-in policy replaces the
+                // per-candidate publication approval.
                 auto_approval::publish_approved(&candidate, source_control.as_ref()).await?;
+                write_auto_approval_outputs(&config, &result)?;
                 append_github_output("review_status=completed\n")?;
                 println!(
                     "Cururu: PR auto-approved and review published at {}",
                     result.head_sha
                 );
             } else {
+                write_auto_approval_outputs(&config, &result)?;
+                review::ensure_review_head_unchanged(
+                    &result.head_sha,
+                    &source_control.fetch_head_sha().await?,
+                )?;
                 action_publication::prepare(&candidate, source_control.as_ref()).await?;
                 println!(
                     "Cururu: candidate {} prepared; nothing was published. Approve the publication job to publish it.",

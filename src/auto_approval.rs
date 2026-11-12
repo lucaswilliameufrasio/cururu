@@ -587,9 +587,14 @@ pub async fn publish_approved(
     candidate: &crate::hosted_publication::HostedCandidate,
     source_control: &dyn crate::scm::ScmProvider,
 ) -> anyhow::Result<()> {
-    let Err(error) =
+    let published = async {
+        crate::review::ensure_review_head_unchanged(
+            &candidate.head_sha,
+            &source_control.fetch_head_sha().await?,
+        )?;
         crate::hosted_publication::publish_candidate(candidate, source_control, None).await
-    else {
+    };
+    let Err(error) = published.await else {
         return Ok(());
     };
     match source_control.revoke_auto_approvals().await {
