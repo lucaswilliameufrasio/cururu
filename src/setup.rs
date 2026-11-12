@@ -247,7 +247,10 @@ pub fn status(path: &Path) -> anyhow::Result<()> {
             None => "disabled",
         }
     );
-    println!("  Diff limit: {} bytes", config.review.max_diff_bytes);
+    println!(
+        "  Limits: diff {} bytes, chunk {} bytes, model output {} tokens per call (raise provider.max_output_tokens if reviews end with finish reason `length`)",
+        config.review.max_diff_bytes, config.review.chunk_bytes, config.llm.max_output_tokens
+    );
     println!(
         "  Local review: `cururu api-review` (configured API) or the MCP server (`cururu install-mcp`)"
     );
