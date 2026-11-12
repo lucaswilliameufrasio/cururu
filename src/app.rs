@@ -1125,6 +1125,131 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct AutoScm {
+        path: String,
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl AutoScm {
+        fn record(&self, call: &str) {
+            self.calls.lock().unwrap().push(call.into());
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ScmProvider for AutoScm {
+        async fn fetch_head_sha(&self) -> anyhow::Result<String> {
+            Ok("head".into())
+        }
+        async fn fetch_diff_with_limit(&self, _: usize) -> anyhow::Result<(String, bool)> {
+            let path = &self.path;
+            Ok((
+                format!("diff --git a/{path} b/{path}\n@@ -1 +1 @@\n-old\n+new\n"),
+                false,
+            ))
+        }
+        async fn reconcile_review_comments(
+            &self,
+            _: &str,
+            _: &[crate::scm::ReviewCommentDraft],
+        ) -> anyhow::Result<()> {
+            self.record("inline");
+            Ok(())
+        }
+        async fn create_pending_formal_review(&self, _: &str, _: &str) -> anyhow::Result<u64> {
+            self.record("formal");
+            Ok(1)
+        }
+        async fn submit_formal_review(&self, _: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn upsert_summary_comment(&self, body: &str) -> anyhow::Result<()> {
+            assert!(body.contains("Auto-approved"));
+            self.record("summary");
+            Ok(())
+        }
+        async fn approve_change_request(
+            &self,
+            head: &str,
+            body: &str,
+        ) -> anyhow::Result<crate::scm::ApprovalOutcome> {
+            assert_eq!(head, "head");
+            assert!(body.contains("head=head"));
+            self.record("approve");
+            Ok(crate::scm::ApprovalOutcome::Approved)
+        }
+        async fn upsert_auto_approval_notice(&self, body: &str) -> anyhow::Result<()> {
+            assert!(body.contains("Needs human review"));
+            self.record("notice");
+            Ok(())
+        }
+        async fn create_status_check(
+            &self,
+            name: &str,
+            _: &str,
+            conclusion: &str,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<()> {
+            self.record(&format!("{name}:{conclusion}"));
+            Ok(())
+        }
+        async fn create_candidate_check(&self, _: &CandidateCheck<'_>) -> anyhow::Result<u64> {
+            self.record("candidate");
+            Ok(1)
+        }
+    }
+
+    #[tokio::test]
+    async fn app_auto_approves_simple_changes_and_escalates_blocked_paths() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        let review =
+            serde_json::json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[]})
+                .to_string();
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]})))
+            .mount(&server)
+            .await;
+        for (file, expected) in [
+            (
+                "docs/guide.md",
+                vec!["approve", "Cururu triage:success", "inline", "summary"],
+            ),
+            (
+                "src/payments/fees.rs",
+                vec!["notice", "Cururu triage:neutral", "candidate"],
+            ),
+        ] {
+            let (_dir, store) = temporary_store().await;
+            let scm = AutoScm {
+                path: file.into(),
+                ..AutoScm::default()
+            };
+            let mut config = AppConfig::from_local_env().unwrap();
+            config.llm.provider = crate::config::LlmProvider::OpenAI;
+            config.llm.base_url = server.uri();
+            config.llm.api_key = "fixture".into();
+            config.review.language = "en-US".into();
+            config.source_control.repository = "owner/repo".into();
+            config.source_control.change_request_number = 1;
+            config.auto_approval.enabled = true;
+            config.auto_approval.blocked_paths = vec!["**/payments/**".into()];
+            run_pull_request_review(&store, "fixture", &config, &scm, false, true)
+                .await
+                .unwrap();
+            assert_eq!(scm.calls(), expected, "{file}");
+        }
+    }
+
     struct BlockedScm;
 
     #[async_trait::async_trait]
