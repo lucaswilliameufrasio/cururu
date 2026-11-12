@@ -55,6 +55,26 @@ context size, retries, API rate limits, provider pricing, token usage, monthly s
 false-positive tolerance, finding confidence, SARIF evidence, and GitHub Check Run
 evidence. Consult the project's conventions, specifications, ADRs, and skills.
 
+## Limits and output tokens
+
+Recommend explicit values for `review.max_diff_bytes`, `review.chunk_bytes`, and
+`provider.max_output_tokens` from the observed PR sizes, not only the defaults
+(180000 bytes, 45000 bytes, and 8000 tokens). Explain each value:
+
+- `review.max_diff_bytes` bounds the whole review. PRs above it get a notice
+  instead of a review, so set it from the larger merged PRs and the budget.
+- `review.chunk_bytes` bounds one model call. Smaller chunks mean more calls but
+  shorter answers per call.
+- `provider.max_output_tokens` bounds one model answer. A large chunk with many
+  findings needs more room; too little ends reviews with finish reason `length`.
+  Only generated tokens are billed, so it raises the worst case, not every
+  review. Use the model's documented output limit as the ceiling.
+
+When Cururu already runs in the repository, its `Cururu review` checks record
+per-run token usage; use the largest observed completion tokens plus headroom
+instead of guessing. Recommend the same values in the organization's shared
+configuration when several repositories have similar PRs.
+
 Recommend the least expensive model that meets the project's risk and quality needs.
 Explain the trade-off between model quality, context size, chunk size, output tokens,
 review frequency, and total cost. Prefer bounded settings and report low, expected,
@@ -70,7 +90,8 @@ Return a concise integration proposal containing:
 3. recommended provider and model with alternatives;
 4. estimated per-PR and monthly cost;
 5. security and operational risks;
-6. recommended `.cururu.toml` values and their rationale;
+6. recommended `.cururu.toml` values and their rationale, including
+   `review.max_diff_bytes`, `review.chunk_bytes`, and `provider.max_output_tokens`;
 7. a GitHub Actions workflow using `pull_request_target`, least-privilege permissions,
    a timeout, and a pinned Cururu Action reference;
 8. validation steps for the first rollout.
