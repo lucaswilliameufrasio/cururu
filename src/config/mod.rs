@@ -1,4 +1,5 @@
 mod analysis;
+mod auto_approval;
 mod context;
 mod env;
 mod github;
@@ -12,6 +13,7 @@ mod summary;
 mod tests;
 
 pub use analysis::AnalysisConfig;
+pub use auto_approval::AutoApprovalConfig;
 pub use context::ContextConfig;
 pub use github::GitHubConfig;
 pub use provider::{LlmConfig, LlmProvider};
@@ -78,6 +80,7 @@ pub struct AppConfig {
     pub context: ContextConfig,
     pub summary: SummaryConfig,
     pub analysis: AnalysisConfig,
+    pub auto_approval: AutoApprovalConfig,
     pub evaluator: EvaluatorConfig,
 }
 
@@ -193,6 +196,7 @@ impl AppConfig {
             context: ContextConfig::default(),
             summary: SummaryConfig::default(),
             analysis: AnalysisConfig::default(),
+            auto_approval: AutoApprovalConfig::default(),
             evaluator: EvaluatorConfig {
                 mode: evaluator_mode,
                 api_key: env::env_optional("TYPESAFE_API_KEY").unwrap_or_default(),
@@ -515,6 +519,51 @@ impl AppConfig {
             }
         }
 
+        if let Some(approval) = parsed.auto_approval {
+            self.merge_auto_approval(approval)?;
+        }
+
+        Ok(())
+    }
+
+    fn merge_auto_approval(
+        &mut self,
+        approval: cururu_engine::config::AutoApprovalToml,
+    ) -> anyhow::Result<()> {
+        let target = &mut self.auto_approval;
+        if let Some(v) = approval.enabled {
+            target.enabled = v;
+        }
+        for (field, value) in [
+            ("auto_approval.allowed_paths", approval.allowed_paths),
+            ("auto_approval.blocked_paths", approval.blocked_paths),
+        ] {
+            let Some(patterns) = value else { continue };
+            for pattern in &patterns {
+                globset::Glob::new(pattern)
+                    .with_context(|| format!("invalid {field} pattern: {pattern}"))?;
+            }
+            if field.ends_with("allowed_paths") {
+                target.allowed_paths = patterns;
+            } else {
+                target.blocked_paths = patterns;
+            }
+        }
+        if let Some(v) = approval.max_changed_files {
+            anyhow::ensure!(v > 0, "auto_approval.max_changed_files must be positive");
+            target.max_changed_files = v;
+        }
+        if let Some(v) = approval.max_changed_lines {
+            anyhow::ensure!(v > 0, "auto_approval.max_changed_lines must be positive");
+            target.max_changed_lines = v;
+        }
+        if let Some(v) = approval.block_on {
+            target.block_on = Severity::from_name(&v).with_context(|| {
+                format!(
+                    "invalid auto_approval.block_on: {v}; expected critical, high, medium or low"
+                )
+            })?;
+        }
         Ok(())
     }
 }

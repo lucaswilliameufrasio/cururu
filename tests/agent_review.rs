@@ -850,3 +850,16 @@ fn hosted_candidate_cli_approval_requires_inspection_and_names_the_digest() {
         .unwrap();
     assert!(status.success());
 }
+
+#[test]
+fn auto_approval_approves_simple_changes_and_escalates_sensitive_ones() {
+    let status = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/auto_approval_smoke.py"
+        ))
+        .arg(env!("CARGO_BIN_EXE_cururu"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}

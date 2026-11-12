@@ -14,6 +14,7 @@ pub struct CururuToml {
     pub context: Option<ContextToml>,
     pub summary: Option<SummaryToml>,
     pub analysis: Option<AnalysisToml>,
+    pub auto_approval: Option<AutoApprovalToml>,
     pub evaluator: Option<toml::Value>,
 }
 
@@ -111,6 +112,17 @@ pub struct AnalysisToml {
     pub require_current_head: Option<bool>,
     pub check_runs: Option<bool>,
     pub check_run_names: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutoApprovalToml {
+    pub enabled: Option<bool>,
+    pub allowed_paths: Option<Vec<String>>,
+    pub blocked_paths: Option<Vec<String>>,
+    pub max_changed_files: Option<usize>,
+    pub max_changed_lines: Option<usize>,
+    pub block_on: Option<String>,
 }
 
 pub fn validate_confidence(value: f32) -> anyhow::Result<()> {

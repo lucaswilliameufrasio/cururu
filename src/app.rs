@@ -371,16 +371,7 @@ async fn run_pull_request_review_with_evaluator(
         return Ok(());
     }
     if request_reviewer {
-        let login = format!("{app_slug}[bot]");
-        match source_control.request_cururu_as_reviewer(&login).await {
-            Ok(true) => info!("SCM provider accepted Cururu as a requested reviewer"),
-            Ok(false) => {
-                info!("SCM provider does not accept Cururu as a requested reviewer");
-            }
-            Err(_) => {
-                warn!("could not request Cururu as a reviewer; continuing");
-            }
-        }
+        request_cururu_as_reviewer(source_control, app_slug).await;
     }
 
     let mut result = match review::run_review_with_evaluator(config, source_control, evaluator)
@@ -401,10 +392,14 @@ async fn run_pull_request_review_with_evaluator(
         &source_control.fetch_head_sha().await?,
     )?;
     result.attach_pr_usage(source_control).await;
+    let route = crate::auto_approval::decide(config, source_control, &mut result).await?;
     let inline = match config.review.comment_mode {
         CommentMode::Inline => build_inline_drafts(&result),
         CommentMode::Summary => Vec::new(),
     };
+    if route == crate::auto_approval::Route::Approved {
+        return publish_auto_approved(config, source_control, &result, inline).await;
+    }
     let candidate = HostedCandidate::from_review(config, &result, inline, true, true);
     let digest = candidate.digest();
     if !candidate.approvable() {
@@ -453,6 +448,29 @@ async fn run_pull_request_review_with_evaluator(
         gate_passed = candidate.quality_gate_passed,
         "Cururu App candidate awaits approval"
     );
+    Ok(())
+}
+
+async fn request_cururu_as_reviewer(source_control: &dyn ScmProvider, app_slug: &str) {
+    let login = format!("{app_slug}[bot]");
+    match source_control.request_cururu_as_reviewer(&login).await {
+        Ok(true) => info!("SCM provider accepted Cururu as a requested reviewer"),
+        Ok(false) => info!("SCM provider does not accept Cururu as a requested reviewer"),
+        Err(_) => warn!("could not request Cururu as a reviewer; continuing"),
+    }
+}
+
+/// The repository's opt-in policy replaces the per-candidate approval; the
+/// APPROVE review already submitted replaces the advisory formal review.
+async fn publish_auto_approved(
+    config: &AppConfig,
+    source_control: &dyn ScmProvider,
+    result: &review::ReviewOutput,
+    inline: Vec<crate::scm::ReviewCommentDraft>,
+) -> anyhow::Result<()> {
+    let candidate = HostedCandidate::from_review(config, result, inline, true, false);
+    crate::auto_approval::publish_approved(&candidate, source_control, result).await?;
+    info!("Cururu App auto-approved the PR and published its review");
     Ok(())
 }
 
@@ -1103,6 +1121,263 @@ mod tests {
             .unwrap();
             assert_eq!(scm.checks.load(Ordering::SeqCst), 1);
         }
+    }
+
+    #[derive(Default, PartialEq, Eq)]
+    enum Fault {
+        #[default]
+        None,
+        Summary,
+        Dismissal,
+        Approval,
+        HeadMovesAfterApproval,
+    }
+
+    #[derive(Default)]
+    struct AutoScm {
+        path: String,
+        fault: Fault,
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl AutoScm {
+        fn record(&self, call: &str) {
+            self.calls.lock().unwrap().push(call.into());
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ScmProvider for AutoScm {
+        async fn fetch_head_sha(&self) -> anyhow::Result<String> {
+            if self.fault == Fault::HeadMovesAfterApproval
+                && self.calls().iter().any(|call| call == "approve")
+            {
+                return Ok("moved".into());
+            }
+            Ok("head".into())
+        }
+        async fn fetch_diff_with_limit(&self, _: usize) -> anyhow::Result<(String, bool)> {
+            let path = &self.path;
+            Ok((
+                format!("diff --git a/{path} b/{path}\n@@ -1 +1 @@\n-old\n+new\n"),
+                false,
+            ))
+        }
+        async fn reconcile_review_comments(
+            &self,
+            _: &str,
+            _: &[crate::scm::ReviewCommentDraft],
+        ) -> anyhow::Result<()> {
+            self.record("inline");
+            Ok(())
+        }
+        async fn create_pending_formal_review(&self, _: &str, _: &str) -> anyhow::Result<u64> {
+            self.record("formal");
+            Ok(1)
+        }
+        async fn submit_formal_review(&self, _: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn upsert_summary_comment(&self, body: &str) -> anyhow::Result<()> {
+            assert!(body.contains("Auto-approved"));
+            if self.fault == Fault::Summary {
+                anyhow::bail!("synthetic publication failure");
+            }
+            self.record("summary");
+            Ok(())
+        }
+        async fn revoke_auto_approvals(&self) -> anyhow::Result<usize> {
+            self.record("revoke");
+            Ok(1)
+        }
+        async fn dismiss_stale_auto_approvals(&self, _: &str) -> anyhow::Result<usize> {
+            if self.fault == Fault::Dismissal {
+                anyhow::bail!("synthetic dismissal failure");
+            }
+            Ok(0)
+        }
+        async fn approve_change_request(
+            &self,
+            head: &str,
+            body: &str,
+        ) -> anyhow::Result<crate::scm::ApprovalOutcome> {
+            assert_eq!(head, "head");
+            assert!(body.contains("head=head"));
+            if self.fault == Fault::Approval {
+                anyhow::bail!("approval outcome is unknown");
+            }
+            self.record("approve");
+            Ok(crate::scm::ApprovalOutcome::Approved)
+        }
+        async fn upsert_auto_approval_notice(&self, body: &str) -> anyhow::Result<()> {
+            assert!(body.contains("Needs human review"));
+            self.record("notice");
+            Ok(())
+        }
+        async fn create_status_check(
+            &self,
+            name: &str,
+            _: &str,
+            conclusion: &str,
+            _: &str,
+            _: &str,
+        ) -> anyhow::Result<()> {
+            self.record(&format!("{name}:{conclusion}"));
+            Ok(())
+        }
+        async fn create_candidate_check(&self, _: &CandidateCheck<'_>) -> anyhow::Result<u64> {
+            self.record("candidate");
+            Ok(1)
+        }
+    }
+
+    #[tokio::test]
+    async fn app_auto_approves_simple_changes_and_escalates_blocked_paths() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        let review =
+            serde_json::json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[]})
+                .to_string();
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]})))
+            .mount(&server)
+            .await;
+        for (file, expected) in [
+            (
+                "docs/guide.md",
+                vec!["approve", "inline", "summary", "Cururu triage:success"],
+            ),
+            (
+                "src/payments/fees.rs",
+                vec!["notice", "Cururu triage:neutral", "candidate"],
+            ),
+        ] {
+            let (_dir, store) = temporary_store().await;
+            let scm = AutoScm {
+                path: file.into(),
+                ..AutoScm::default()
+            };
+            let mut config = AppConfig::from_local_env().unwrap();
+            config.llm.provider = crate::config::LlmProvider::OpenAI;
+            config.llm.base_url = server.uri();
+            config.llm.api_key = "fixture".into();
+            config.review.language = "en-US".into();
+            config.source_control.repository = "owner/repo".into();
+            config.source_control.change_request_number = 1;
+            config.auto_approval.enabled = true;
+            config.auto_approval.blocked_paths = vec!["**/payments/**".into()];
+            run_pull_request_review(&store, "fixture", &config, &scm, false, true)
+                .await
+                .unwrap();
+            assert_eq!(scm.calls(), expected, "{file}");
+        }
+        // A failed dismissal of an earlier approval never adds another one.
+        let (_dir, store) = temporary_store().await;
+        let scm = AutoScm {
+            path: "docs/guide.md".into(),
+            fault: Fault::Dismissal,
+            ..AutoScm::default()
+        };
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.base_url = server.uri();
+        config.llm.api_key = "fixture".into();
+        config.review.language = "en-US".into();
+        config.source_control.repository = "owner/repo".into();
+        config.source_control.change_request_number = 1;
+        config.auto_approval.enabled = true;
+        run_pull_request_review(&store, "fixture", &config, &scm, false, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            scm.calls(),
+            vec!["notice", "Cururu triage:neutral", "candidate"]
+        );
+        // A head that moves right after approving revokes the approval.
+        let (_dir, store) = temporary_store().await;
+        let scm = AutoScm {
+            path: "docs/guide.md".into(),
+            fault: Fault::HeadMovesAfterApproval,
+            ..AutoScm::default()
+        };
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.base_url = server.uri();
+        config.llm.api_key = "fixture".into();
+        config.review.language = "en-US".into();
+        config.source_control.repository = "owner/repo".into();
+        config.source_control.change_request_number = 1;
+        config.auto_approval.enabled = true;
+        let error = run_pull_request_review(&store, "fixture", &config, &scm, false, true)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("revoked its approval"),
+            "{error:#}"
+        );
+        assert_eq!(
+            scm.calls(),
+            vec!["approve", "revoke", "Cururu triage:neutral"]
+        );
+
+        // An unknown approval outcome revokes any auto-approval.
+        let (_dir, store) = temporary_store().await;
+        let scm = AutoScm {
+            path: "docs/guide.md".into(),
+            fault: Fault::Approval,
+            ..AutoScm::default()
+        };
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.base_url = server.uri();
+        config.llm.api_key = "fixture".into();
+        config.review.language = "en-US".into();
+        config.source_control.repository = "owner/repo".into();
+        config.source_control.change_request_number = 1;
+        config.auto_approval.enabled = true;
+        let error = run_pull_request_review(&store, "fixture", &config, &scm, false, true)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("revoked any auto-approval"),
+            "{error:#}"
+        );
+        assert_eq!(scm.calls(), vec!["revoke"]);
+        // A publication failure after approving revokes the approval.
+        let (_dir, store) = temporary_store().await;
+        let scm = AutoScm {
+            path: "docs/guide.md".into(),
+            fault: Fault::Summary,
+            ..AutoScm::default()
+        };
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.base_url = server.uri();
+        config.llm.api_key = "fixture".into();
+        config.review.language = "en-US".into();
+        config.source_control.repository = "owner/repo".into();
+        config.source_control.change_request_number = 1;
+        config.auto_approval.enabled = true;
+        let error = run_pull_request_review(&store, "fixture", &config, &scm, false, true)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("revoked its approval"),
+            "{error}"
+        );
+        let calls = scm.calls();
+        assert_eq!(
+            &calls[calls.len() - 2..],
+            ["revoke", "Cururu triage:neutral"]
+        );
+        assert!(!calls.iter().any(|call| call == "Cururu triage:success"));
     }
 
     struct BlockedScm;

@@ -60,15 +60,7 @@ pub fn render_summary_comment(output: &ReviewOutput) -> String {
 
     render_header(output, &mut out);
 
-    let summary = output.review.summary.trim();
-    if !summary.is_empty() {
-        // Model text is untrusted: keep it from forging hidden markers.
-        let _ = write!(
-            out,
-            "**Summary:** {}\n\n",
-            summary.replace("<!--", "&lt;!--").replace('\n', " ")
-        );
-    }
+    render_overview(output, &mut out);
 
     if output.review.findings.is_empty() {
         if output
@@ -155,6 +147,26 @@ pub fn render_summary_comment(output: &ReviewOutput) -> String {
 
     out.push_str(&render_signature(output.logo_url.as_deref()));
     out
+}
+
+/// The auto-approval decision and the model's own summary.
+fn render_overview(output: &ReviewOutput, out: &mut String) {
+    if let Some(decision) = &output.auto_approval {
+        out.push_str(&crate::auto_approval::render_section(
+            decision,
+            &output.language,
+        ));
+        out.push('\n');
+    }
+    let summary = output.review.summary.trim();
+    if !summary.is_empty() {
+        // Model text is untrusted: keep it from forging hidden markers.
+        let _ = write!(
+            out,
+            "**Summary:** {}\n\n",
+            summary.replace("<!--", "&lt;!--").replace('\n', " ")
+        );
+    }
 }
 
 fn render_header(output: &ReviewOutput, out: &mut String) {
@@ -466,6 +478,9 @@ mod tests {
             },
             run_id: "run".into(),
             pr_usage: None,
+            ignored_paths: vec![],
+            auto_approval: None,
+            language: "en".into(),
             evaluation: Some(crate::evaluation::EvaluationReport {
                 model: "jev-1.13.0".into(),
                 findings: vec![crate::evaluation::EvaluatedFinding {
@@ -530,6 +545,9 @@ mod tests {
             evaluation: None,
             run_id: "run".into(),
             pr_usage: None,
+            ignored_paths: vec![],
+            auto_approval: None,
+            language: "en".into(),
         };
         let body = render_summary_comment(&output);
         assert!(body.contains("Provider-reported cost (this review):** `$0.123456`"));
@@ -583,6 +601,9 @@ mod tests {
                 cost: 0.03,
                 complete: true,
             }),
+            ignored_paths: vec![],
+            auto_approval: None,
+            language: "en".into(),
         };
         let body = render_summary_comment(&output);
         assert!(body.contains("**Tokens (this review):** 100 prompt + 20 completion = 120 total"));

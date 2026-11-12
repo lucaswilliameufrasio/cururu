@@ -4,6 +4,7 @@ mod agent_publication;
 mod analysis;
 mod anthropic;
 mod app;
+mod auto_approval;
 mod commands;
 mod config;
 mod context;
@@ -23,6 +24,7 @@ mod review;
 mod review_input;
 mod review_usage;
 mod scm;
+mod setup;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -155,6 +157,13 @@ mod api_usage_tests {
 enum Command {
     /// Add a starter configuration and GitHub Actions workflow to this repository.
     Init,
+    /// Guide enabling an optional feature, previewing changes before writing.
+    Setup {
+        #[command(subcommand)]
+        target: SetupTarget,
+    },
+    /// Show which Cururu features the local configuration enables.
+    Status,
     /// Run the self-hosted GitHub App webhook server.
     Serve,
     /// Create a consistent online backup of the configured `SQLite` database.
@@ -303,6 +312,16 @@ enum Command {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum SetupTarget {
+    /// Add an opt-in `[auto_approval]` policy to `.cururu.toml` and check requirements.
+    AutoApproval {
+        /// Append the section after an interactive confirmation (default: preview only).
+        #[arg(long)]
+        write: bool,
+    },
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
@@ -334,6 +353,13 @@ async fn main() -> anyhow::Result<()> {
     if matches!(cli.command, Command::Init) {
         initialize_repository()?;
         return Ok(());
+    }
+    match &cli.command {
+        Command::Setup {
+            target: SetupTarget::AutoApproval { write },
+        } => return setup::auto_approval(std::path::Path::new(".cururu.toml"), *write, true).await,
+        Command::Status => return setup::status(std::path::Path::new(".cururu.toml")),
+        _ => {}
     }
     match &cli.command {
         Command::UpdateJsoncMcp {
@@ -725,6 +751,8 @@ async fn main() -> anyhow::Result<()> {
             unreachable!("handled before loading review configuration")
         }
         Command::Init
+        | Command::Setup { .. }
+        | Command::Status
         | Command::PrepareReview { .. }
         | Command::AgentReview { .. }
         | Command::ApiReview { .. }
@@ -793,6 +821,15 @@ async fn main() -> anyhow::Result<()> {
                             writeln!(file, "quality_gate=not_run")?;
                             writeln!(file, "quality_gate_passed=false")?;
                         }
+                        write_auto_approval_status(
+                            &config,
+                            if config.auto_approval.enabled {
+                                "not_evaluated"
+                            } else {
+                                "disabled"
+                            },
+                            "[]",
+                        )?;
                         println!(
                             "Cururu: review not performed because the diff exceeded the configured limit"
                         );
@@ -808,6 +845,8 @@ async fn main() -> anyhow::Result<()> {
             write_action_outputs(&report)?;
             write_analysis_outputs(&result.analysis)?;
             result.attach_pr_usage(source_control.as_ref()).await;
+            let route =
+                auto_approval::decide(&config, source_control.as_ref(), &mut result).await?;
             let inline = matches!(config.review.comment_mode, CommentMode::Inline);
             let candidate = hosted_publication::HostedCandidate::from_review(
                 &config,
@@ -820,15 +859,30 @@ async fn main() -> anyhow::Result<()> {
                 inline,
                 false,
             );
-            review::ensure_review_head_unchanged(
-                &result.head_sha,
-                &source_control.fetch_head_sha().await?,
-            )?;
-            action_publication::prepare(&candidate, source_control.as_ref()).await?;
-            println!(
-                "Cururu: candidate {} prepared; nothing was published. Approve the publication job to publish it.",
-                candidate.digest()
-            );
+            if route == auto_approval::Route::Approved {
+                // Publish right after approving: any failure from here on
+                // revokes the approval. The opt-in policy replaces the
+                // per-candidate publication approval.
+                auto_approval::publish_approved(&candidate, source_control.as_ref(), &result)
+                    .await?;
+                write_auto_approval_outputs(&config, &result)?;
+                append_github_output("review_status=completed\n")?;
+                println!(
+                    "Cururu: PR auto-approved and review published at {}",
+                    result.head_sha
+                );
+            } else {
+                write_auto_approval_outputs(&config, &result)?;
+                review::ensure_review_head_unchanged(
+                    &result.head_sha,
+                    &source_control.fetch_head_sha().await?,
+                )?;
+                action_publication::prepare(&candidate, source_control.as_ref()).await?;
+                println!(
+                    "Cururu: candidate {} prepared; nothing was published. Approve the publication job to publish it.",
+                    candidate.digest()
+                );
+            }
             if !report.passed {
                 anyhow::bail!(
                     "quality gate failed: {} finding(s) at or above configured threshold",
@@ -1021,6 +1075,49 @@ fn write_action_outputs(report: &quality::QualityReport) -> anyhow::Result<()> {
     writeln!(file, "low_count={}", report.low_count)?;
     writeln!(file, "highest_severity={}", report.highest_severity)?;
     Ok(())
+}
+
+fn append_github_output(lines: &str) -> anyhow::Result<()> {
+    if let Some(path) = std::env::var_os("GITHUB_OUTPUT") {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .context("failed to open GITHUB_OUTPUT")?;
+        file.write_all(lines.as_bytes())?;
+    }
+    Ok(())
+}
+
+/// `auto_approval`, `auto_approval_reasons` and `pr_url` workflow outputs.
+fn write_auto_approval_outputs(
+    config: &AppConfig,
+    result: &review::ReviewOutput,
+) -> anyhow::Result<()> {
+    result.auto_approval.as_ref().map_or_else(
+        || write_auto_approval_status(config, "disabled", "[]"),
+        |decision| {
+            write_auto_approval_status(
+                config,
+                decision.status(),
+                &auto_approval::reasons_json(decision, &result.language),
+            )
+        },
+    )
+}
+
+/// Always write all three outputs so consuming workflows can rely on them.
+fn write_auto_approval_status(
+    config: &AppConfig,
+    status: &str,
+    reasons: &str,
+) -> anyhow::Result<()> {
+    append_github_output(&format!(
+        "auto_approval={status}\nauto_approval_reasons={reasons}\npr_url={}/{}/pull/{}\n",
+        config.source_control.web_url.trim_end_matches('/'),
+        config.source_control.repository,
+        config.source_control.change_request_number
+    ))
 }
 
 fn write_analysis_outputs(report: &analysis::AnalysisReport) -> anyhow::Result<()> {

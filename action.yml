@@ -61,6 +61,12 @@ inputs:
 outputs:
   review_status:
     description: "pending_approval, not_approvable or skipped_diff_limit in prepare mode; completed in publish mode. None of these is a code approval"
+  auto_approval:
+    description: "Opt-in auto-approval result: approved, needs_human, disabled or not_evaluated"
+  auto_approval_reasons:
+    description: "JSON array of {code, message, ...} explaining why auto-approval did not apply (empty when approved)"
+  pr_url:
+    description: "Web URL of the reviewed pull request"
   candidate_digest:
     description: "SHA-256 of the candidate preview, required by publish mode"
   candidate_path:

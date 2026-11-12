@@ -131,6 +131,39 @@ pub trait ScmProvider: Send + Sync {
     async fn publish_review_summary(&self, body: &str, _run_id: &str) -> anyhow::Result<()> {
         self.upsert_summary_comment(body).await
     }
+    /// Approve the change request at `head`.
+    async fn approve_change_request(
+        &self,
+        _head: &str,
+        _body: &str,
+    ) -> anyhow::Result<ApprovalOutcome> {
+        Ok(ApprovalOutcome::NotPermitted(
+            "this SCM adapter does not support approvals".into(),
+        ))
+    }
+    /// Dismiss Cururu's own auto-approvals given for another head.
+    async fn dismiss_stale_auto_approvals(&self, _head: &str) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+    /// Dismiss every Cururu auto-approval, including the current head's.
+    async fn revoke_auto_approvals(&self) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+    /// Update or create the single "needs human review" notice.
+    async fn upsert_auto_approval_notice(&self, _body: &str) -> anyhow::Result<()> {
+        anyhow::bail!("SCM adapter does not support auto-approval notices")
+    }
+    /// Report a completed status check.
+    async fn create_status_check(
+        &self,
+        _name: &str,
+        _head: &str,
+        _conclusion: &str,
+        _title: &str,
+        _summary: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("SCM adapter does not support status checks")
+    }
     /// Close a candidate check, removing its approval action.
     async fn finish_candidate_check(
         &self,
@@ -141,6 +174,14 @@ pub trait ScmProvider: Send + Sync {
     ) -> anyhow::Result<()> {
         anyhow::bail!("SCM adapter does not support publication candidate checks")
     }
+}
+
+/// Result of asking the SCM to approve a change request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApprovalOutcome {
+    Approved,
+    /// The SCM refused, for example missing permission or a repository setting.
+    NotPermitted(String),
 }
 
 /// An inspection surface for a hosted publication candidate.

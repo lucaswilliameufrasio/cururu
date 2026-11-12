@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 mod approval;
+mod auto_approval;
 pub use approval::{CandidateCheckRun, RunApproval};
 
 fn url_encode(value: &str) -> String {
@@ -1284,6 +1285,15 @@ impl GitHubClient {
     }
 
     pub async fn upsert_limit_notice(&self, body: &str) -> anyhow::Result<()> {
+        self.upsert_marked_comment(output::LIMIT_MARKER, body).await
+    }
+
+    /// Update Cururu's comment carrying `marker`, or create it.
+    pub(crate) async fn upsert_marked_comment(
+        &self,
+        marker: &str,
+        body: &str,
+    ) -> anyhow::Result<()> {
         let own_login = self.current_login().await;
         for page in 1..=100 {
             let url = format!(
@@ -1302,14 +1312,14 @@ impl GitHubClient {
                 .error_for_status()?
                 .json()
                 .await
-                .context("failed to list diff limit notices")?;
+                .context("failed to list PR comments")?;
             let count = comments.len();
             for comment in comments {
                 if Self::user_is_cururu(comment.user.as_ref(), own_login.as_deref())
                     && comment
                         .body
                         .as_deref()
-                        .is_some_and(|value| value.contains(output::LIMIT_MARKER))
+                        .is_some_and(|value| value.contains(marker))
                 {
                     return self.update_issue_comment(comment.id, body).await;
                 }
@@ -1318,7 +1328,7 @@ impl GitHubClient {
                 return self.create_issue_comment(body).await;
             }
         }
-        anyhow::bail!("too many PR comments to safely locate the diff limit notice")
+        anyhow::bail!("too many PR comments to safely locate the Cururu notice")
     }
 
     pub async fn summary_has_head(&self, head_sha: &str) -> anyhow::Result<bool> {
@@ -1477,6 +1487,32 @@ impl GitHubClient {
 
 #[async_trait]
 impl ScmProvider for GitHubClient {
+    async fn approve_change_request(
+        &self,
+        head: &str,
+        body: &str,
+    ) -> anyhow::Result<crate::scm::ApprovalOutcome> {
+        Self::approve_change_request(self, head, body).await
+    }
+    async fn dismiss_stale_auto_approvals(&self, head: &str) -> anyhow::Result<usize> {
+        Self::dismiss_stale_auto_approvals(self, head).await
+    }
+    async fn revoke_auto_approvals(&self) -> anyhow::Result<usize> {
+        Self::revoke_auto_approvals(self).await
+    }
+    async fn upsert_auto_approval_notice(&self, body: &str) -> anyhow::Result<()> {
+        Self::upsert_auto_approval_notice(self, body).await
+    }
+    async fn create_status_check(
+        &self,
+        name: &str,
+        head: &str,
+        conclusion: &str,
+        title: &str,
+        summary: &str,
+    ) -> anyhow::Result<()> {
+        Self::create_status_check(self, name, head, conclusion, title, summary).await
+    }
     async fn review_usage_history(&self) -> anyhow::Result<crate::review_usage::UsageHistory> {
         Self::review_usage_history(self).await
     }

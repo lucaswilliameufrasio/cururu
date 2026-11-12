@@ -199,6 +199,16 @@ code or review content. The candidate is visible to anyone who can read the
 repository's checks and run summaries before approval. See
 [hosted publication approval](docs/hosted-publication-approval.md).
 
+### Auto-approval (opt-in)
+
+Cururu can approve clearly low-risk pull requests (for example docs-only
+changes) and ask for a human reviewer otherwise, based on deterministic rules
+in `[auto_approval]`. It is disabled by default and never merges. Run
+`cururu setup auto-approval` to preview a policy and check repository
+requirements, and `cururu status` to see which features are enabled. See
+[auto-approval](docs/auto-approval.md), including workflow outputs for your own
+chat notifications.
+
 ## Integration discovery prompt
 
 Before choosing a model or enabling Cururu in a production repository, use the
@@ -730,6 +740,8 @@ cururu dry-run        Review and print JSON, do not post comment
 cururu review         Review and prepare a candidate for approval (no comment)
 cururu publish-approved-review   Publish an Action candidate from an approved job
 cururu approve-hosted-review     Inspect and approve a hosted candidate
+cururu setup auto-approval       Preview (or --write) an opt-in auto-approval policy
+cururu status                    Show which Cururu features are enabled
 cururu print-config   Print merged configuration
 ```
 
