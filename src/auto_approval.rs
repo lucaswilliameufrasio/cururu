@@ -56,6 +56,9 @@ pub enum Veto {
     ApprovalNotPermitted {
         detail: String,
     },
+    StaleApprovalNotDismissed {
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -370,6 +373,17 @@ pub fn describe(veto: &Veto, language: &str) -> String {
                 format!("analyzer evidence is {}", code(status))
             }
         }
+        Veto::StaleApprovalNotDismissed { detail } => {
+            if pt {
+                format!(
+                    "não foi possível dispensar uma aprovação anterior do Cururu ({detail}). Ela pode continuar valendo para a proteção da branch: dispense-a manualmente antes do merge"
+                )
+            } else {
+                format!(
+                    "an earlier Cururu approval could not be dismissed ({detail}). It may still satisfy branch protection: dismiss it manually before merging"
+                )
+            }
+        }
         Veto::ApprovalNotPermitted { detail } => {
             if pt {
                 format!(
@@ -497,15 +511,29 @@ pub async fn decide(
     if !config.auto_approval.enabled {
         return Ok(Route::Disabled);
     }
-    match source_control
+    let dismissal_error = match source_control
         .dismiss_stale_auto_approvals(&output.head_sha)
         .await
     {
-        Ok(0) => {}
-        Ok(count) => tracing::info!(count, "dismissed stale Cururu auto-approvals"),
-        Err(error) => tracing::warn!(%error, "could not dismiss stale Cururu auto-approvals"),
-    }
+        Ok(0) => None,
+        Ok(count) => {
+            tracing::info!(count, "dismissed stale Cururu auto-approvals");
+            None
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not dismiss stale Cururu auto-approvals");
+            Some(error.to_string())
+        }
+    };
     attach(config, output)?;
+    if let (Some(detail), Some(decision)) = (dismissal_error, output.auto_approval.as_mut()) {
+        // An earlier approval may still satisfy branch protection; never add
+        // another one and ask a human to dismiss it.
+        decision.approved = false;
+        decision.vetoes.push(Veto::StaleApprovalNotDismissed {
+            detail: detail.chars().take(300).collect(),
+        });
+    }
     let language = output.language.clone();
     let head = output.head_sha.clone();
     let decision = output

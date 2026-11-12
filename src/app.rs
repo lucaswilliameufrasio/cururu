@@ -1127,6 +1127,7 @@ mod tests {
     struct AutoScm {
         path: String,
         fail_summary: bool,
+        fail_dismissal: bool,
         calls: std::sync::Mutex<Vec<String>>,
     }
 
@@ -1177,6 +1178,12 @@ mod tests {
         async fn revoke_auto_approvals(&self) -> anyhow::Result<usize> {
             self.record("revoke");
             Ok(1)
+        }
+        async fn dismiss_stale_auto_approvals(&self, _: &str) -> anyhow::Result<usize> {
+            if self.fail_dismissal {
+                anyhow::bail!("synthetic dismissal failure");
+            }
+            Ok(0)
         }
         async fn approve_change_request(
             &self,
@@ -1254,6 +1261,28 @@ mod tests {
                 .unwrap();
             assert_eq!(scm.calls(), expected, "{file}");
         }
+        // A failed dismissal of an earlier approval never adds another one.
+        let (_dir, store) = temporary_store().await;
+        let scm = AutoScm {
+            path: "docs/guide.md".into(),
+            fail_dismissal: true,
+            ..AutoScm::default()
+        };
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.base_url = server.uri();
+        config.llm.api_key = "fixture".into();
+        config.review.language = "en-US".into();
+        config.source_control.repository = "owner/repo".into();
+        config.source_control.change_request_number = 1;
+        config.auto_approval.enabled = true;
+        run_pull_request_review(&store, "fixture", &config, &scm, false, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            scm.calls(),
+            vec!["notice", "Cururu triage:neutral", "candidate"]
+        );
         // A publication failure after approving revokes the approval.
         let (_dir, store) = temporary_store().await;
         let scm = AutoScm {
