@@ -145,6 +145,10 @@ pub trait ScmProvider: Send + Sync {
     async fn dismiss_stale_auto_approvals(&self, _head: &str) -> anyhow::Result<usize> {
         Ok(0)
     }
+    /// Dismiss every Cururu auto-approval, including the current head's.
+    async fn revoke_auto_approvals(&self) -> anyhow::Result<usize> {
+        Ok(0)
+    }
     /// Update or create the single "needs human review" notice.
     async fn upsert_auto_approval_notice(&self, _body: &str) -> anyhow::Result<()> {
         anyhow::bail!("SCM adapter does not support auto-approval notices")

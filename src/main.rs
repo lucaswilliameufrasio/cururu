@@ -866,11 +866,7 @@ async fn main() -> anyhow::Result<()> {
             )?;
             if route == auto_approval::Route::Approved {
                 // The repository's opt-in policy replaces the per-candidate approval.
-                hosted_publication::publish_candidate(&candidate, source_control.as_ref(), None)
-                    .await
-                    .context(
-                        "the PR was auto-approved but publishing its review did not complete",
-                    )?;
+                auto_approval::publish_approved(&candidate, source_control.as_ref()).await?;
                 append_github_output("review_status=completed\n")?;
                 println!(
                     "Cururu: PR auto-approved and review published at {}",

@@ -469,9 +469,7 @@ async fn publish_auto_approved(
     inline: Vec<crate::scm::ReviewCommentDraft>,
 ) -> anyhow::Result<()> {
     let candidate = HostedCandidate::from_review(config, result, inline, true, false);
-    hosted_publication::publish_candidate(&candidate, source_control, None)
-        .await
-        .context("the PR was auto-approved but publishing its review did not complete")?;
+    crate::auto_approval::publish_approved(&candidate, source_control).await?;
     info!("Cururu App auto-approved the PR and published its review");
     Ok(())
 }
@@ -1128,6 +1126,7 @@ mod tests {
     #[derive(Default)]
     struct AutoScm {
         path: String,
+        fail_summary: bool,
         calls: std::sync::Mutex<Vec<String>>,
     }
 
@@ -1169,8 +1168,15 @@ mod tests {
         }
         async fn upsert_summary_comment(&self, body: &str) -> anyhow::Result<()> {
             assert!(body.contains("Auto-approved"));
+            if self.fail_summary {
+                anyhow::bail!("synthetic publication failure");
+            }
             self.record("summary");
             Ok(())
+        }
+        async fn revoke_auto_approvals(&self) -> anyhow::Result<usize> {
+            self.record("revoke");
+            Ok(1)
         }
         async fn approve_change_request(
             &self,
@@ -1248,6 +1254,29 @@ mod tests {
                 .unwrap();
             assert_eq!(scm.calls(), expected, "{file}");
         }
+        // A publication failure after approving revokes the approval.
+        let (_dir, store) = temporary_store().await;
+        let scm = AutoScm {
+            path: "docs/guide.md".into(),
+            fail_summary: true,
+            ..AutoScm::default()
+        };
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.base_url = server.uri();
+        config.llm.api_key = "fixture".into();
+        config.review.language = "en-US".into();
+        config.source_control.repository = "owner/repo".into();
+        config.source_control.change_request_number = 1;
+        config.auto_approval.enabled = true;
+        let error = run_pull_request_review(&store, "fixture", &config, &scm, false, true)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("revoked its approval"),
+            "{error}"
+        );
+        assert_eq!(scm.calls().last().map(String::as_str), Some("revoke"));
     }
 
     struct BlockedScm;

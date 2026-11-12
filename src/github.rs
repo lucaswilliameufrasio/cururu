@@ -1497,6 +1497,9 @@ impl ScmProvider for GitHubClient {
     async fn dismiss_stale_auto_approvals(&self, head: &str) -> anyhow::Result<usize> {
         Self::dismiss_stale_auto_approvals(self, head).await
     }
+    async fn revoke_auto_approvals(&self) -> anyhow::Result<usize> {
+        Self::revoke_auto_approvals(self).await
+    }
     async fn upsert_auto_approval_notice(&self, body: &str) -> anyhow::Result<()> {
         Self::upsert_auto_approval_notice(self, body).await
     }

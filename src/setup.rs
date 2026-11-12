@@ -97,15 +97,37 @@ pub async fn auto_approval(path: &Path, write: bool, check_remote: bool) -> anyh
         "{} changed while waiting for confirmation; nothing was written",
         path.display()
     );
-    let temporary = path.with_extension("toml.cururu-tmp");
-    std::fs::write(&temporary, &updated)
-        .with_context(|| format!("failed to write {}", temporary.display()))?;
-    std::fs::rename(&temporary, path)
-        .with_context(|| format!("failed to replace {}", path.display()))?;
+    replace_file(path, updated.as_bytes())?;
     println!(
         "Appended [auto_approval] to {}. Commit it to the default branch; Cururu reads it from the PR base.",
         path.display()
     );
+    Ok(())
+}
+
+/// Replace `path` atomically through a new, uniquely named temporary file in
+/// the same directory. The temporary is created exclusively, so a pre-existing
+/// file or symlink planted in the repository is never followed or overwritten.
+fn replace_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".cururu-toml-")
+        .tempfile_in(directory)
+        .with_context(|| {
+            format!(
+                "failed to create a temporary file in {}",
+                directory.display()
+            )
+        })?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to replace {}", path.display()))?;
     Ok(())
 }
 
@@ -252,6 +274,30 @@ mod tests {
         );
         assert!(!has_section(base, "auto_approval").unwrap());
         assert!(has_section(&format!("{base}{AUTO_APPROVAL_TEMPLATE}"), "auto_approval").unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_never_follows_a_planted_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("victim");
+        std::fs::write(&target, "keep").unwrap();
+        let path = dir.path().join(".cururu.toml");
+        std::fs::write(&path, "version = 1\n").unwrap();
+        // The old fixed temporary name, planted as a symlink to another file.
+        std::os::unix::fs::symlink(&target, dir.path().join(".cururu.toml.cururu-tmp")).unwrap();
+        replace_file(&path, b"version = 1\n# updated\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "version = 1\n# updated\n"
+        );
+        assert!(
+            !std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[tokio::test]

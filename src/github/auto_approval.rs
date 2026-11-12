@@ -140,8 +140,26 @@ impl GitHubClient {
 
     /// Dismiss Cururu's own auto-approvals that were given for another head.
     pub async fn dismiss_stale_auto_approvals(&self, head: &str) -> anyhow::Result<usize> {
+        self.dismiss_auto_approvals(
+            Some(head),
+            "New commits since Cururu's auto-approval; re-evaluating.",
+        )
+        .await
+    }
+
+    /// Dismiss every Cururu auto-approval, including the one for `head`.
+    pub async fn revoke_auto_approvals(&self) -> anyhow::Result<usize> {
+        self.dismiss_auto_approvals(None, "Cururu could not publish the review for its auto-approval; a human review is required.")
+            .await
+    }
+
+    async fn dismiss_auto_approvals(
+        &self,
+        keep_head: Option<&str>,
+        message: &str,
+    ) -> anyhow::Result<usize> {
         let own_login = self.current_login().await;
-        let current = format!("{APPROVAL_MARKER}{head} -->");
+        let current = keep_head.map(|head| format!("{APPROVAL_MARKER}{head} -->"));
         let mut dismissed = 0;
         for page in 1..=10 {
             let reviews: Vec<ReviewSummary> = self
@@ -165,7 +183,9 @@ impl GitHubClient {
                 let body = review.body.as_deref().unwrap_or_default();
                 if review.state == "APPROVED"
                     && body.contains(APPROVAL_MARKER)
-                    && !body.contains(&current)
+                    && current
+                        .as_ref()
+                        .is_none_or(|current| !body.contains(current))
                     && Self::user_is_cururu(review.user.as_ref(), own_login.as_deref())
                 {
                     self.api(
@@ -176,7 +196,7 @@ impl GitHubClient {
                         ),
                     )
                     .json(&DismissReview {
-                        message: "New commits since Cururu's auto-approval; re-evaluating.",
+                        message,
                         event: "DISMISS",
                     })
                     .send()
@@ -327,5 +347,35 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn revocation_dismisses_the_current_auto_approval_too() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"login": "cururu[bot]"})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/7/reviews"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": 2, "state": "APPROVED", "body": format!("{APPROVAL_MARKER}new -->"), "user": {"login": "cururu[bot]", "type": "Bot"}}
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/repos/owner/repo/pulls/7/reviews/2/dismissals"))
+            .and(body_partial_json(serde_json::json!({"event": "DISMISS"})))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let github = client(&server);
+        assert_eq!(github.dismiss_stale_auto_approvals("new").await.unwrap(), 0);
+        assert_eq!(github.revoke_auto_approvals().await.unwrap(), 1);
     }
 }

@@ -203,8 +203,19 @@ pub fn evaluate(
             changed: output.changed_files.len(),
         });
     }
-    for finding in &output.review.findings {
-        if blocks(&finding.severity, policy.block_on) {
+    // Analyzer findings may have been filtered out of the published review
+    // by policy; they still block.
+    for finding in output
+        .review
+        .findings
+        .iter()
+        .chain(&output.analysis.findings)
+    {
+        let duplicate = vetoes.iter().any(|veto| {
+            matches!(veto, Veto::Finding { path, line, title, .. }
+                if *path == finding.path && *line == finding.line && *title == finding.title)
+        });
+        if !duplicate && blocks(&finding.severity, policy.block_on) {
             vetoes.push(Veto::Finding {
                 severity: finding.severity.clone(),
                 path: finding.path.clone(),
@@ -527,6 +538,27 @@ pub async fn decide(
     Ok(Route::NeedsHuman)
 }
 
+/// Publish an auto-approved review. If publication fails, the approval is
+/// revoked so a PR is never left approved without its published review.
+pub async fn publish_approved(
+    candidate: &crate::hosted_publication::HostedCandidate,
+    source_control: &dyn crate::scm::ScmProvider,
+) -> anyhow::Result<()> {
+    let Err(error) =
+        crate::hosted_publication::publish_candidate(candidate, source_control, None).await
+    else {
+        return Ok(());
+    };
+    match source_control.revoke_auto_approvals().await {
+        Ok(_) => Err(error.context(
+            "publishing the auto-approved review failed; Cururu revoked its approval and a human review is required",
+        )),
+        Err(revoke) => Err(error.context(format!(
+            "publishing the auto-approved review failed and revoking the approval also failed ({revoke}); dismiss the Cururu approval manually"
+        ))),
+    }
+}
+
 async fn report_check(
     source_control: &dyn crate::scm::ScmProvider,
     decision: &Decision,
@@ -712,6 +744,19 @@ mod tests {
             error.to_string().contains("malformed file headers"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn analyzer_findings_block_even_when_filtered_from_the_review() {
+        let mut out = output(vec![file("docs/a.md", "docs/a.md", 1)], vec![]);
+        out.analysis.status = "passed".into();
+        out.analysis.findings = vec![finding("medium")];
+        let decision = evaluate(&policy(), true, &out).unwrap();
+        assert!(!decision.approved);
+        // The same finding in both lists is reported once.
+        out.review.findings = vec![finding("medium")];
+        let decision = evaluate(&policy(), true, &out).unwrap();
+        assert_eq!(decision.vetoes.len(), 1, "{decision:?}");
     }
 
     #[test]
