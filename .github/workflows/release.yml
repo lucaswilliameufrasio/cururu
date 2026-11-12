@@ -359,7 +359,14 @@ jobs:
             gh release edit "$RELEASE_TAG" --title "$ANNOUNCEMENT_TITLE" \
               --notes-file "$RUNNER_TEMP/notes.txt" $PRERELEASE_FLAG
           else
-            gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG \
+            # An existing tag already fixes the commit; sending target_commitish
+            # for a non-head commit can be rejected for the workflow token.
+            if git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/$RELEASE_TAG" >/dev/null; then
+              target_args=(--verify-tag)
+            else
+              target_args=(--target "$RELEASE_COMMIT")
+            fi
+            gh release create "$RELEASE_TAG" "${target_args[@]}" $PRERELEASE_FLAG \
               --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
           fi
 
