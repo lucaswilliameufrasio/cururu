@@ -348,7 +348,6 @@ jobs:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
           ANNOUNCEMENT_TITLE: "${{ fromJson(steps.host.outputs.manifest).announcement_title }}"
           ANNOUNCEMENT_BODY: "${{ fromJson(steps.host.outputs.manifest).announcement_github_body }}"
-          RELEASE_COMMIT: ${{ needs.plan.outputs.tag-commit }}
           RELEASE_TAG: ${{ needs.plan.outputs.tag }}
         run: |
           # Write and read notes from a file to avoid quoting breaking things
@@ -359,7 +358,11 @@ jobs:
             gh release edit "$RELEASE_TAG" --title "$ANNOUNCEMENT_TITLE" \
               --notes-file "$RUNNER_TEMP/notes.txt" $PRERELEASE_FLAG
           else
-            gh release create "$RELEASE_TAG" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG \
+            # Both triggers release an existing tag (the plan job checked it
+            # out), which already fixes the commit. Sending target_commitish
+            # for a non-head commit can be rejected for the workflow token;
+            # --verify-tag fails instead of creating a tag if it is missing.
+            gh release create "$RELEASE_TAG" --verify-tag $PRERELEASE_FLAG \
               --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
           fi
 
