@@ -54,7 +54,27 @@ struct GitHubError {
     errors: Vec<serde_json::Value>,
 }
 
+#[derive(Deserialize)]
+struct WorkflowPermissions {
+    can_approve_pull_request_reviews: bool,
+}
+
 impl GitHubClient {
+    /// Whether the repository lets GitHub Actions approve pull requests.
+    pub async fn actions_can_approve_pull_requests(&self) -> anyhow::Result<bool> {
+        let permissions: WorkflowPermissions = self
+            .api(reqwest::Method::GET, "/actions/permissions/workflow")
+            .send()
+            .await
+            .context("failed to read workflow permissions")?
+            .error_for_status()
+            .context("GitHub refused to read workflow permissions")?
+            .json()
+            .await
+            .context("invalid workflow permissions")?;
+        Ok(permissions.can_approve_pull_request_reviews)
+    }
+
     /// Submit an `APPROVE` review bound to `head`. Not retried: a lost
     /// response may already have approved. A refusal by GitHub (for example
     /// Actions not allowed to approve, or approving one's own PR) is reported

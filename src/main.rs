@@ -24,6 +24,7 @@ mod review;
 mod review_input;
 mod review_usage;
 mod scm;
+mod setup;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -156,6 +157,13 @@ mod api_usage_tests {
 enum Command {
     /// Add a starter configuration and GitHub Actions workflow to this repository.
     Init,
+    /// Guide enabling an optional feature, previewing changes before writing.
+    Setup {
+        #[command(subcommand)]
+        target: SetupTarget,
+    },
+    /// Show which Cururu features the local configuration enables.
+    Status,
     /// Run the self-hosted GitHub App webhook server.
     Serve,
     /// Create a consistent online backup of the configured `SQLite` database.
@@ -304,6 +312,16 @@ enum Command {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum SetupTarget {
+    /// Add an opt-in `[auto_approval]` policy to `.cururu.toml` and check requirements.
+    AutoApproval {
+        /// Append the section after an interactive confirmation (default: preview only).
+        #[arg(long)]
+        write: bool,
+    },
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
@@ -335,6 +353,13 @@ async fn main() -> anyhow::Result<()> {
     if matches!(cli.command, Command::Init) {
         initialize_repository()?;
         return Ok(());
+    }
+    match &cli.command {
+        Command::Setup {
+            target: SetupTarget::AutoApproval { write },
+        } => return setup::auto_approval(std::path::Path::new(".cururu.toml"), *write, true).await,
+        Command::Status => return setup::status(std::path::Path::new(".cururu.toml")),
+        _ => {}
     }
     match &cli.command {
         Command::UpdateJsoncMcp {
@@ -726,6 +751,8 @@ async fn main() -> anyhow::Result<()> {
             unreachable!("handled before loading review configuration")
         }
         Command::Init
+        | Command::Setup { .. }
+        | Command::Status
         | Command::PrepareReview { .. }
         | Command::AgentReview { .. }
         | Command::ApiReview { .. }

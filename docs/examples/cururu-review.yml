@@ -79,6 +79,10 @@ jobs:
       review_status: ${{ steps.review.outputs.review_status }}
       candidate_digest: ${{ steps.review.outputs.candidate_digest }}
       candidate_uploaded: ${{ steps.keep_candidate.outcome }}
+      # Opt-in auto-approval results, for your own notifications (docs/auto-approval.md).
+      auto_approval: ${{ steps.review.outputs.auto_approval }}
+      auto_approval_reasons: ${{ steps.review.outputs.auto_approval_reasons }}
+      pr_url: ${{ steps.review.outputs.pr_url }}
     steps:
       - name: Check LLM API key
         id: llm_key
