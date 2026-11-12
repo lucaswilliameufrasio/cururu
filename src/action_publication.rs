@@ -57,7 +57,7 @@ pub async fn prepare(
     )?;
     if approvable {
         let path = candidate_path();
-        write_private_file(&path, &serde_json::to_vec_pretty(candidate)?)?;
+        write_candidate_file(&path, &serde_json::to_vec_pretty(candidate)?)?;
         append(
             "GITHUB_OUTPUT",
             &format!(
@@ -92,18 +92,19 @@ pub async fn prepare(
     Ok(())
 }
 
-fn write_private_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+/// Write the candidate so the next workflow step can read it. The Action runs
+/// in a container as root, while `actions/upload-artifact` runs as the runner
+/// user, so the file must be world-readable. Its content is not secret: the
+/// same preview is in the job summary and the PR check.
+fn write_candidate_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    std::fs::write(path, bytes)
+        .with_context(|| format!("failed to write candidate to {}", path.display()))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+            .with_context(|| format!("failed to make {} readable", path.display()))?;
     }
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("failed to write candidate to {}", path.display()))?;
-    file.write_all(bytes)?;
     Ok(())
 }
 
@@ -293,7 +294,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("candidate.json");
         let candidate = crate::hosted_publication::tests::sample("en-US");
-        write_private_file(&path, &serde_json::to_vec(&candidate).unwrap()).unwrap();
+        write_candidate_file(&path, &serde_json::to_vec(&candidate).unwrap()).unwrap();
         assert_eq!(
             read_candidate(&path, &candidate.digest()).unwrap(),
             candidate
@@ -301,7 +302,21 @@ mod tests {
         assert!(read_candidate(&path, &"0".repeat(64)).is_err());
         let mut tampered = candidate.clone();
         tampered.summary.push_str(" tampered");
-        write_private_file(&path, &serde_json::to_vec(&tampered).unwrap()).unwrap();
+        write_candidate_file(&path, &serde_json::to_vec(&tampered).unwrap()).unwrap();
         assert!(read_candidate(&path, &candidate.digest()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn candidate_file_is_readable_by_other_workflow_users() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("candidate.json");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_candidate_file(&path, b"{}").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644);
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
     }
 }
