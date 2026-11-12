@@ -1128,6 +1128,7 @@ mod tests {
         path: String,
         fail_summary: bool,
         fail_dismissal: bool,
+        fail_approval: bool,
         calls: std::sync::Mutex<Vec<String>>,
     }
 
@@ -1192,6 +1193,9 @@ mod tests {
         ) -> anyhow::Result<crate::scm::ApprovalOutcome> {
             assert_eq!(head, "head");
             assert!(body.contains("head=head"));
+            if self.fail_approval {
+                anyhow::bail!("approval outcome is unknown");
+            }
             self.record("approve");
             Ok(crate::scm::ApprovalOutcome::Approved)
         }
@@ -1283,6 +1287,29 @@ mod tests {
             scm.calls(),
             vec!["notice", "Cururu triage:neutral", "candidate"]
         );
+        // An unknown approval outcome revokes any auto-approval.
+        let (_dir, store) = temporary_store().await;
+        let scm = AutoScm {
+            path: "docs/guide.md".into(),
+            fail_approval: true,
+            ..AutoScm::default()
+        };
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.base_url = server.uri();
+        config.llm.api_key = "fixture".into();
+        config.review.language = "en-US".into();
+        config.source_control.repository = "owner/repo".into();
+        config.source_control.change_request_number = 1;
+        config.auto_approval.enabled = true;
+        let error = run_pull_request_review(&store, "fixture", &config, &scm, false, true)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("revoked any auto-approval"),
+            "{error:#}"
+        );
+        assert_eq!(scm.calls(), vec!["revoke"]);
         // A publication failure after approving revokes the approval.
         let (_dir, store) = temporary_store().await;
         let scm = AutoScm {

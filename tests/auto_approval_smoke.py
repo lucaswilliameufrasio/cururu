@@ -14,7 +14,8 @@ state = {}
 POLICY = """version = 1
 [policy]
 suggested_changes = false
-[auto_approval]
+"""
+AUTO_APPROVAL = """[auto_approval]
 enabled = {enabled}
 allowed_paths = ["docs/**", "**/*.md"]
 blocked_paths = ["**/payments/**"]
@@ -50,7 +51,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path.startswith("/repos/test/repo/git/ref/heads/"):
             self.reply(200, {"object": {"sha": head}})
         elif self.path.startswith("/repos/test/repo/contents/.cururu.toml?"):
-            self.reply(200, POLICY.format(enabled=state["enabled"]))
+            # enabled=None omits the section entirely, which is the default.
+            section = "" if state["enabled"] is None else AUTO_APPROVAL.format(enabled=state["enabled"])
+            self.reply(200, POLICY + section)
         elif self.path == "/user":
             self.reply(200, {"login": "fixture[bot]"})
         elif self.path.startswith("/repos/test/repo/pulls/1/reviews?"):
@@ -184,7 +187,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert not approvals(), state["posts"]
 
     # Disabled by default: no approval, no notice, regular flow.
-    reset("docs/guide.md", enabled="false")
+    reset("docs/guide.md", enabled=None)
     out = review("disabled")
     assert out["auto_approval"] == "disabled" and out["review_status"] == "pending_approval", out
     assert not approvals() and not state["puts"]

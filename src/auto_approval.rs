@@ -545,10 +545,25 @@ pub async fn decide(
             &head,
             &source_control.fetch_head_sha().await?,
         )?;
-        match source_control
+        let outcome = match source_control
             .approve_change_request(&head, &render_approval(decision, &language))
-            .await?
+            .await
         {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                // The approval may have been recorded even though the response
+                // was lost; never leave it active without a published review.
+                return Err(match source_control.revoke_auto_approvals().await {
+                    Ok(_) => error.context(
+                        "the approval outcome is unknown; Cururu revoked any auto-approval and a human review is required",
+                    ),
+                    Err(revoke) => error.context(format!(
+                        "the approval outcome is unknown and revoking it failed ({revoke}); dismiss any Cururu approval manually"
+                    )),
+                });
+            }
+        };
+        match outcome {
             crate::scm::ApprovalOutcome::Approved => {
                 report_check(source_control, decision, &language).await;
                 return Ok(Route::Approved);

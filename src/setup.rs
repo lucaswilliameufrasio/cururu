@@ -123,6 +123,13 @@ fn replace_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
             )
         })?;
     temporary.write_all(bytes)?;
+    // Keep the original file's permissions; the temporary starts as 0600.
+    if let Ok(metadata) = std::fs::metadata(path) {
+        temporary
+            .as_file()
+            .set_permissions(metadata.permissions())
+            .with_context(|| format!("failed to keep the permissions of {}", path.display()))?;
+    }
     temporary.as_file().sync_all()?;
     temporary
         .persist(path)
@@ -289,7 +296,13 @@ mod tests {
         std::fs::write(&path, "version = 1\n").unwrap();
         // The old fixed temporary name, planted as a symlink to another file.
         std::os::unix::fs::symlink(&target, dir.path().join(".cururu.toml.cururu-tmp")).unwrap();
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+            .unwrap();
         replace_file(&path, b"version = 1\n# updated\n").unwrap();
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&path).unwrap().permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o644);
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
