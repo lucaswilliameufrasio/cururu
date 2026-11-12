@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [5.0.1] - 2026-11-12
+
+### Bug Fixes
+
+- Build aarch64 macOS binaries on macos-15
+- Stop unrelated PR comments from cancelling reviews
+- Start comment reviews only for exact commands
+- Validate comment commands in a gate job
+- Create releases for existing tags without a target
+- Always verify the existing release tag
+- Publish only candidates that were stored
+- Make the prepared candidate readable by later steps
+
+### Chores
+
+- Pin v5.0.0 OCI digest
+- Adopt Cururu v5.0.0 and its approval flow
 ## [5.0.0] - 2026-11-11
 
 ### Breaking Changes
@@ -29,6 +46,7 @@ All notable changes to this project will be documented in this file.
 - Pin v4.9.0 OCI digest
 - Bump the docker-actions group across 1 directory with 2 updates
 - Install curated agent skills
+- Prepare for v5.0.0
 
 ### Documentation
 
