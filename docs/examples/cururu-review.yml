@@ -78,6 +78,7 @@ jobs:
     outputs:
       review_status: ${{ steps.review.outputs.review_status }}
       candidate_digest: ${{ steps.review.outputs.candidate_digest }}
+      candidate_uploaded: ${{ steps.keep_candidate.outcome }}
     steps:
       - name: Check LLM API key
         id: llm_key
@@ -93,7 +94,7 @@ jobs:
       - name: Review PR
         id: review
         if: steps.llm_key.outputs.skip == 'false'
-        uses: lucaswilliameufrasio/cururu@601b4e125b7dd865c6adab289d2d8948f1e5c841 # v4.8.0 — replace with the first v5 release: v4 publishes without approval and has no publish mode
+        uses: lucaswilliameufrasio/cururu@cb0c4379ee2ebb812c4fda918ea11a1702c3d96d # v5.0.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           llm_api_key: ${{ secrets.LLM_API_KEY }}
@@ -102,6 +103,7 @@ jobs:
           cururu_profile: balanced
           cururu_fail_on: off
       - name: Keep candidate for the publish job
+        id: keep_candidate
         if: ${{ !cancelled() && steps.review.outputs.review_status == 'pending_approval' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -111,7 +113,12 @@ jobs:
 
   publish:
     needs: review
-    if: ${{ !cancelled() && needs.review.outputs.review_status == 'pending_approval' }}
+    # !cancelled() keeps a candidate publishable when the review job fails only
+    # on the configured quality gate; the candidate must have been stored.
+    if: >-
+      ${{ !cancelled() &&
+          needs.review.outputs.review_status == 'pending_approval' &&
+          needs.review.outputs.candidate_uploaded == 'success' }}
     # Required reviewers on this environment approve the exact candidate.
     environment: cururu-publish
     # A newer review supersedes a publication still waiting for approval.
@@ -125,7 +132,7 @@ jobs:
         with:
           name: cururu-candidate
       - name: Publish approved review
-        uses: lucaswilliameufrasio/cururu@601b4e125b7dd865c6adab289d2d8948f1e5c841 # v4.8.0 — replace with the first v5 release: v4 publishes without approval and has no publish mode
+        uses: lucaswilliameufrasio/cururu@cb0c4379ee2ebb812c4fda918ea11a1702c3d96d # v5.0.0
         with:
           mode: publish
           github_token: ${{ secrets.GITHUB_TOKEN }}
