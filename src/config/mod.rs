@@ -176,7 +176,7 @@ impl AppConfig {
                 api_key: env::env_optional("LLM_API_KEY").unwrap_or_default(),
                 model,
                 temperature: env::env_parse("LLM_TEMPERATURE", 0.1)?,
-                max_output_tokens: env::env_parse("LLM_MAX_OUTPUT_TOKENS", 4000)?,
+                max_output_tokens: env::env_parse("LLM_MAX_OUTPUT_TOKENS", 8000)?,
             },
             review: ReviewConfig {
                 max_diff_bytes: env::env_parse("CURURU_MAX_DIFF_BYTES", 180_000)?,
