@@ -8,7 +8,8 @@ on:
 
 permissions:
   contents: read
-  checks: read
+  checks: write
+  actions: read
   pull-requests: write
   issues: write
 
@@ -62,6 +63,9 @@ jobs:
       cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      review_status: ${{ steps.review.outputs.review_status }}
+      candidate_digest: ${{ steps.review.outputs.candidate_digest }}
     steps:
       - name: Check LLM API key
         id: llm_key
@@ -75,11 +79,41 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Review PR
+        id: review
         if: steps.llm_key.outputs.skip == 'false'
-        uses: lucaswilliameufrasio/cururu@dcf93993a6729cd56eb323ffcadfe798dfa7441f # main; Dependabot updates this immutable pin.
+        uses: lucaswilliameufrasio/cururu@cb0c4379ee2ebb812c4fda918ea11a1702c3d96d # v5.0.0
         with:
           llm_api_key: ${{ secrets.LLM_API_KEY }}
           expected_head_sha: ${{ github.event.pull_request.head.sha || '' }}
           cururu_language: pt-BR
           cururu_profile: balanced
           cururu_fail_on: off
+      - name: Keep candidate for the publish job
+        if: ${{ !cancelled() && steps.review.outputs.review_status == 'pending_approval' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cururu-candidate
+          path: cururu-candidate.json
+          retention-days: 7
+
+  publish:
+    needs: review
+    if: ${{ !cancelled() && needs.review.outputs.review_status == 'pending_approval' }}
+    # Required reviewers on this environment approve the exact candidate.
+    environment: cururu-publish
+    # A newer review supersedes a publication still waiting for approval.
+    concurrency:
+      group: cururu-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cururu-candidate
+      - name: Publish approved review
+        uses: lucaswilliameufrasio/cururu@cb0c4379ee2ebb812c4fda918ea11a1702c3d96d # v5.0.0
+        with:
+          mode: publish
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          candidate_digest: ${{ needs.review.outputs.candidate_digest }}
