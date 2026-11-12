@@ -14,7 +14,13 @@ pub struct AnthropicAgent {
     config: LlmConfig,
     system: String,
     preferences: Option<serde_json::Value>,
+    retry_delays: Vec<Duration>,
 }
+
+/// An Anthropic failure that may succeed on a later attempt.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct TransientAnthropicError(String);
 
 impl AnthropicAgent {
     pub fn new(
@@ -27,12 +33,43 @@ impl AnthropicAgent {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
             config: config.clone(),
+            retry_delays: cururu_engine::openai::TRANSIENT_RETRY_DELAYS.to_vec(),
             system,
             preferences,
         })
     }
 
+    #[cfg(test)]
+    fn with_retry_delays(mut self, delays: Vec<Duration>) -> Self {
+        self.retry_delays = delays;
+        self
+    }
+
+    /// Send a message, retrying rate limits (429), overload (529) and server
+    /// errors with bounded backoff; other failures are returned at once.
     async fn message(
+        &self,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> anyhow::Result<(String, Option<cururu_engine::ReviewUsage>)> {
+        let mut attempt = 0;
+        loop {
+            match self.message_once(system, user, max_tokens).await {
+                Err(error)
+                    if error.is::<TransientAnthropicError>()
+                        && attempt < self.retry_delays.len() =>
+                {
+                    tracing::warn!(%error, attempt = attempt + 1, "transient Anthropic failure; retrying");
+                    tokio::time::sleep(self.retry_delays[attempt]).await;
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    async fn message_once(
         &self,
         system: &str,
         user: &str,
@@ -53,11 +90,19 @@ impl AnthropicAgent {
             .json(&body)
             .send()
             .await
-            .map_err(|_| anyhow::anyhow!("Anthropic request failed"))?;
+            .map_err(|_| TransientAnthropicError("Anthropic request failed".into()))?;
+        let status = response.status();
+        if matches!(status.as_u16(), 429 | 529) || status.is_server_error() {
+            return Err(TransientAnthropicError(format!(
+                "Anthropic is rate limited or overloaded (HTTP {})",
+                status.as_u16()
+            ))
+            .into());
+        }
         anyhow::ensure!(
-            response.status().is_success(),
+            status.is_success(),
             "Anthropic request rejected (HTTP {})",
-            response.status().as_u16()
+            status.as_u16()
         );
         anyhow::ensure!(
             response
@@ -379,5 +424,56 @@ mod tests {
             };
             assert!(agent.review_chunk(&chunk).await.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn rate_limits_and_overload_are_retried_but_client_errors_are_not() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(529))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST")).and(path("/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"stop_reason":"end_turn","content":[{"type":"text","text":"ok"}]})))
+            .mount(&server).await;
+        let config = LlmConfig {
+            provider: crate::config::LlmProvider::Anthropic,
+            base_url: server.uri(),
+            api_key: "fixture-key".into(),
+            model: "fixture".into(),
+            temperature: 0.1,
+            max_output_tokens: 100,
+        };
+        let fast = vec![Duration::from_millis(1); 4];
+        let agent = AnthropicAgent::new(&config, String::new(), None)
+            .unwrap()
+            .with_retry_delays(fast.clone());
+        assert_eq!(agent.message("s", "u", 10).await.unwrap().0, "ok");
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/messages"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&server)
+            .await;
+        let config = LlmConfig {
+            base_url: server.uri(),
+            ..config
+        };
+        let agent = AnthropicAgent::new(&config, String::new(), None)
+            .unwrap()
+            .with_retry_delays(fast);
+        let error = agent.message("s", "u", 10).await.unwrap_err().to_string();
+        assert!(error.contains("HTTP 400"), "{error}");
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 }

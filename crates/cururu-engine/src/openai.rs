@@ -4,11 +4,24 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::{
-    ChunkResult, ReviewAgent, ReviewUsage, provider::ChatResponse, retry::retry_with_backoff,
-};
+use crate::{ChunkResult, ReviewAgent, ReviewUsage, provider::ChatResponse};
 
 const MAX_REVIEW_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// Waits between attempts after a transient provider failure (rate limit,
+/// 5xx, a body without choices or an unreadable response): about 37 seconds
+/// in total before the review gives up.
+pub const TRANSIENT_RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(20),
+];
+
+/// A provider failure that may succeed on a later attempt.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct TransientProviderError(String);
 
 #[derive(Clone)]
 pub struct OpenAiCompatibleSettings {
@@ -27,6 +40,7 @@ pub struct OpenAiCompatibleAgent {
     review_preferences_message: Option<String>,
     analysis_evidence_message: Option<String>,
     host_review_evidence_message: Option<String>,
+    retry_delays: Vec<Duration>,
 }
 
 impl OpenAiCompatibleAgent {
@@ -42,7 +56,68 @@ impl OpenAiCompatibleAgent {
             review_preferences_message: None,
             analysis_evidence_message: None,
             host_review_evidence_message: None,
+            retry_delays: TRANSIENT_RETRY_DELAYS.to_vec(),
         })
+    }
+
+    /// Override the waits between attempts after transient provider failures.
+    #[must_use]
+    pub fn with_retry_delays(mut self, delays: Vec<Duration>) -> Self {
+        self.retry_delays = delays;
+        self
+    }
+
+    /// Send one review request, classifying failures as transient or not.
+    async fn send_review_request(
+        &self,
+        url: &str,
+        request: &ChatRequest<'_>,
+    ) -> anyhow::Result<ChatResponse> {
+        let response = self
+            .client
+            .post(url)
+            .timeout(Duration::from_mins(2))
+            .bearer_auth(&self.settings.api_key)
+            .json(request)
+            .send()
+            .await
+            .map_err(|_| TransientProviderError("failed to send LLM request".into()))?;
+        let status = response.status();
+        if status.as_u16() == 429 || status.is_server_error() {
+            return Err(TransientProviderError(format!(
+                "LLM API is unavailable or rate limited (HTTP {})",
+                status.as_u16()
+            ))
+            .into());
+        }
+        anyhow::ensure!(
+            status.is_success(),
+            "LLM API rejected request (HTTP {})",
+            status.as_u16()
+        );
+        let response = bounded_review_response(response).await.map_err(|error| {
+            // An oversized response is deterministic; a truncated or
+            // unreadable body is usually a provider hiccup.
+            if error.to_string().contains("exceeds size limit") {
+                error
+            } else {
+                TransientProviderError(error.to_string()).into()
+            }
+        })?;
+        if response.choices.is_empty() {
+            // OpenAI-compatible routers report upstream rate limits and outages
+            // as a successful response with an error and no choices; other
+            // errors (an unknown model, for example) are permanent.
+            let error = response
+                .first_choice("LLM returned no choices")
+                .err()
+                .unwrap_or_else(|| anyhow::anyhow!("LLM returned no choices"));
+            if response_error_is_transient(response.error.as_ref()) {
+                return Err(TransientProviderError(error.to_string()).into());
+            }
+            return Err(error);
+        }
+        Ok(response)
     }
 
     /// Adds only host-approved evidence to user messages, never system instructions.
@@ -246,27 +321,21 @@ impl ReviewAgent for OpenAiCompatibleAgent {
             },
         };
         let url = self.completions_url();
-        let response = retry_with_backoff(
-            || async {
-                let response = self
-                    .client
-                    .post(&url)
-                    .timeout(Duration::from_mins(2))
-                    .bearer_auth(&self.settings.api_key)
-                    .json(&request)
-                    .send()
-                    .await
-                    .map_err(|_| anyhow::anyhow!("failed to send LLM request"))?;
-                anyhow::ensure!(
-                    response.status().is_success(),
-                    "LLM API rejected request (HTTP {})",
-                    response.status().as_u16()
-                );
-                bounded_review_response(response).await
-            },
-            3,
-        )
-        .await?;
+        let mut attempt = 0;
+        let response = loop {
+            match self.send_review_request(&url, &request).await {
+                Ok(response) => break response,
+                Err(error)
+                    if error.is::<TransientProviderError>()
+                        && attempt < self.retry_delays.len() =>
+                {
+                    warn!(%error, attempt = attempt + 1, "transient LLM failure; retrying");
+                    tokio::time::sleep(self.retry_delays[attempt]).await;
+                    attempt += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        };
 
         let choice = response.first_choice("LLM returned no choices")?;
         let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
@@ -275,6 +344,38 @@ impl ReviewAgent for OpenAiCompatibleAgent {
         let usage = response.extract_metadata().usage;
         Ok(ChunkResult { review, usage })
     }
+}
+
+/// Whether a provider error body describes a condition that may clear.
+fn response_error_is_transient(error: Option<&serde_json::Value>) -> bool {
+    let Some(error) = error else {
+        return false;
+    };
+    let code = error.get("code").and_then(|code| {
+        code.as_u64()
+            .or_else(|| code.as_str().and_then(|code| code.parse().ok()))
+    });
+    if code.is_some_and(|code| code == 429 || (500..600).contains(&code)) {
+        return true;
+    }
+    let text = error
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| error.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    [
+        "rate limit",
+        "rate-limit",
+        "temporarily",
+        "overloaded",
+        "unavailable",
+        "timeout",
+        "try again",
+        "retry",
+    ]
+    .iter()
+    .any(|hint| text.contains(hint))
 }
 
 async fn bounded_review_response(mut response: reqwest::Response) -> anyhow::Result<ChatResponse> {
@@ -444,7 +545,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_string("private".repeat(160_000)))
-            .expect(4)
+            .expect(1)
             .mount(&server)
             .await;
         let agent = OpenAiCompatibleAgent::new(settings(server.uri()), String::new()).unwrap();
@@ -468,7 +569,7 @@ mod tests {
                 ResponseTemplate::new(307)
                     .insert_header("Location", format!("{}/capture", destination.uri())),
             )
-            .expect(4)
+            .expect(1)
             .mount(&source)
             .await;
         let agent = OpenAiCompatibleAgent::new(settings(source.uri()), String::new()).unwrap();
@@ -676,5 +777,87 @@ mod tests {
         let message = format!("{:#}", result.unwrap_err());
         assert!(message.contains("No endpoints found for this model"));
         assert!(!message.contains("missing field `choices`"));
+        // A permanent provider error is not retried.
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn transient_provider_failures_are_retried_and_permanent_ones_are_not() {
+        use std::time::Duration;
+        use wiremock::matchers::body_partial_json;
+        let review = serde_json::json!({"model":"m","files_reviewed":1,"summary":"","findings":[]})
+            .to_string();
+        let ok =
+            serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]});
+        let rate_limited = serde_json::json!({"error":{"code":429,"message":"model is temporarily rate-limited upstream"}});
+        let chunk = DiffChunk {
+            index: 0,
+            files: vec!["a".into()],
+            text: "diff".into(),
+        };
+        let fast = vec![Duration::from_millis(1); 4];
+
+        // Rate limit, 503 and an unreadable body, then success.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rate_limited.clone()))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok.clone()))
+            .mount(&server)
+            .await;
+        let agent = OpenAiCompatibleAgent::new(settings(server.uri()), String::new())
+            .unwrap()
+            .with_retry_delays(fast.clone());
+        agent.review_chunk(&chunk).await.unwrap();
+        assert_eq!(server.received_requests().await.unwrap().len(), 4);
+
+        // A permanent client error is not retried.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let agent = OpenAiCompatibleAgent::new(settings(server.uri()), String::new())
+            .unwrap()
+            .with_retry_delays(fast.clone());
+        let error = agent.review_chunk(&chunk).await.unwrap_err().to_string();
+        assert!(error.contains("HTTP 401"), "{error}");
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+
+        // Exhausted retries keep the provider's message.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_partial_json(serde_json::json!({"model":"test-model"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rate_limited))
+            .mount(&server)
+            .await;
+        let agent = OpenAiCompatibleAgent::new(settings(server.uri()), String::new())
+            .unwrap()
+            .with_retry_delays(fast);
+        let error = agent.review_chunk(&chunk).await.unwrap_err().to_string();
+        assert!(
+            error.contains("temporarily rate-limited upstream"),
+            "{error}"
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 5);
     }
 }
