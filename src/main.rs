@@ -818,12 +818,18 @@ async fn main() -> anyhow::Result<()> {
                                 .append(true)
                                 .open(path)?;
                             writeln!(file, "review_status=skipped_diff_limit")?;
-                            if config.auto_approval.enabled {
-                                writeln!(file, "auto_approval=not_evaluated")?;
-                            }
                             writeln!(file, "quality_gate=not_run")?;
                             writeln!(file, "quality_gate_passed=false")?;
                         }
+                        write_auto_approval_status(
+                            &config,
+                            if config.auto_approval.enabled {
+                                "not_evaluated"
+                            } else {
+                                "disabled"
+                            },
+                            "[]",
+                        )?;
                         println!(
                             "Cururu: review not performed because the diff exceeded the configured limit"
                         );
@@ -1088,15 +1094,24 @@ fn write_auto_approval_outputs(
     config: &AppConfig,
     result: &review::ReviewOutput,
 ) -> anyhow::Result<()> {
-    let (status, reasons) = result.auto_approval.as_ref().map_or_else(
-        || ("disabled", "[]".to_string()),
+    result.auto_approval.as_ref().map_or_else(
+        || write_auto_approval_status(config, "disabled", "[]"),
         |decision| {
-            (
+            write_auto_approval_status(
+                config,
                 decision.status(),
-                auto_approval::reasons_json(decision, &result.language),
+                &auto_approval::reasons_json(decision, &result.language),
             )
         },
-    );
+    )
+}
+
+/// Always write all three outputs so consuming workflows can rely on them.
+fn write_auto_approval_status(
+    config: &AppConfig,
+    status: &str,
+    reasons: &str,
+) -> anyhow::Result<()> {
     append_github_output(&format!(
         "auto_approval={status}\nauto_approval_reasons={reasons}\npr_url={}/{}/pull/{}\n",
         config.source_control.web_url.trim_end_matches('/'),

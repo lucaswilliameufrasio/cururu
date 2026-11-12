@@ -213,7 +213,7 @@ pub fn validate_publication_findings(
     validate_findings(prepared, &normalized)
 }
 
-fn prepare(
+pub fn prepare(
     config: &AppConfig,
     raw: &str,
     revision: String,

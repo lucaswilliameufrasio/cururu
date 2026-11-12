@@ -76,7 +76,8 @@ adapt the payload for Slack, Telegram or others):
           message="$(jq -r --arg url "$PR_URL" \
             '"Human review needed: \($url)\n" + (map("- " + .message) | join("\n"))' <<<"$REASONS")"
           jq -n --arg content "$message" '{content: $content}' \
-            | curl --fail --silent --show-error -H 'Content-Type: application/json' -d @- "$WEBHOOK_URL"
+            | curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+              -H 'Content-Type: application/json' -d @- "$WEBHOOK_URL"
 ```
 
 Add `auto_approval`, `auto_approval_reasons` and `pr_url` to the review job's

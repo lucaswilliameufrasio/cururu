@@ -109,10 +109,10 @@ with tempfile.TemporaryDirectory() as directory:
            "CURURU_PROVIDER": "openai", "LLM_BASE_URL": url, "LLM_API_KEY": "fixture-api",
            "CURURU_LANGUAGE": "pt-BR", "GITHUB_RUN_ID": "5"}
 
-    def review(name):
+    def review(name, **extra):
         output = os.path.join(directory, "output-" + name)
         open(output, "w").close()
-        result = subprocess.run([sys.argv[1], "review"], cwd=directory, env=dict(env, GITHUB_OUTPUT=output),
+        result = subprocess.run([sys.argv[1], "review"], cwd=directory, env=dict(env, GITHUB_OUTPUT=output, **extra),
                                 capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, (name, result.stderr)
         lines = open(output).read().splitlines()
@@ -175,6 +175,13 @@ with tempfile.TemporaryDirectory() as directory:
     out = review("stale")
     assert state["puts"] and state["puts"][0][0] == "/repos/test/repo/pulls/1/reviews/3/dismissals", state["puts"]
     assert out["auto_approval"] == "approved"
+
+    # A diff over the limit is not evaluated, and every output is still written.
+    reset("docs/guide.md")
+    out = review("too-large", CURURU_MAX_DIFF_BYTES="10")
+    assert out["review_status"] == "skipped_diff_limit" and out["auto_approval"] == "not_evaluated", out
+    assert out["auto_approval_reasons"] == "[]" and out["pr_url"] == "https://github.example/test/repo/pull/1", out
+    assert not approvals(), state["posts"]
 
     # Disabled by default: no approval, no notice, regular flow.
     reset("docs/guide.md", enabled="false")

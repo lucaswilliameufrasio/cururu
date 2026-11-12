@@ -23,6 +23,9 @@ pub enum Veto {
         path: String,
         pattern: String,
     },
+    UnparsedPath {
+        path: String,
+    },
     OutsideAllowedPaths {
         path: String,
     },
@@ -91,30 +94,54 @@ fn matcher(patterns: &[String]) -> anyhow::Result<GlobSet> {
     Ok(builder.build()?)
 }
 
-/// Paths touched by one file patch: the new path plus the old one for
-/// renames and deletions, so moving a file out of a protected area is caught.
-fn touched_paths(file: &crate::diff::ChangedFile) -> Vec<String> {
+/// Paths touched by one file patch, read from the per-path header lines
+/// (`rename from`, `--- a/`, …) so renames and deletions out of a protected
+/// area are caught. `Err` names a quoted path that cannot be checked safely.
+fn touched_paths(file: &crate::diff::ChangedFile) -> Result<Vec<String>, String> {
     let mut paths = vec![file.path.clone()];
-    let header = file.patch.lines().next().unwrap_or_default();
-    if let Some(rest) = header.strip_prefix("diff --git a/")
-        && let Some(separator) = rest.find(" b/")
-    {
-        let old = &rest[..separator];
-        if old != file.path {
-            paths.push(old.to_string());
+    for line in file.patch.lines().skip(1) {
+        if line.starts_with("@@ ") {
+            break;
+        }
+        if line.starts_with("--- \"") || line.starts_with("+++ \"") {
+            return Err(file.path.clone());
+        }
+        let path = [
+            "rename from ",
+            "rename to ",
+            "copy from ",
+            "copy to ",
+            "--- a/",
+            "+++ b/",
+        ]
+        .iter()
+        .find_map(|prefix| line.strip_prefix(prefix));
+        let Some(path) = path else { continue };
+        if path.starts_with('"') {
+            return Err(file.path.clone());
+        }
+        if !paths.iter().any(|known| known == path) {
+            paths.push(path.to_string());
         }
     }
-    paths
+    Ok(paths)
 }
 
+/// Added and removed lines inside hunks; header lines such as `+++ b/x` are
+/// not counted, but an added line whose content starts with `++` is.
 fn changed_line_count(file: &crate::diff::ChangedFile) -> usize {
-    file.patch
-        .lines()
-        .filter(|line| {
-            (line.starts_with('+') && !line.starts_with("+++"))
-                || (line.starts_with('-') && !line.starts_with("---"))
-        })
-        .count()
+    let mut in_hunk = false;
+    let mut count = 0;
+    for line in file.patch.lines() {
+        if line.starts_with("@@ ") {
+            in_hunk = true;
+        } else if line.starts_with("diff --git ") {
+            in_hunk = false;
+        } else if in_hunk && (line.starts_with('+') || line.starts_with('-')) {
+            count += 1;
+        }
+    }
+    count
 }
 
 fn blocks(severity: &str, threshold: Severity) -> bool {
@@ -138,7 +165,14 @@ pub fn evaluate(
     let mut changed_lines = 0usize;
     for file in &output.changed_files {
         changed_lines = changed_lines.saturating_add(changed_line_count(file));
-        for path in touched_paths(file) {
+        let paths = match touched_paths(file) {
+            Ok(paths) => paths,
+            Err(path) => {
+                vetoes.push(Veto::UnparsedPath { path });
+                continue;
+            }
+        };
+        for path in paths {
             if let Some(index) = blocked.matches(&path).first() {
                 vetoes.push(Veto::BlockedPath {
                     path: path.clone(),
@@ -234,6 +268,19 @@ pub fn describe(veto: &Veto, language: &str) -> String {
                     "{} matches the protected path {}",
                     code(path),
                     code(pattern)
+                )
+            }
+        }
+        Veto::UnparsedPath { path } => {
+            if pt {
+                format!(
+                    "um caminho em {} está entre aspas e não pode ser verificado com segurança",
+                    code(path)
+                )
+            } else {
+                format!(
+                    "a path in {} is quoted and cannot be checked safely",
+                    code(path)
                 )
             }
         }
@@ -631,6 +678,40 @@ mod tests {
         assert!(decision.vetoes.contains(&Veto::OutsideAllowedPaths {
             path: "src/payments/fees.rs".into()
         }));
+    }
+
+    #[test]
+    fn ambiguous_or_quoted_paths_and_plus_prefixed_lines_are_handled() {
+        // A header whose old path contains " b/" is ambiguous; the rename lines are not.
+        let renamed = file("docs/new.md", "src/payments/a b/c.rs", 1);
+        let decision = evaluate(&policy(), false, &output(vec![renamed], vec![])).unwrap();
+        assert!(decision.vetoes.iter().any(|veto| matches!(veto, Veto::BlockedPath { path, .. } if path == "src/payments/a b/c.rs")), "{decision:?}");
+
+        let mut quoted = file("docs/new.md", "docs/new.md", 1);
+        quoted.patch = quoted
+            .patch
+            .replace("--- a/docs/new.md", "--- \"a/src/payments/\\303\\247.rs\"");
+        let decision = evaluate(&policy(), false, &output(vec![quoted], vec![])).unwrap();
+        assert!(decision.vetoes.contains(&Veto::UnparsedPath {
+            path: "docs/new.md".into()
+        }));
+
+        let mut counted = file("docs/a.md", "docs/a.md", 0);
+        counted.patch.push_str("+++i;\n---j;\n+x\n");
+        assert_eq!(changed_line_count(&counted), 3);
+    }
+
+    #[test]
+    fn quoted_file_headers_fail_review_preparation() {
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.review.chunk_bytes = 10_000;
+        config.review.max_diff_bytes = 10_000;
+        let raw = "diff --git a/docs/a.md b/docs/a.md\n@@ -1 +1 @@\n-a\n+b\ndiff --git \"a/src/payments/\\303\\247.rs\" \"b/src/payments/\\303\\247.rs\"\n@@ -1 +1 @@\n-a\n+b\n";
+        let error = crate::review_input::prepare(&config, raw, "head".into(), "pr").unwrap_err();
+        assert!(
+            error.to_string().contains("malformed file headers"),
+            "{error}"
+        );
     }
 
     #[test]
