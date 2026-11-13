@@ -127,8 +127,12 @@ pub fn suggest_limits(
 /// Sample recent PRs and print suggested limits with a TOML snippet.
 pub async fn limits(path: &Path, sample: usize) -> anyhow::Result<()> {
     let mut config = AppConfig::from_local_env()?;
-    if let Ok(raw) = std::fs::read_to_string(path) {
-        config.merge_toml_str(&raw)?;
+    match std::fs::read_to_string(path) {
+        Ok(raw) => config.merge_toml_str(&raw)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
     }
     anyhow::ensure!(
         !config.source_control.repository.is_empty() && !config.source_control.token.is_empty(),
