@@ -310,6 +310,11 @@ or an unparseable response usually needs a higher value, typically for large PRs
 or many findings. Lower it (for example `4000`) to cap cost on repositories with
 small PRs. You only pay for tokens the model actually generates, so a higher
 limit raises the worst case, not every review.
+`cururu setup limits` samples recent PRs and the token usage Cururu recorded on
+their checks, and suggests higher limits when they would help. When a review
+stops at the limit, the Action and the App explain which setting to change.
+Transient provider failures (rate limits, overload, 5xx) are retried with
+bounded backoff before the review fails.
 
 ### Context files
 
@@ -741,6 +746,7 @@ cururu review         Review and prepare a candidate for approval (no comment)
 cururu publish-approved-review   Publish an Action candidate from an approved job
 cururu approve-hosted-review     Inspect and approve a hosted candidate
 cururu setup auto-approval       Preview (or --write) an opt-in auto-approval policy
+cururu setup limits              Suggest diff and output-token limits from recent PRs
 cururu status                    Show which Cururu features are enabled
 cururu print-config   Print merged configuration
 ```

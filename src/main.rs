@@ -8,6 +8,7 @@ mod auto_approval;
 mod commands;
 mod config;
 mod context;
+mod diagnostics;
 mod diff;
 mod evaluation;
 mod github;
@@ -314,6 +315,12 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum SetupTarget {
+    /// Suggest diff and model output limits from recent PRs (preview only).
+    Limits {
+        /// Number of recently updated PRs to sample.
+        #[arg(long, default_value_t = 20)]
+        sample: usize,
+    },
     /// Add an opt-in `[auto_approval]` policy to `.cururu.toml` and check requirements.
     AutoApproval {
         /// Append the section after an interactive confirmation (default: preview only).
@@ -355,6 +362,9 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     match &cli.command {
+        Command::Setup {
+            target: SetupTarget::Limits { sample },
+        } => return setup::limits(std::path::Path::new(".cururu.toml"), *sample).await,
         Command::Setup {
             target: SetupTarget::AutoApproval { write },
         } => return setup::auto_approval(std::path::Path::new(".cururu.toml"), *write, true).await,
@@ -835,6 +845,14 @@ async fn main() -> anyhow::Result<()> {
                         );
                         return Ok(());
                     }
+                    if let Some(failure) = error.downcast_ref::<agent::InvalidReviewOutput>() {
+                        report_incomplete_review(
+                            &config,
+                            source_control.as_ref(),
+                            &failure.finish_reason,
+                        )
+                        .await?;
+                    }
                     return Err(error);
                 }
             };
@@ -1074,6 +1092,40 @@ fn write_action_outputs(report: &quality::QualityReport) -> anyhow::Result<()> {
     writeln!(file, "medium_count={}", report.medium_count)?;
     writeln!(file, "low_count={}", report.low_count)?;
     writeln!(file, "highest_severity={}", report.highest_severity)?;
+    Ok(())
+}
+
+/// Explain an incomplete model response in the job summary and the PR check,
+/// with the setting to change; nothing is commented on the PR.
+async fn report_incomplete_review(
+    config: &AppConfig,
+    source_control: &dyn scm::ScmProvider,
+    finish_reason: &str,
+) -> anyhow::Result<()> {
+    let diagnostic = diagnostics::incomplete_review(config, finish_reason);
+    if let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .context("failed to open GITHUB_STEP_SUMMARY")?;
+        writeln!(file, "## {}\n\n{}", diagnostic.title, diagnostic.body)?;
+    }
+    append_github_output("review_status=incomplete\n")?;
+    if let Ok(head) = source_control.fetch_head_sha().await
+        && let Err(error) = source_control
+            .create_candidate_check(&scm::CandidateCheck {
+                head_sha: &head,
+                external_id: "diagnostic",
+                title: diagnostic.title,
+                summary: &diagnostic.body,
+                text: &diagnostic.body,
+                approval_action: false,
+            })
+            .await
+    {
+        tracing::warn!(%error, "could not report the incomplete review check");
+    }
     Ok(())
 }
 

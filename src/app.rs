@@ -618,10 +618,8 @@ async fn show_truncation_diagnostic(
     let Some(failure) = error.downcast_ref::<agent::InvalidReviewOutput>() else {
         return;
     };
-    let mut body = format!(
-        "The model reported an incomplete response (finish reason: `{}`). No partial review was prepared.",
-        failure.finish_reason
-    );
+    let diagnostic = crate::diagnostics::incomplete_review(config, &failure.finish_reason);
+    let mut body = diagnostic.body;
     if config.review.recommendations
         && let Ok((recommendation, usage)) =
             agent::recommend_after_truncation(&config.llm, &failure.finish_reason).await
@@ -644,8 +642,8 @@ async fn show_truncation_diagnostic(
         .create_candidate_check(&CandidateCheck {
             head_sha: &head_sha,
             external_id: "diagnostic",
-            title: "Review could not complete",
-            summary: "No review was prepared. See the diagnostic below.",
+            title: diagnostic.title,
+            summary: &body,
             text: &body,
             approval_action: false,
         })

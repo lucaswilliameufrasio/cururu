@@ -7,7 +7,6 @@ pub mod auto_context;
 pub mod config;
 pub mod openai;
 pub mod provider;
-mod retry;
 pub mod review_context;
 pub mod review_policy;
 pub mod review_preferences;
