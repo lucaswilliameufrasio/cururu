@@ -53,6 +53,7 @@ const ESTIMATED_BYTES_PER_FILE: u64 = 200;
 pub struct LimitSuggestion {
     pub sampled: usize,
     pub runs_with_usage: usize,
+    pub usage_unavailable: usize,
     pub largest_completion: Option<u64>,
     pub output_tokens: Option<u32>,
     pub largest_estimated_bytes: u64,
@@ -97,8 +98,9 @@ pub fn suggest_limits(
     sizes.sort_unstable();
     let current = config.review.max_diff_bytes as u64;
     let over_diff_limit = sizes.iter().filter(|size| **size > current).count();
+    // Nearest-rank 90th percentile: ceil(0.9 n) - 1.
     let p90 = sizes
-        .get((sizes.len().saturating_mul(9) / 10).min(sizes.len().saturating_sub(1)))
+        .get(sizes.len().saturating_mul(9).div_ceil(10).saturating_sub(1))
         .copied()
         .unwrap_or_default();
     let max_diff_bytes = (p90 > current)
@@ -109,6 +111,10 @@ pub fn suggest_limits(
         runs_with_usage: samples
             .iter()
             .filter(|sample| sample.completion_tokens.is_some())
+            .count(),
+        usage_unavailable: samples
+            .iter()
+            .filter(|sample| sample.usage_unavailable)
             .count(),
         largest_completion,
         output_tokens,
@@ -146,6 +152,12 @@ pub async fn limits(path: &Path, sample: usize) -> anyhow::Result<()> {
             )
         )
     );
+    if suggestion.usage_unavailable > 0 {
+        println!(
+            "  Warning: the Cururu checks of {} PR(s) could not be read; their usage is missing from this sample.",
+            suggestion.usage_unavailable
+        );
+    }
     println!(
         "  Diff: {} bytes now; largest PR is about {} bytes (estimated from line counts); {} of {} sampled PRs would exceed the limit.",
         config.review.max_diff_bytes,
@@ -429,6 +441,7 @@ mod tests {
             changed_lines: lines,
             changed_files: 10,
             completion_tokens: tokens,
+            usage_unavailable: false,
         };
         let samples: Vec<_> = (0..9)
             .map(|_| sample(200, None))
@@ -438,7 +451,8 @@ mod tests {
         assert_eq!(suggestion.largest_completion, Some(5200));
         assert_eq!(suggestion.output_tokens, Some(8000));
         assert_eq!(suggestion.over_diff_limit, 1);
-        assert_eq!(suggestion.max_diff_bytes, Some(380_000));
+        // A single outlier among ten PRs does not raise the diff limit.
+        assert_eq!(suggestion.max_diff_bytes, None);
 
         // Nothing recorded and small PRs: no change.
         let quiet = suggest_limits(&[sample(100, None)], &config);
@@ -446,6 +460,11 @@ mod tests {
         // Low recorded usage never lowers the limit.
         let low = suggest_limits(&[sample(100, Some(900))], &config);
         assert_eq!(low.output_tokens, None);
+        // The 90th percentile of 10 samples is the 9th smallest, not the largest.
+        let mut ten: Vec<_> = (1..=9).map(|n| sample(n * 1000, None)).collect();
+        ten.push(sample(100_000, None));
+        let p90 = suggest_limits(&ten, &config);
+        assert_eq!(p90.max_diff_bytes, Some(680_000));
         // Suggestions are capped.
         let huge = suggest_limits(&[sample(10, Some(100_000))], &config);
         assert_eq!(

@@ -23,6 +23,7 @@ pub fn incomplete_review(config: &AppConfig, finish_reason: &str) -> Diagnostic 
     let current = config.llm.max_output_tokens;
     let suggested = current.saturating_mul(2).min(MAX_SUGGESTED_OUTPUT_TOKENS);
     let chunk = config.review.chunk_bytes;
+    let model = config.llm.model.replace('`', "'");
     let mut body = String::new();
     let _ = writeln!(
         body,
@@ -45,11 +46,11 @@ pub fn incomplete_review(config: &AppConfig, finish_reason: &str) -> Diagnostic 
                     "{}\n\n```toml\n[provider]\nmax_output_tokens = {suggested}\n```\n",
                     if pt {
                         format!(
-                            "A resposta atingiu o limite de saída. `provider.max_output_tokens` está em **{current}**; aumente-o no `.cururu.toml` do repositório (ou na configuração compartilhada da organização), por exemplo:"
+                            "A resposta atingiu o limite de saída. `provider.max_output_tokens` está em **{current}**; aumente-o no `.cururu.toml` do repositório (ou na configuração compartilhada da organização), sem passar do limite de saída documentado do modelo `{model}`, que rejeitaria as chamadas. Por exemplo:"
                         )
                     } else {
                         format!(
-                            "The response reached the output limit. `provider.max_output_tokens` is **{current}**; raise it in the repository `.cururu.toml` (or the organization's shared configuration), for example:"
+                            "The response reached the output limit. `provider.max_output_tokens` is **{current}**; raise it in the repository `.cururu.toml` (or the organization's shared configuration), without exceeding the documented output limit of model `{model}`, which would reject the calls. For example:"
                         )
                     }
                 );

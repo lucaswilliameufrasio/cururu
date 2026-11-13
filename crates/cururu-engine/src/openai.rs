@@ -112,7 +112,9 @@ impl OpenAiCompatibleAgent {
                 .first_choice("LLM returned no choices")
                 .err()
                 .unwrap_or_else(|| anyhow::anyhow!("LLM returned no choices"));
-            if response_error_is_transient(response.error.as_ref()) {
+            // No explicit error (an empty or incomplete answer) may clear on
+            // a later attempt; explicit permanent errors fail at once.
+            if response.error.is_none() || response_error_is_transient(response.error.as_ref()) {
                 return Err(TransientProviderError(error.to_string()).into());
             }
             return Err(error);
@@ -827,6 +829,27 @@ mod tests {
             .with_retry_delays(fast.clone());
         agent.review_chunk(&chunk).await.unwrap();
         assert_eq!(server.received_requests().await.unwrap().len(), 4);
+
+        // An empty answer without an error is retried too.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices": []})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok.clone()))
+            .mount(&server)
+            .await;
+        let agent = OpenAiCompatibleAgent::new(settings(server.uri()), String::new())
+            .unwrap()
+            .with_retry_delays(fast.clone());
+        agent.review_chunk(&chunk).await.unwrap();
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
 
         // A permanent client error is not retried.
         let server = MockServer::start().await;

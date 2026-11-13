@@ -33,6 +33,8 @@ pub struct PullSample {
     pub changed_files: u64,
     /// Largest completion tokens recorded by a Cururu review of its head.
     pub completion_tokens: Option<u64>,
+    /// The checks of its head could not be read.
+    pub usage_unavailable: bool,
 }
 
 impl GitHubClient {
@@ -66,21 +68,26 @@ impl GitHubClient {
                 .json()
                 .await
                 .context("invalid pull request")?;
-            let completion_tokens = self
+            // A failed lookup is reported as unavailable, not as "no usage".
+            let (completion_tokens, usage_unavailable) = self
                 .list_candidate_check_runs(&pull.head.sha)
                 .await
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|check| check.output.summary.as_deref())
-                .flat_map(crate::review_usage::parse_markers)
-                .filter(|record| record.known)
-                .map(|record| record.completion)
-                .max();
+                .map_or((None, true), |checks| {
+                    let largest = checks
+                        .iter()
+                        .filter_map(|check| check.output.summary.as_deref())
+                        .flat_map(crate::review_usage::parse_markers)
+                        .filter(|record| record.known)
+                        .map(|record| record.completion)
+                        .max();
+                    (largest, false)
+                });
             samples.push(PullSample {
                 number: pull.number,
                 changed_lines: size.additions + size.deletions,
                 changed_files: size.changed_files,
                 completion_tokens,
+                usage_unavailable,
             });
         }
         Ok(samples)
@@ -126,9 +133,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/repos/owner/repo/commits/h2/check-runs"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"check_runs": []})),
-            )
+            .respond_with(ResponseTemplate::new(503))
             .mount(&server)
             .await;
         let client = GitHubClient::new(&GitHubConfig {
@@ -149,13 +154,15 @@ mod tests {
                     number: 1,
                     changed_lines: 105,
                     changed_files: 3,
-                    completion_tokens: Some(2500)
+                    completion_tokens: Some(2500),
+                    usage_unavailable: false,
                 },
                 PullSample {
                     number: 2,
                     changed_lines: 15,
                     changed_files: 3,
-                    completion_tokens: None
+                    completion_tokens: None,
+                    usage_unavailable: true,
                 },
             ]
         );
