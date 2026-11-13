@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [5.1.0] - 2026-11-13
+
+### Bug Fixes
+
+- Address review findings on path and line parsing
+- Fail closed on analyzer findings and publish errors
+- Never approve when an earlier approval stays active
+- Revoke on unknown approval outcomes; keep file modes
+- Revoke on any failure between approval and publication
+- Honor the quality gate, escape model text, report success last
+- Address review findings on retries and limit suggestions
+- Report unreadable configuration in setup limits
+
+### Chores
+
+- Pin v5.0.1 OCI digest
+- Adopt Cururu v5.0.1
+
+### Documentation
+
+- Cover diff, chunk and output-token limits in integration
+
+### Features
+
+- Raise the default model output limit to 8000 tokens
+- Opt-in triage that approves low-risk PRs
+- Guide auto-approval setup and show enabled features
+- Show diff, chunk and model output limits in status
+- Retry transient provider failures with bounded backoff
+- Explain incomplete reviews with the setting to change
+- Suggest diff and output-token limits from recent PRs
+
+### Testing
+
+- Cover approval, escalation, refusal and dismissal
 ## [5.0.1] - 2026-11-12
 
 ### Bug Fixes
@@ -19,6 +54,7 @@ All notable changes to this project will be documented in this file.
 
 - Pin v5.0.0 OCI digest
 - Adopt Cururu v5.0.0 and its approval flow
+- Prepare for v5.0.1
 ## [5.0.0] - 2026-11-11
 
 ### Breaking Changes
