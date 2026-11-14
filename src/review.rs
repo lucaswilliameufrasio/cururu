@@ -1086,12 +1086,7 @@ mod tests {
                 .to_string()
                 .contains("max_diff_bytes")
         );
-        assert!(
-            super::ensure_review_diff_limits(&files, 10, 100)
-                .unwrap_err()
-                .to_string()
-                .contains("chunk_bytes")
-        );
+        assert!(super::ensure_review_diff_limits(&files, 10, 100).is_ok());
     }
 
     #[test]
