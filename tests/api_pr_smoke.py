@@ -142,14 +142,15 @@ with tempfile.TemporaryDirectory() as directory:
         state["multi_mode"] = mode
         state["multi_calls"] = 0
         result = run("api-review", "--pr", "--confirm-send", "--expected-snapshot", prepared["snapshot_sha256"], *evidence)
-        assert state["multi_calls"] == 2
-        if mode == "success":
+        # An inconsistent file count is requested once more and then accepted.
+        assert state["multi_calls"] == (3 if mode == "bad_coverage" else 2)
+        if mode in ("success", "bad_coverage"):
             assert result.returncode == 0, result.stderr
-            assert json.loads(result.stdout)["review"]["files_reviewed"] == 2
+            receipt = json.loads(result.stdout)
+            assert receipt["review"]["files_reviewed"] == 2
+            assert "coverage_unconfirmed" not in receipt
         else:
             assert result.returncode != 0 and not result.stdout, result.stderr
-            if mode == "bad_coverage":
-                assert "chunk review reports incomplete or inconsistent file coverage" in result.stderr, result.stderr
         assert state["other_posts"] == 0
     state["multi_mode"] = None
     state["diff"] = original_diff
@@ -157,5 +158,5 @@ with tempfile.TemporaryDirectory() as directory:
     state["change_after_send"] = True
     stale = run("api-review", "--pr", "--confirm-send", "--expected-snapshot", snapshot)
     assert stale.returncode != 0 and "snapshot changed" in stale.stderr, stale.stderr
-    assert state["api_calls"] == 12 and state["other_posts"] == 0
+    assert state["api_calls"] == 13 and state["other_posts"] == 0
 server.shutdown()

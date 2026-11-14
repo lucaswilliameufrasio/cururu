@@ -30,6 +30,9 @@ pub enum Veto {
     Unreviewable {
         path: String,
     },
+    UnconfirmedCoverage {
+        path: String,
+    },
     OutsideAllowedPaths {
         path: String,
     },
@@ -175,6 +178,9 @@ pub fn evaluate(
     for path in &output.unreviewable_paths {
         vetoes.push(Veto::Unreviewable { path: path.clone() });
     }
+    for path in &output.unconfirmed_paths {
+        vetoes.push(Veto::UnconfirmedCoverage { path: path.clone() });
+    }
     let mut changed_lines = 0usize;
     for file in &output.changed_files {
         changed_lines = changed_lines.saturating_add(changed_line_count(file));
@@ -299,6 +305,19 @@ pub fn describe(veto: &Veto, language: &str) -> String {
                     "{} matches the protected path {}",
                     code(path),
                     code(pattern)
+                )
+            }
+        }
+        Veto::UnconfirmedCoverage { path } => {
+            if pt {
+                format!(
+                    "o modelo não confirmou ter revisado {} por completo",
+                    code(path)
+                )
+            } else {
+                format!(
+                    "the model did not confirm reviewing {} completely",
+                    code(path)
                 )
             }
         }
@@ -751,6 +770,7 @@ mod tests {
             pr_usage: None,
             ignored_paths: vec![],
             unreviewable_paths: vec![],
+            unconfirmed_paths: vec![],
             auto_approval: None,
             language: "en".into(),
         }

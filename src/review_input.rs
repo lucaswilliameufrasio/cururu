@@ -111,6 +111,18 @@ pub fn assemble_review(
     snapshot_sha256: &str,
     reviews: Vec<ChunkReview>,
 ) -> anyhow::Result<cururu_core::ReviewResult> {
+    assemble_review_with_unconfirmed(prepared, snapshot_sha256, reviews, &[])
+}
+
+/// Like [`assemble_review`], but chunks listed in `unconfirmed` (Cururu's own
+/// calls whose coverage stayed inconsistent after a retry) skip the coverage
+/// count; their findings are still validated.
+pub fn assemble_review_with_unconfirmed(
+    prepared: &PreparedReview,
+    snapshot_sha256: &str,
+    reviews: Vec<ChunkReview>,
+    unconfirmed: &[usize],
+) -> anyhow::Result<cururu_core::ReviewResult> {
     anyhow::ensure!(
         prepared.snapshot_sha256 == snapshot_sha256,
         "review snapshot changed"
@@ -126,7 +138,11 @@ pub fn assemble_review(
             item.chunk_index == chunk.index,
             "chunk results are missing or out of order"
         );
-        validate_chunk_review(prepared, chunk, &item.review)?;
+        if unconfirmed.contains(&chunk.index) {
+            validate_chunk_findings(prepared, chunk, &item.review)?;
+        } else {
+            validate_chunk_review(prepared, chunk, &item.review)?;
+        }
         for finding in &mut item.review.findings {
             // A model cannot establish analyzer provenance.
             finding.source = None;
@@ -154,9 +170,68 @@ pub fn validate_chunk_review(
     review: &cururu_core::ReviewResult,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        review.files_reviewed == chunk.files.len(),
+        coverage_consistent(chunk, review),
         "chunk review reports incomplete or inconsistent file coverage"
     );
+    validate_chunk_findings(prepared, chunk, review)
+}
+
+/// Whether the model's self-reported file count matches the chunk.
+pub const fn coverage_consistent(chunk: &DiffChunk, review: &cururu_core::ReviewResult) -> bool {
+    review.files_reviewed == chunk.files.len()
+}
+
+/// One chunk reviewed by Cururu's own model call.
+pub struct CheckedChunk {
+    pub result: cururu_engine::ChunkResult,
+    /// False when the model kept reporting a file count that does not match
+    /// the chunk; its findings are valid but its coverage is not confirmed.
+    pub coverage_confirmed: bool,
+}
+
+/// Review chunks with Cururu's own agent. A chunk whose findings are invalid
+/// or whose reported coverage is inconsistent is requested once more. Invalid
+/// findings stay fatal; a coverage count that stays inconsistent is accepted
+/// as unconfirmed coverage, so one miscounted chunk does not discard the
+/// whole review. External agents (MCP) keep the strict check.
+pub async fn review_chunks_checked(
+    agent: &dyn cururu_engine::ReviewAgent,
+    prepared: &PreparedReview,
+    chunks: &[DiffChunk],
+) -> anyhow::Result<Vec<CheckedChunk>> {
+    let mut checked = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let mut result = agent.review_chunk(chunk).await?;
+        let valid = |result: &cururu_engine::ChunkResult| {
+            validate_chunk_findings(prepared, chunk, &result.review).is_ok()
+                && coverage_consistent(chunk, &result.review)
+        };
+        if !valid(&result) {
+            tracing::warn!(
+                chunk = chunk.index,
+                "chunk review was invalid or inconsistent; retrying once"
+            );
+            result = agent.review_chunk(chunk).await?;
+        }
+        validate_chunk_findings(prepared, chunk, &result.review)?;
+        let coverage_confirmed = coverage_consistent(chunk, &result.review);
+        if !coverage_confirmed {
+            tracing::warn!(chunk = chunk.index, "chunk coverage remains unconfirmed");
+        }
+        checked.push(CheckedChunk {
+            result,
+            coverage_confirmed,
+        });
+    }
+    Ok(checked)
+}
+
+/// Validate findings against the full diff and the chunk they belong to.
+pub fn validate_chunk_findings(
+    prepared: &PreparedReview,
+    chunk: &DiffChunk,
+    review: &cururu_core::ReviewResult,
+) -> anyhow::Result<()> {
     validate_findings(prepared, review)?;
     anyhow::ensure!(
         review

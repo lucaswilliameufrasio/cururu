@@ -68,6 +68,9 @@ struct ApiReviewReceipt<'a> {
     receipt: AgentReviewReceipt<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<ApiUsage>,
+    /// Files whose coverage the model did not report consistently.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    coverage_unconfirmed: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -505,7 +508,35 @@ async fn main() -> anyhow::Result<()> {
                 "Sending {} diff chunk(s) and configured context, prior feedback and analyzer evidence to the configured API. No review will be published.",
                 prepared.chunks.len()
             );
-            let results = cururu_engine::review_chunks(agent.as_ref(), &prepared.chunks).await?;
+            let checked =
+                review_input::review_chunks_checked(agent.as_ref(), &prepared, &prepared.chunks)
+                    .await?;
+            let unconfirmed: Vec<usize> = checked
+                .iter()
+                .zip(&prepared.chunks)
+                .filter(|(item, _)| !item.coverage_confirmed)
+                .map(|(_, chunk)| chunk.index)
+                .collect();
+            let mut coverage_unconfirmed: Vec<String> = Vec::new();
+            for chunk in prepared
+                .chunks
+                .iter()
+                .filter(|chunk| unconfirmed.contains(&chunk.index))
+            {
+                for path in &chunk.files {
+                    if !coverage_unconfirmed.contains(path) {
+                        coverage_unconfirmed.push(path.clone());
+                    }
+                }
+            }
+            if !coverage_unconfirmed.is_empty() {
+                eprintln!(
+                    "Warning: the model did not confirm reviewing {} file(s) completely; their findings were still checked.",
+                    coverage_unconfirmed.len()
+                );
+            }
+            let results: Vec<cururu_engine::ChunkResult> =
+                checked.into_iter().map(|item| item.result).collect();
             let usage = complete_api_usage(&results);
             let reviews = results
                 .into_iter()
@@ -519,8 +550,12 @@ async fn main() -> anyhow::Result<()> {
             if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
                 review_input::attach_local_analysis(&mut current, sarif, manifest)?;
             }
-            let result =
-                review_input::assemble_review(&current, &prepared.snapshot_sha256, reviews)?;
+            let result = review_input::assemble_review_with_unconfirmed(
+                &current,
+                &prepared.snapshot_sha256,
+                reviews,
+                &unconfirmed,
+            )?;
             let receipt = AgentReviewReceipt {
                 source: current.source,
                 revision: &current.revision,
@@ -532,7 +567,11 @@ async fn main() -> anyhow::Result<()> {
             };
             println!(
                 "{}",
-                serde_json::to_string_pretty(&ApiReviewReceipt { receipt, usage })?
+                serde_json::to_string_pretty(&ApiReviewReceipt {
+                    receipt,
+                    usage,
+                    coverage_unconfirmed,
+                })?
             );
             return Ok(());
         }

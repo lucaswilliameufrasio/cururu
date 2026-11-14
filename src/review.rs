@@ -69,6 +69,8 @@ pub struct ReviewOutput {
     pub ignored_paths: Vec<String>,
     /// Binary files and submodule changes left out of the review.
     pub unreviewable_paths: Vec<String>,
+    /// Files in chunks whose coverage the model never reported consistently.
+    pub unconfirmed_paths: Vec<String>,
     /// Auto-approval decision, when the policy is enabled.
     pub auto_approval: Option<crate::auto_approval::Decision>,
     /// Configured review language, used for Cururu's own explanations.
@@ -223,7 +225,20 @@ pub async fn run_review_with_evaluator(
         }),
     )?;
 
-    let mut chunk_results = cururu_engine::review_chunks(agent.as_ref(), chunks).await?;
+    let checked =
+        crate::review_input::review_chunks_checked(agent.as_ref(), &prepared, chunks).await?;
+    let mut unconfirmed_paths: Vec<String> = Vec::new();
+    for (item, chunk) in checked.iter().zip(chunks) {
+        if !item.coverage_confirmed {
+            for path in &chunk.files {
+                if !unconfirmed_paths.contains(path) {
+                    unconfirmed_paths.push(path.clone());
+                }
+            }
+        }
+    }
+    let mut chunk_results: Vec<cururu_engine::ChunkResult> =
+        checked.into_iter().map(|item| item.result).collect();
     ensure_trusted_config_unchanged(config, source_control).await?;
     let current = crate::review_input::prepare_pr(config, source_control).await?;
     anyhow::ensure!(
@@ -239,7 +254,7 @@ pub async fn run_review_with_evaluator(
         "review context or analyzer evidence changed during model call"
     );
     for (chunk, result) in chunks.iter().zip(&mut chunk_results) {
-        crate::review_input::validate_chunk_review(&prepared, chunk, &result.review)?;
+        crate::review_input::validate_chunk_findings(&prepared, chunk, &result.review)?;
         for finding in &mut result.review.findings {
             finding.source = None;
             finding.rule = None;
@@ -337,6 +352,7 @@ pub async fn run_review_with_evaluator(
         pr_usage: None,
         ignored_paths: prepared.ignored_paths.clone(),
         unreviewable_paths: prepared.unreviewable_paths.clone(),
+        unconfirmed_paths,
         auto_approval: None,
         language: config.review.language.clone(),
     })
@@ -946,7 +962,8 @@ mod tests {
             let review = serde_json::json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[{"severity":"high","path":"a","line":line,"title":"fixture","message":"fixture","suggestion":"fix","confidence":0.9}]}).to_string();
             Mock::given(method("POST")).and(path("/chat/completions"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]})))
-                .expect(1).mount(&server).await;
+                // An invalid finding is requested once more before failing.
+                .expect(if expected_ok { 1 } else { 2 }).mount(&server).await;
             let mut config = crate::config::AppConfig::from_local_env().unwrap();
             config.llm.provider = crate::config::LlmProvider::OpenAI;
             config.llm.base_url = server.uri();
@@ -954,6 +971,52 @@ mod tests {
             let result = super::run_review(&config, &FixtureReviewScm).await;
             assert_eq!(result.is_ok(), expected_ok);
         }
+    }
+
+    #[tokio::test]
+    async fn inconsistent_coverage_is_retried_then_kept_as_unconfirmed() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let reply = |files_reviewed: usize| {
+            let review = serde_json::json!({"model":"fixture","files_reviewed":files_reviewed,"summary":"ok","findings":[{"severity":"high","path":"a","line":1,"title":"fixture","message":"fixture","suggestion":"fix","confidence":0.9}]}).to_string();
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]}))
+        };
+        let mut config = crate::config::AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.api_key = "fixture".into();
+
+        // Wrong count, then correct: the retry confirms coverage.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(reply(0))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(reply(1))
+            .mount(&server)
+            .await;
+        config.llm.base_url = server.uri();
+        let output = super::run_review(&config, &FixtureReviewScm).await.unwrap();
+        assert_eq!(output.unconfirmed_paths, Vec::<String>::new());
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+
+        // Wrong twice: the findings are kept and the coverage is unconfirmed.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(reply(3))
+            .expect(2)
+            .mount(&server)
+            .await;
+        config.llm.base_url = server.uri();
+        let output = super::run_review(&config, &FixtureReviewScm).await.unwrap();
+        assert_eq!(output.unconfirmed_paths, ["a"]);
+        assert_eq!(output.review.findings.len(), 1);
     }
 
     struct UnreviewableScm(&'static str);
