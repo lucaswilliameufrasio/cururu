@@ -14,6 +14,7 @@ mod evaluation;
 mod github;
 mod hosted_approval;
 mod hosted_publication;
+mod local_git;
 mod mcp;
 mod mcp_install;
 mod output;
@@ -973,7 +974,8 @@ async fn prepare_api_review(pr: bool) -> anyhow::Result<(AppConfig, review_input
         Ok((config, prepared))
     } else {
         let config = local_review_config()?;
-        let prepared = review_input::prepare_local(&config, std::path::Path::new("."))?;
+        let prepared =
+            review_input::prepare_local_with_context(&config, std::path::Path::new(".")).await?;
         Ok((config, prepared))
     }
 }
@@ -981,7 +983,7 @@ async fn prepare_api_review(pr: bool) -> anyhow::Result<(AppConfig, review_input
 async fn prepare_review_input(local: bool) -> anyhow::Result<review_input::PreparedReview> {
     if local {
         let config = local_review_config()?;
-        review_input::prepare_local(&config, std::path::Path::new("."))
+        review_input::prepare_local_with_context(&config, std::path::Path::new(".")).await
     } else {
         let mut config = AppConfig::from_env()?;
         let scm = github::GitHubClient::from_scm_config(&config.source_control)?;
