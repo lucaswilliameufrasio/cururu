@@ -61,6 +61,7 @@ pub fn render_summary_comment(output: &ReviewOutput) -> String {
     render_header(output, &mut out);
 
     render_overview(output, &mut out);
+    render_not_reviewed(output, &mut out);
 
     if output.review.findings.is_empty() {
         if output
@@ -167,6 +168,29 @@ fn render_overview(output: &ReviewOutput, out: &mut String) {
             summary.replace("<!--", "&lt;!--").replace('\n', " ")
         );
     }
+}
+
+fn render_not_reviewed(output: &ReviewOutput, out: &mut String) {
+    if output.unreviewable_paths.is_empty() {
+        return;
+    }
+    let paths: Vec<String> = output
+        .unreviewable_paths
+        .iter()
+        .take(20)
+        .map(|path| format!("`{}`", path.replace('`', "'")))
+        .collect();
+    let more = output.unreviewable_paths.len().saturating_sub(paths.len());
+    let _ = write!(
+        out,
+        "**Not reviewed (binary files or submodule changes):** {}{}\n\n",
+        paths.join(", "),
+        if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        }
+    );
 }
 
 fn render_header(output: &ReviewOutput, out: &mut String) {
@@ -479,6 +503,7 @@ mod tests {
             run_id: "run".into(),
             pr_usage: None,
             ignored_paths: vec![],
+            unreviewable_paths: vec![],
             auto_approval: None,
             language: "en".into(),
             evaluation: Some(crate::evaluation::EvaluationReport {
@@ -546,6 +571,7 @@ mod tests {
             run_id: "run".into(),
             pr_usage: None,
             ignored_paths: vec![],
+            unreviewable_paths: vec![],
             auto_approval: None,
             language: "en".into(),
         };
@@ -554,6 +580,12 @@ mod tests {
         assert!(!body.contains("**Tokens"));
         assert!(body.contains("**Summary:** s"));
         assert!(body.contains(&run_marker("run")));
+        output.unreviewable_paths = vec!["assets/logo.png".into()];
+        assert!(
+            render_summary_comment(&output).contains(
+                "**Not reviewed (binary files or submodule changes):** `assets/logo.png`"
+            )
+        );
 
         output.usage.as_mut().unwrap().cost = None;
         let body = render_summary_comment(&output);
@@ -602,6 +634,7 @@ mod tests {
                 complete: true,
             }),
             ignored_paths: vec![],
+            unreviewable_paths: vec![],
             auto_approval: None,
             language: "en".into(),
         };

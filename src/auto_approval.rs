@@ -27,6 +27,9 @@ pub enum Veto {
     UnparsedPath {
         path: String,
     },
+    Unreviewable {
+        path: String,
+    },
     OutsideAllowedPaths {
         path: String,
     },
@@ -169,6 +172,9 @@ pub fn evaluate(
     for path in &output.ignored_paths {
         vetoes.push(Veto::NotReviewed { path: path.clone() });
     }
+    for path in &output.unreviewable_paths {
+        vetoes.push(Veto::Unreviewable { path: path.clone() });
+    }
     let mut changed_lines = 0usize;
     for file in &output.changed_files {
         changed_lines = changed_lines.saturating_add(changed_line_count(file));
@@ -191,7 +197,8 @@ pub fn evaluate(
             }
         }
     }
-    let changed_files = output.changed_files.len() + output.ignored_paths.len();
+    let changed_files =
+        output.changed_files.len() + output.ignored_paths.len() + output.unreviewable_paths.len();
     if changed_files > policy.max_changed_files {
         vetoes.push(Veto::TooManyFiles {
             count: changed_files,
@@ -292,6 +299,19 @@ pub fn describe(veto: &Veto, language: &str) -> String {
                     "{} matches the protected path {}",
                     code(path),
                     code(pattern)
+                )
+            }
+        }
+        Veto::Unreviewable { path } => {
+            if pt {
+                format!(
+                    "{} é um arquivo binário ou submódulo e não foi revisado",
+                    code(path)
+                )
+            } else {
+                format!(
+                    "{} is a binary file or submodule change and was not reviewed",
+                    code(path)
                 )
             }
         }
@@ -730,6 +750,7 @@ mod tests {
             run_id: "run".into(),
             pr_usage: None,
             ignored_paths: vec![],
+            unreviewable_paths: vec![],
             auto_approval: None,
             language: "en".into(),
         }
@@ -945,6 +966,7 @@ mod tests {
         let mut out = output(files, vec![]);
         out.review.files_reviewed = 2;
         out.ignored_paths = vec!["Cargo.lock".into()];
+        out.unreviewable_paths = vec!["logo.png".into()];
         out.analysis.status = "failed".into();
         let decision = evaluate(&policy(), true, &out).unwrap();
         let codes: Vec<String> = decision
@@ -958,6 +980,7 @@ mod tests {
             })
             .collect();
         for expected in [
+            "unreviewable",
             "not_reviewed",
             "too_many_files",
             "too_many_lines",

@@ -67,6 +67,8 @@ pub struct ReviewOutput {
     pub pr_usage: Option<crate::review_usage::PrUsage>,
     /// Changed paths excluded from review by configuration.
     pub ignored_paths: Vec<String>,
+    /// Binary files and submodule changes left out of the review.
+    pub unreviewable_paths: Vec<String>,
     /// Auto-approval decision, when the policy is enabled.
     pub auto_approval: Option<crate::auto_approval::Decision>,
     /// Configured review language, used for Cururu's own explanations.
@@ -334,6 +336,7 @@ pub async fn run_review_with_evaluator(
         evaluation: evaluation_report,
         pr_usage: None,
         ignored_paths: prepared.ignored_paths.clone(),
+        unreviewable_paths: prepared.unreviewable_paths.clone(),
         auto_approval: None,
         language: config.review.language.clone(),
     })

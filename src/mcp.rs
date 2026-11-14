@@ -193,6 +193,7 @@ mod tests {
                 snapshot_sha256: "snapshot".into(),
                 scope: "fixture",
                 ignored_paths: vec![],
+                unreviewable_paths: vec![],
                 review_instructions: "fixture",
                 review_preferences: json!({}),
                 repository_context: None,

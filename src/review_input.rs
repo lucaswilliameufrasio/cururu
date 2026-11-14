@@ -19,6 +19,10 @@ pub struct PreparedReview {
     pub snapshot_sha256: String,
     pub scope: &'static str,
     pub ignored_paths: Vec<String>,
+    /// Binary files and submodule changes, which cannot be reviewed as text.
+    /// They are left out of the review and reported, not silently dropped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreviewable_paths: Vec<String>,
     pub review_instructions: &'static str,
     pub review_preferences: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -42,23 +46,28 @@ pub struct ChunkReview {
 /// Reject input that cannot be represented as a complete text review.
 pub fn ensure_reviewable(prepared: &PreparedReview) -> anyhow::Result<()> {
     anyhow::ensure!(
+        !prepared.chunks.is_empty() || prepared.unreviewable_paths.is_empty(),
+        "only binary files and submodule changes were found; nothing can be reviewed as text"
+    );
+    anyhow::ensure!(
         !prepared.chunks.is_empty(),
         "no changes available for review"
     );
     anyhow::ensure!(
-        !prepared
-            .files
-            .iter()
-            .any(|file| file
-                .patch
-                .lines()
-                .any(|line| line.starts_with("Binary files ")
-                    || line == "GIT binary patch"
-                    || line.starts_with("+Subproject commit ")
-                    || line.starts_with("-Subproject commit "))),
+        !prepared.files.iter().any(is_unreviewable),
         "binary files and submodule changes cannot be reviewed by this adapter"
     );
     Ok(())
+}
+
+/// Whether a file patch is a binary file or a submodule change.
+fn is_unreviewable(file: &ChangedFile) -> bool {
+    file.patch.lines().any(|line| {
+        line.starts_with("Binary files ")
+            || line == "GIT binary patch"
+            || line.starts_with("+Subproject commit ")
+            || line.starts_with("-Subproject commit ")
+    })
 }
 
 /// Attach only explicitly supplied local files; never follow paths from a manifest.
@@ -233,7 +242,11 @@ pub fn prepare(
         .filter(|file| config.review.ignore.is_match(&file.path))
         .map(|file| file.path.clone())
         .collect();
-    let files = diff::filter_ignored(parsed, &config.review.ignore);
+    let (unreviewable, files): (Vec<ChangedFile>, Vec<ChangedFile>) =
+        diff::filter_ignored(parsed, &config.review.ignore)
+            .into_iter()
+            .partition(is_unreviewable);
+    let unreviewable_paths: Vec<String> = unreviewable.into_iter().map(|file| file.path).collect();
     if let Err(error) = review::ensure_review_diff_limits(
         &files,
         config.review.chunk_bytes,
@@ -278,6 +291,7 @@ pub fn prepare(
         &revision,
         &raw_hash,
         &ignored_paths,
+        &unreviewable_paths,
         &files,
         &chunks,
         cururu_engine::DEFAULT_REVIEW_PROMPT,
@@ -301,6 +315,7 @@ pub fn prepare(
             "hosted pull request diff"
         },
         ignored_paths,
+        unreviewable_paths,
         review_instructions: cururu_engine::DEFAULT_REVIEW_PROMPT,
         review_preferences: preferences,
         repository_context: None,
@@ -445,6 +460,27 @@ fn git_head(root: &Path) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn binary_files_are_left_out_and_reported_instead_of_aborting() {
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.review.chunk_bytes = 10_000;
+        config.review.max_diff_bytes = 10_000;
+        let raw = "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\ndiff --git a/src/a.rs b/src/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let prepared = prepare(&config, raw, "head".into(), "pr").unwrap();
+        ensure_reviewable(&prepared).unwrap();
+        assert_eq!(prepared.unreviewable_paths, ["logo.png"]);
+        assert_eq!(prepared.files.len(), 1);
+        assert_eq!(prepared.chunks[0].files, ["src/a.rs"]);
+        let only_binary =
+            "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n";
+        let prepared = prepare(&config, only_binary, "head".into(), "pr").unwrap();
+        let error = ensure_reviewable(&prepared).unwrap_err().to_string();
+        assert!(
+            error.contains("binary files") && error.contains("submodule"),
+            "{error}"
+        );
+    }
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
