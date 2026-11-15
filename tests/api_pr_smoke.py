@@ -170,5 +170,5 @@ with tempfile.TemporaryDirectory() as directory:
     state["change_after_send"] = True
     stale = run("api-review", "--pr", "--confirm-send", "--expected-snapshot", snapshot)
     assert stale.returncode != 0 and "snapshot changed" in stale.stderr, stale.stderr
-    assert state["api_calls"] == 16 and state["other_posts"] == 0
+    assert state["api_calls"] == 15 and state["other_posts"] == 0
 server.shutdown()

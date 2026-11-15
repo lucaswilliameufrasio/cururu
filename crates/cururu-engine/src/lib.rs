@@ -128,6 +128,9 @@ mod tests {
             "one option the author may replace with another",
             "name the test that would verify the fix",
             "never reduce the suggestion to a vague",
+            "Phrase it as a proposal",
+            "scenarios that depend on behavior the diff and context do not show",
+            "do not conclude from one part that content was\n  deleted",
             // Evidence: no hypothesis as defect, no impact beyond evidence.
             "do not present the\n  hypothesis as a defect",
             "does not prove production\n  impact",

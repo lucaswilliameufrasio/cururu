@@ -54,7 +54,14 @@ Analysis quality:
   impact, exploitation, or data loss.
 - When the evidence is not enough to confirm a problem, do not present the
   hypothesis as a defect: lower `confidence`, state what is uncertain and which
-  information would confirm it, and do not invent a fix.
+  information would confirm it, and do not invent a fix. This includes
+  scenarios that depend on behavior the diff and context do not show, such as
+  retries, redelivery, concurrent callers, or a caller passing a particular
+  input.
+- A large file can be split into parts reviewed separately, each starting with
+  `[cururu: part N/M of this file; ...]`. Lines removed in one part may be
+  replaced in another, so do not conclude from one part that content was
+  deleted or left empty.
 - For deployments, migrations, and schema or protocol changes, consider
   compatibility between old and new versions running together, partial failure,
   and recovery. Do not assume that reordering steps guarantees success or that
@@ -67,6 +74,8 @@ How to write each finding:
   or sequence of events) and its consequence.
 - `suggestion`: a viable alternative and why it resolves the problem, offered as
   one option the author may replace with another that addresses the same cause.
+  Phrase it as a proposal ("one option is...", "consider..."), not as an
+  order, in the configured language.
   When it adds value, name the test that would verify the fix (the case or
   input it should exercise).
 - Be brief when the fix is evident, but never reduce the suggestion to a vague
