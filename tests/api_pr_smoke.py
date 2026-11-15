@@ -142,20 +142,33 @@ with tempfile.TemporaryDirectory() as directory:
         state["multi_mode"] = mode
         state["multi_calls"] = 0
         result = run("api-review", "--pr", "--confirm-send", "--expected-snapshot", prepared["snapshot_sha256"], *evidence)
-        assert state["multi_calls"] == 2
-        if mode == "success":
+        # An inconsistent file count is requested once more and then accepted.
+        assert state["multi_calls"] == (3 if mode == "bad_coverage" else 2)
+        if mode in ("success", "bad_coverage"):
             assert result.returncode == 0, result.stderr
-            assert json.loads(result.stdout)["review"]["files_reviewed"] == 2
+            receipt = json.loads(result.stdout)
+            assert receipt["review"]["files_reviewed"] == 2
+            assert "coverage_unconfirmed" not in receipt
         else:
             assert result.returncode != 0 and not result.stdout, result.stderr
-            if mode == "bad_coverage":
-                assert "chunk review reports incomplete or inconsistent file coverage" in result.stderr, result.stderr
         assert state["other_posts"] == 0
     state["multi_mode"] = None
+    # A binary file next to a text change is listed as not reviewed.
+    state["diff"] = original_diff + "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n"
+    mixed = run("api-review", "--pr", "--confirm-send")
+    assert mixed.returncode == 0, mixed.stderr
+    assert json.loads(mixed.stdout)["unreviewable_paths"] == ["logo.png"], mixed.stdout
+    assert "unreviewable_paths" not in json.loads(accepted.stdout)
+    # A line longer than a chunk (250 bytes here) is cut; its file is reported as partial.
+    state["diff"] = "diff --git a/a b/a\n@@ -1 +1 @@\n-old\n+" + "x" * 400 + "\n"
+    cut = run("api-review", "--pr", "--confirm-send")
+    assert cut.returncode == 0, cut.stderr
+    assert json.loads(cut.stdout)["truncated_paths"] == ["a"], cut.stdout
+    assert "truncated_paths" not in json.loads(accepted.stdout)
     state["diff"] = original_diff
     del env["CURURU_CHUNK_BYTES"]
     state["change_after_send"] = True
     stale = run("api-review", "--pr", "--confirm-send", "--expected-snapshot", snapshot)
     assert stale.returncode != 0 and "snapshot changed" in stale.stderr, stale.stderr
-    assert state["api_calls"] == 12 and state["other_posts"] == 0
+    assert state["api_calls"] == 16 and state["other_posts"] == 0
 server.shutdown()

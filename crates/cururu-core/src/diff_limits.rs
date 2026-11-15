@@ -3,7 +3,6 @@ use crate::ChangedFile;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewInputError {
     DiffExceedsMaximum,
-    FileExceedsChunkLimit,
 }
 
 impl std::fmt::Display for ReviewInputError {
@@ -12,9 +11,6 @@ impl std::fmt::Display for ReviewInputError {
             Self::DiffExceedsMaximum => {
                 "filtered change-request diff exceeds review.max_diff_bytes; increase the limit or split the change"
             }
-            Self::FileExceedsChunkLimit => {
-                "a changed file exceeds review.chunk_bytes; increase the chunk size or split the change"
-            }
         };
         formatter.write_str(message)
     }
@@ -22,7 +18,7 @@ impl std::fmt::Display for ReviewInputError {
 
 impl std::error::Error for ReviewInputError {}
 
-/// Rejects review inputs that would exceed configured diff or per-file limits.
+/// Rejects review inputs that would exceed the configured diff limit.
 pub fn ensure_review_diff_limits(
     files: &[ChangedFile],
     chunk_bytes: usize,
@@ -35,9 +31,8 @@ pub fn ensure_review_diff_limits(
     if total_bytes > max_diff_bytes {
         return Err(ReviewInputError::DiffExceedsMaximum);
     }
-    if files.iter().any(|file| file.patch.len() > chunk_bytes) {
-        return Err(ReviewInputError::FileExceedsChunkLimit);
-    }
+    // Files larger than a chunk are split into several chunks.
+    let _ = chunk_bytes;
     Ok(())
 }
 
@@ -58,11 +53,7 @@ mod tests {
             ensure_review_diff_limits(&files, 100, 5).unwrap_err(),
             ReviewInputError::DiffExceedsMaximum
         );
-        assert!(
-            ensure_review_diff_limits(&files, 5, 100)
-                .unwrap_err()
-                .to_string()
-                .contains("review.chunk_bytes")
-        );
+        // A file larger than a chunk is no longer rejected; it is split.
+        assert!(ensure_review_diff_limits(&files, 5, 100).is_ok());
     }
 }

@@ -28,7 +28,7 @@ pub use analysis_findings::sarif_finding;
 pub use analysis_paths::normalize_analysis_path;
 pub use context::{ContextFile, ContextStore, context_path_matches};
 pub use diff_limits::{ReviewInputError, ensure_review_diff_limits};
-pub use diff_ops::{chunk_files, is_valid_anchor};
+pub use diff_ops::{chunk_files, is_valid_anchor, truncated_paths};
 pub use evaluation::{
     EvaluatedFinding, EvaluationError, EvaluationMode, EvaluationReport, EvaluationUsage,
     FindingJudgment, SeverityJudgment, apply_judgments, mark_published,

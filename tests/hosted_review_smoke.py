@@ -106,12 +106,12 @@ with tempfile.TemporaryDirectory() as directory:
         state.update(mode=mode, changed=False, models=0, posts=[], checks=[])
         multi_env = dict(env, CURURU_CHUNK_BYTES="250")
         result = subprocess.run([sys.argv[1], "review"], cwd=directory, env=multi_env, capture_output=True, text=True, timeout=30)
-        assert state["models"] == 2, (mode, result.stderr)
-        if mode == "multi_stable":
-            assert result.returncode == 0 and not state["posts"] and len(state["checks"]) == 1, result.stderr
-        else:
-            assert result.returncode != 0 and "chunk review reports incomplete or inconsistent file coverage" in result.stderr, result.stderr
-            assert not result.stdout and not state["posts"]
+        # A chunk with an inconsistent file count is requested once more; the
+        # second answer is consistent, so the review completes.
+        assert state["models"] == (2 if mode == "multi_stable" else 3), (mode, result.stderr)
+        assert result.returncode == 0 and not state["posts"] and len(state["checks"]) == 1, result.stderr
+        if mode == "multi_bad_coverage":
+            assert "retrying once" in result.stderr, result.stderr
     env["CURURU_SHARED_CONFIG_TOKEN"] = "fixture-shared-token"
     for mode in ("malformed", "malformed_after", "feedback", "evidence", "policy_change", "shared_change", "shared_error", "shared_stable", "stable"):
         state.update(mode=mode, changed=False, models=0, posts=[], checks=[])

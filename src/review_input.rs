@@ -19,6 +19,13 @@ pub struct PreparedReview {
     pub snapshot_sha256: String,
     pub scope: &'static str,
     pub ignored_paths: Vec<String>,
+    /// Binary files and submodule changes, which cannot be reviewed as text.
+    /// They are left out of the review and reported, not silently dropped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreviewable_paths: Vec<String>,
+    /// Files sent only partially because a diff line is longer than a chunk.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub truncated_paths: Vec<String>,
     pub review_instructions: &'static str,
     pub review_preferences: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -42,23 +49,28 @@ pub struct ChunkReview {
 /// Reject input that cannot be represented as a complete text review.
 pub fn ensure_reviewable(prepared: &PreparedReview) -> anyhow::Result<()> {
     anyhow::ensure!(
+        !prepared.chunks.is_empty() || prepared.unreviewable_paths.is_empty(),
+        "only binary files and submodule changes were found; nothing can be reviewed as text"
+    );
+    anyhow::ensure!(
         !prepared.chunks.is_empty(),
         "no changes available for review"
     );
     anyhow::ensure!(
-        !prepared
-            .files
-            .iter()
-            .any(|file| file
-                .patch
-                .lines()
-                .any(|line| line.starts_with("Binary files ")
-                    || line == "GIT binary patch"
-                    || line.starts_with("+Subproject commit ")
-                    || line.starts_with("-Subproject commit "))),
+        !prepared.files.iter().any(is_unreviewable),
         "binary files and submodule changes cannot be reviewed by this adapter"
     );
     Ok(())
+}
+
+/// Whether a file patch is a binary file or a submodule change.
+fn is_unreviewable(file: &ChangedFile) -> bool {
+    file.patch.lines().any(|line| {
+        line.starts_with("Binary files ")
+            || line == "GIT binary patch"
+            || line.starts_with("+Subproject commit ")
+            || line.starts_with("-Subproject commit ")
+    })
 }
 
 /// Attach only explicitly supplied local files; never follow paths from a manifest.
@@ -102,6 +114,18 @@ pub fn assemble_review(
     snapshot_sha256: &str,
     reviews: Vec<ChunkReview>,
 ) -> anyhow::Result<cururu_core::ReviewResult> {
+    assemble_review_with_unconfirmed(prepared, snapshot_sha256, reviews, &[])
+}
+
+/// Like [`assemble_review`], but chunks listed in `unconfirmed` (Cururu's own
+/// calls whose coverage stayed inconsistent after a retry) skip the coverage
+/// count; their findings are still validated.
+pub fn assemble_review_with_unconfirmed(
+    prepared: &PreparedReview,
+    snapshot_sha256: &str,
+    reviews: Vec<ChunkReview>,
+    unconfirmed: &[usize],
+) -> anyhow::Result<cururu_core::ReviewResult> {
     anyhow::ensure!(
         prepared.snapshot_sha256 == snapshot_sha256,
         "review snapshot changed"
@@ -117,7 +141,11 @@ pub fn assemble_review(
             item.chunk_index == chunk.index,
             "chunk results are missing or out of order"
         );
-        validate_chunk_review(prepared, chunk, &item.review)?;
+        if unconfirmed.contains(&chunk.index) {
+            validate_chunk_findings(prepared, chunk, &item.review)?;
+        } else {
+            validate_chunk_review(prepared, chunk, &item.review)?;
+        }
         for finding in &mut item.review.findings {
             // A model cannot establish analyzer provenance.
             finding.source = None;
@@ -145,9 +173,68 @@ pub fn validate_chunk_review(
     review: &cururu_core::ReviewResult,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
-        review.files_reviewed == chunk.files.len(),
+        coverage_consistent(chunk, review),
         "chunk review reports incomplete or inconsistent file coverage"
     );
+    validate_chunk_findings(prepared, chunk, review)
+}
+
+/// Whether the model's self-reported file count matches the chunk.
+pub const fn coverage_consistent(chunk: &DiffChunk, review: &cururu_core::ReviewResult) -> bool {
+    review.files_reviewed == chunk.files.len()
+}
+
+/// One chunk reviewed by Cururu's own model call.
+pub struct CheckedChunk {
+    pub result: cururu_engine::ChunkResult,
+    /// False when the model kept reporting a file count that does not match
+    /// the chunk; its findings are valid but its coverage is not confirmed.
+    pub coverage_confirmed: bool,
+}
+
+/// Review chunks with Cururu's own agent. A chunk whose findings are invalid
+/// or whose reported coverage is inconsistent is requested once more. Invalid
+/// findings stay fatal; a coverage count that stays inconsistent is accepted
+/// as unconfirmed coverage, so one miscounted chunk does not discard the
+/// whole review. External agents (MCP) keep the strict check.
+pub async fn review_chunks_checked(
+    agent: &dyn cururu_engine::ReviewAgent,
+    prepared: &PreparedReview,
+    chunks: &[DiffChunk],
+) -> anyhow::Result<Vec<CheckedChunk>> {
+    let mut checked = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let mut result = agent.review_chunk(chunk).await?;
+        let valid = |result: &cururu_engine::ChunkResult| {
+            validate_chunk_findings(prepared, chunk, &result.review).is_ok()
+                && coverage_consistent(chunk, &result.review)
+        };
+        if !valid(&result) {
+            tracing::warn!(
+                chunk = chunk.index,
+                "chunk review was invalid or inconsistent; retrying once"
+            );
+            result = agent.review_chunk(chunk).await?;
+        }
+        validate_chunk_findings(prepared, chunk, &result.review)?;
+        let coverage_confirmed = coverage_consistent(chunk, &result.review);
+        if !coverage_confirmed {
+            tracing::warn!(chunk = chunk.index, "chunk coverage remains unconfirmed");
+        }
+        checked.push(CheckedChunk {
+            result,
+            coverage_confirmed,
+        });
+    }
+    Ok(checked)
+}
+
+/// Validate findings against the full diff and the chunk they belong to.
+pub fn validate_chunk_findings(
+    prepared: &PreparedReview,
+    chunk: &DiffChunk,
+    review: &cururu_core::ReviewResult,
+) -> anyhow::Result<()> {
     validate_findings(prepared, review)?;
     anyhow::ensure!(
         review
@@ -233,7 +320,11 @@ pub fn prepare(
         .filter(|file| config.review.ignore.is_match(&file.path))
         .map(|file| file.path.clone())
         .collect();
-    let files = diff::filter_ignored(parsed, &config.review.ignore);
+    let (unreviewable, files): (Vec<ChangedFile>, Vec<ChangedFile>) =
+        diff::filter_ignored(parsed, &config.review.ignore)
+            .into_iter()
+            .partition(is_unreviewable);
+    let unreviewable_paths: Vec<String> = unreviewable.into_iter().map(|file| file.path).collect();
     if let Err(error) = review::ensure_review_diff_limits(
         &files,
         config.review.chunk_bytes,
@@ -249,6 +340,7 @@ pub fn prepare(
         config.review.chunk_bytes,
         config.review.max_diff_bytes,
     );
+    let truncated_paths = diff::truncated_paths(&files, config.review.chunk_bytes);
     let raw_hash = hex::encode(Sha256::digest(raw.as_bytes()));
     let preferences = serde_json::json!({
         "language": config.review.language,
@@ -278,6 +370,7 @@ pub fn prepare(
         &revision,
         &raw_hash,
         &ignored_paths,
+        &unreviewable_paths,
         &files,
         &chunks,
         cururu_engine::DEFAULT_REVIEW_PROMPT,
@@ -301,6 +394,8 @@ pub fn prepare(
             "hosted pull request diff"
         },
         ignored_paths,
+        unreviewable_paths,
+        truncated_paths,
         review_instructions: cururu_engine::DEFAULT_REVIEW_PROMPT,
         review_preferences: preferences,
         repository_context: None,
@@ -445,6 +540,27 @@ fn git_head(root: &Path) -> anyhow::Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn binary_files_are_left_out_and_reported_instead_of_aborting() {
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.review.chunk_bytes = 10_000;
+        config.review.max_diff_bytes = 10_000;
+        let raw = "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\ndiff --git a/src/a.rs b/src/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let prepared = prepare(&config, raw, "head".into(), "pr").unwrap();
+        ensure_reviewable(&prepared).unwrap();
+        assert_eq!(prepared.unreviewable_paths, ["logo.png"]);
+        assert_eq!(prepared.files.len(), 1);
+        assert_eq!(prepared.chunks[0].files, ["src/a.rs"]);
+        let only_binary =
+            "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n";
+        let prepared = prepare(&config, only_binary, "head".into(), "pr").unwrap();
+        let error = ensure_reviewable(&prepared).unwrap_err().to_string();
+        assert!(
+            error.contains("binary files") && error.contains("submodule"),
+            "{error}"
+        );
+    }
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

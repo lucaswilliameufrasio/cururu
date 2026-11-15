@@ -21,28 +21,35 @@ pub fn chunk_files(
     let mut total = 0usize;
 
     for file in files {
-        let patch = if file.patch.len() > chunk_bytes {
-            truncate_at_boundary(&file.patch, chunk_bytes)
-        } else {
-            file.patch.clone()
-        };
-
-        if total + patch.len() > max_diff_bytes {
+        // The budget is charged per whole file at its original size, the same
+        // measure `ensure_review_diff_limits` validates, so headers repeated by
+        // splitting never push a file out, and a file is never sent partially.
+        if total + file.patch.len() > max_diff_bytes {
             break;
         }
+        total += file.patch.len();
 
-        if !current.is_empty() && current.len() + patch.len() > chunk_bytes {
-            chunks.push(DiffChunk {
-                index: chunks.len(),
-                text: std::mem::take(&mut current),
-                files: std::mem::take(&mut current_files),
-            });
+        for piece in file_pieces(file, chunk_bytes) {
+            let patch = if piece.len() > chunk_bytes {
+                truncate_at_boundary(&piece, chunk_bytes)
+            } else {
+                piece
+            };
+
+            if !current.is_empty() && current.len() + patch.len() > chunk_bytes {
+                chunks.push(DiffChunk {
+                    index: chunks.len(),
+                    text: std::mem::take(&mut current),
+                    files: std::mem::take(&mut current_files),
+                });
+            }
+
+            current.push_str(&patch);
+            current.push('\n');
+            if current_files.last() != Some(&file.path) {
+                current_files.push(file.path.clone());
+            }
         }
-
-        current.push_str(&patch);
-        current.push('\n');
-        current_files.push(file.path.clone());
-        total += patch.len();
     }
 
     if !current.is_empty() {
@@ -54,6 +61,145 @@ pub fn chunk_files(
     }
 
     chunks
+}
+
+/// A file larger than a chunk is reviewed in several chunks, each a valid
+/// patch; only a piece holding a single line longer than a chunk is truncated.
+fn file_pieces(file: &ChangedFile, chunk_bytes: usize) -> Vec<String> {
+    if file.patch.len() > chunk_bytes {
+        split_patch(&file.patch, chunk_bytes)
+    } else {
+        vec![file.patch.clone()]
+    }
+}
+
+/// Paths that [`chunk_files`] sends only partially, because one of their diff
+/// lines is longer than a whole chunk and is cut. Their review is incomplete.
+#[must_use]
+pub fn truncated_paths(files: &[ChangedFile], chunk_bytes: usize) -> Vec<String> {
+    files
+        .iter()
+        .filter(|file| {
+            file_pieces(file, chunk_bytes)
+                .iter()
+                .any(|piece| piece.len() > chunk_bytes)
+        })
+        .map(|file| file.path.clone())
+        .collect()
+}
+
+/// Split one file patch into pieces of at most `max` bytes where possible.
+/// Each piece repeats the file header and holds whole hunks; a hunk larger
+/// than the budget becomes sub-hunks with recalculated `@@` line ranges, so
+/// line numbers stay correct in every piece.
+#[must_use]
+pub fn split_patch(patch: &str, max: usize) -> Vec<String> {
+    let lines: Vec<&str> = patch.split_inclusive('\n').collect();
+    let first_hunk = lines
+        .iter()
+        .position(|line| line.starts_with("@@ "))
+        .unwrap_or(lines.len());
+    let header: String = lines[..first_hunk].concat();
+    let budget = max.saturating_sub(header.len()).max(1);
+
+    let mut units: Vec<String> = Vec::new();
+    let mut hunk_start = first_hunk;
+    while hunk_start < lines.len() {
+        let hunk_end = lines[hunk_start + 1..]
+            .iter()
+            .position(|line| line.starts_with("@@ "))
+            .map_or(lines.len(), |offset| hunk_start + 1 + offset);
+        let hunk = &lines[hunk_start..hunk_end];
+        if hunk.concat().len() <= budget {
+            units.push(hunk.concat());
+        } else {
+            units.extend(split_hunk(hunk, budget));
+        }
+        hunk_start = hunk_end;
+    }
+    if units.is_empty() {
+        return vec![patch.to_string()];
+    }
+
+    let mut pieces = Vec::new();
+    let mut current = header.clone();
+    for unit in units {
+        if current.len() > header.len() && current.len() + unit.len() > max {
+            pieces.push(std::mem::replace(&mut current, header.clone()));
+        }
+        current.push_str(&unit);
+    }
+    pieces.push(current);
+    pieces
+}
+
+/// Longest `@@ -N,N +N,N @@\n` header with four `u32` values.
+const MAX_SUBHUNK_HEADER_BYTES: usize =
+    "@@ -4294967295,4294967295 +4294967295,4294967295 @@\n".len();
+
+fn hunk_range(header: &str) -> Option<(u32, u32)> {
+    let rest = header.strip_prefix("@@ -")?;
+    let (old, rest) = rest.split_once(" +")?;
+    let new = rest.split_once(" @@")?.0;
+    let start = |range: &str| range.split(',').next()?.parse::<u32>().ok();
+    Some((start(old)?, start(new)?))
+}
+
+/// Split one hunk into sub-hunks of about `budget` bytes with correct ranges.
+fn split_hunk(hunk: &[&str], budget: usize) -> Vec<String> {
+    let Some((mut old_line, mut new_line)) = hunk.first().and_then(|line| hunk_range(line)) else {
+        return vec![hunk.concat()];
+    };
+    let mut parts = Vec::new();
+    let mut body = String::new();
+    let (mut old_start, mut new_start) = (old_line, new_line);
+    let (mut old_count, mut new_count) = (0u32, 0u32);
+    let flush = |parts: &mut Vec<String>, body: &mut String, ranges: (u32, u32, u32, u32)| {
+        if !body.is_empty() {
+            let (old_start, old_count, new_start, new_count) = ranges;
+            parts.push(format!(
+                "@@ -{old_start},{old_count} +{new_start},{new_count} @@\n{}",
+                std::mem::take(body)
+            ));
+        }
+    };
+    for line in &hunk[1..] {
+        if !body.is_empty() && body.len() + line.len() + MAX_SUBHUNK_HEADER_BYTES > budget {
+            flush(
+                &mut parts,
+                &mut body,
+                (old_start, old_count, new_start, new_count),
+            );
+            (old_start, new_start, old_count, new_count) = (old_line, new_line, 0, 0);
+        }
+        body.push_str(line);
+        let (old_step, new_step) = match line.as_bytes().first() {
+            Some(b' ') => (1, 1),
+            Some(b'-') => (1, 0),
+            Some(b'+') => (0, 1),
+            _ => (0, 0),
+        };
+        let advanced = (
+            old_line.checked_add(old_step),
+            new_line.checked_add(new_step),
+            old_count.checked_add(old_step),
+            new_count.checked_add(new_step),
+        );
+        let (Some(next_old), Some(next_new), Some(next_old_count), Some(next_new_count)) = advanced
+        else {
+            // Line numbers this large cannot be represented: keep the hunk
+            // whole, so it is truncated and reported as partially reviewed.
+            return vec![hunk.concat()];
+        };
+        (old_line, new_line, old_count, new_count) =
+            (next_old, next_new, next_old_count, next_new_count);
+    }
+    flush(
+        &mut parts,
+        &mut body,
+        (old_start, old_count, new_start, new_count),
+    );
+    parts
 }
 
 fn truncate_at_boundary(value: &str, max: usize) -> String {
@@ -69,8 +215,9 @@ fn truncate_at_boundary(value: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{chunk_files, is_valid_anchor};
+    use super::{chunk_files, is_valid_anchor, split_patch, truncated_paths};
     use crate::{ChangedFile, DiffChunk};
+    use std::fmt::Write as _;
 
     fn changed_file(file_path: &str, patch_text: &str, right_lines: &[u32]) -> ChangedFile {
         ChangedFile {
@@ -103,6 +250,100 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn large_files_are_split_into_valid_patches_instead_of_truncated() {
+        let header = "diff --git a/big.rs b/big.rs\n--- a/big.rs\n+++ b/big.rs\n";
+        let mut patch = String::from(header);
+        // Two hunks; the second is larger than the chunk on its own.
+        patch.push_str("@@ -1,2 +1,2 @@\n-old\n+new\n");
+        patch.push_str("@@ -10,0 +10,40 @@\n");
+        for n in 0..40 {
+            let _ = writeln!(patch, "+line {n:02}");
+        }
+        let pieces = split_patch(&patch, 200);
+        assert!(pieces.len() > 2, "{pieces:?}");
+        for piece in &pieces {
+            assert!(piece.starts_with(header));
+            assert!(piece.len() <= 200 + 40, "{}", piece.len());
+        }
+        // Every added line is kept exactly once, and ranges stay correct.
+        let joined = pieces.join("");
+        for n in 0..40 {
+            assert_eq!(joined.matches(&format!("+line {n:02}\n")).count(), 1);
+        }
+        let files = [ChangedFile {
+            path: "big.rs".into(),
+            patch: patch.clone(),
+            right_lines: vec![],
+        }];
+        let rebuilt: Vec<u32> = pieces
+            .iter()
+            .flat_map(|piece| crate::parse_unified_diff(piece))
+            .flat_map(|file| file.right_lines)
+            .collect();
+        assert_eq!(rebuilt, crate::parse_unified_diff(&patch)[0].right_lines);
+        // A budget equal to the original diff keeps every piece, although
+        // the repeated headers make the pieces larger in total.
+        let chunks = chunk_files(&files, 200, patch.len());
+        assert!(
+            chunks.iter().map(|chunk| chunk.text.len()).sum::<usize>() > patch.len(),
+            "headers are repeated"
+        );
+        let kept: Vec<u32> = chunks
+            .iter()
+            .flat_map(|chunk| crate::parse_unified_diff(&chunk.text))
+            .flat_map(|file| file.right_lines)
+            .collect();
+        assert_eq!(kept, crate::parse_unified_diff(&patch)[0].right_lines);
+        assert!(chunks.len() > 2);
+        assert!(chunks.iter().all(|chunk| chunk.files == ["big.rs"]));
+        assert!(
+            !chunks
+                .iter()
+                .any(|chunk| chunk.text.contains("[diff truncated"))
+        );
+    }
+
+    #[test]
+    fn sub_hunks_fit_the_budget_with_large_line_numbers() {
+        let header = "diff --git a/big.rs b/big.rs\n--- a/big.rs\n+++ b/big.rs\n";
+        // Two-byte lines fill a sub-hunk up to the header margin exactly.
+        let mut patch = format!("{header}@@ -4000000000,0 +4000000000,200 @@\n");
+        patch.push_str(&"+\n".repeat(200));
+        for piece in split_patch(&patch, 200) {
+            assert!(piece.len() <= 200, "{} bytes: {piece}", piece.len());
+        }
+    }
+
+    #[test]
+    fn a_line_longer_than_a_chunk_marks_its_file_as_truncated() {
+        let long = format!("+{}\n", "x".repeat(300));
+        let files = [
+            changed_file("long.rs", &format!("@@ -1,0 +1,1 @@\n{long}"), &[1]),
+            changed_file("short.rs", "@@ -1 +1 @@\n-a\n+b\n", &[1]),
+            changed_file(
+                "split.rs",
+                &format!("@@ -1,0 +1,40 @@\n{}", "+line\n".repeat(40)),
+                &[1],
+            ),
+        ];
+        assert_eq!(truncated_paths(&files, 200), ["long.rs"]);
+        let chunks = chunk_files(&files, 200, 100_000);
+        assert!(chunks[0].text.contains("[diff truncated by cururu]"));
+    }
+
+    #[test]
+    fn line_numbers_that_overflow_keep_the_hunk_whole_and_truncated() {
+        let patch = format!(
+            "@@ -{max},1 +{max},40 @@\n-old\n{}",
+            "+line\n".repeat(40),
+            max = u32::MAX
+        );
+        let files = [changed_file("big.rs", &patch, &[1])];
+        assert_eq!(split_patch(&patch, 100), std::slice::from_ref(&patch));
+        assert_eq!(truncated_paths(&files, 100), ["big.rs"]);
     }
 
     #[test]
