@@ -62,3 +62,27 @@ python3 tests/review_quality/run.py target/debug/cururu --send /tmp/review-quali
 
 Judge each `OUT/<scenario>.json` against its `expectations`, and record the
 model, the Cururu revision and the verdicts with the result.
+
+## Recorded runs
+
+2026-11-15, `openai/gpt-6-luna` through OpenRouter, default configuration
+(`minimum_confidence` 0.65). The baseline is the v5.1.1 prompt (main at
+`55e7f7e`); "new" is this prompt. Counts are runs in which the behaviour was
+seen. The first comparison was judged blind by Claude Code with Sonnet 5.5;
+the later runs were read against the same expectations. Six small cases and a
+handful of runs per version: treat this as a direction, not a score.
+
+| Scenario | v5.1.1 prompt | New prompt (final revision) |
+| --- | --- | --- |
+| `concrete-finding-with-alternative` | Finds it (1/1); no test, imperative fix. | Finds it (2/2); cites the route, names a test, offers the fix as one option with a second alternative. |
+| `insufficient-evidence` | Asserts duplicate receipts on an unseen retry in 2/4 runs. | Same in 1/2 runs (3/5 across all revisions). Not solved. |
+| `pre-existing-versus-regression` | No finding (1/1). | No finding (2/2). The case does not discriminate. |
+| `deploy-partial-failure` | Finds the old-worker window in 1/4 runs. | 1/2 runs (3/5 across all revisions); offers expand-and-contract as one option, no assumed rollback. |
+| `resolved-prior-comment` | Does not repeat it (1/1). | Does not repeat it (2/2). |
+| `incomplete-review` | False finding: reads the split removal as an emptied file (1/1). | No finding (2/2) after removals stay with their replacement; the receipt lists the truncated and binary files. |
+
+What the runs changed in Cururu itself: a hunk is no longer split between a
+removal and the addition replacing it, since the model reliably read the bare
+removal as deleted content even with a part note. What stays open: a model
+still asserts hypotheses that depend on unseen callers or retries, which a
+prompt alone did not fix.
