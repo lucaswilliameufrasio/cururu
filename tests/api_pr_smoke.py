@@ -153,10 +153,16 @@ with tempfile.TemporaryDirectory() as directory:
             assert result.returncode != 0 and not result.stdout, result.stderr
         assert state["other_posts"] == 0
     state["multi_mode"] = None
+    # A binary file next to a text change is listed as not reviewed.
+    state["diff"] = original_diff + "diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n"
+    mixed = run("api-review", "--pr", "--confirm-send")
+    assert mixed.returncode == 0, mixed.stderr
+    assert json.loads(mixed.stdout)["unreviewable_paths"] == ["logo.png"], mixed.stdout
+    assert "unreviewable_paths" not in json.loads(accepted.stdout)
     state["diff"] = original_diff
     del env["CURURU_CHUNK_BYTES"]
     state["change_after_send"] = True
     stale = run("api-review", "--pr", "--confirm-send", "--expected-snapshot", snapshot)
     assert stale.returncode != 0 and "snapshot changed" in stale.stderr, stale.stderr
-    assert state["api_calls"] == 13 and state["other_posts"] == 0
+    assert state["api_calls"] == 14 and state["other_posts"] == 0
 server.shutdown()

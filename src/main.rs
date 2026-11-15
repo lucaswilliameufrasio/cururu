@@ -71,6 +71,9 @@ struct ApiReviewReceipt<'a> {
     /// Files whose coverage the model did not report consistently.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     coverage_unconfirmed: Vec<String>,
+    /// Binary files and submodule changes that were left out of the review.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    unreviewable_paths: &'a [String],
 }
 
 #[derive(serde::Serialize)]
@@ -571,6 +574,7 @@ async fn main() -> anyhow::Result<()> {
                     receipt,
                     usage,
                     coverage_unconfirmed,
+                    unreviewable_paths: &current.unreviewable_paths,
                 })?
             );
             return Ok(());
