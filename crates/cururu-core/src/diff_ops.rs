@@ -173,23 +173,26 @@ fn split_hunk(hunk: &[&str], budget: usize) -> Vec<String> {
             (old_start, new_start, old_count, new_count) = (old_line, new_line, 0, 0);
         }
         body.push_str(line);
-        match line.as_bytes().first() {
-            Some(b' ') => {
-                old_line += 1;
-                new_line += 1;
-                old_count += 1;
-                new_count += 1;
-            }
-            Some(b'-') => {
-                old_line += 1;
-                old_count += 1;
-            }
-            Some(b'+') => {
-                new_line += 1;
-                new_count += 1;
-            }
-            _ => {}
-        }
+        let (old_step, new_step) = match line.as_bytes().first() {
+            Some(b' ') => (1, 1),
+            Some(b'-') => (1, 0),
+            Some(b'+') => (0, 1),
+            _ => (0, 0),
+        };
+        let advanced = (
+            old_line.checked_add(old_step),
+            new_line.checked_add(new_step),
+            old_count.checked_add(old_step),
+            new_count.checked_add(new_step),
+        );
+        let (Some(next_old), Some(next_new), Some(next_old_count), Some(next_new_count)) = advanced
+        else {
+            // Line numbers this large cannot be represented: keep the hunk
+            // whole, so it is truncated and reported as partially reviewed.
+            return vec![hunk.concat()];
+        };
+        (old_line, new_line, old_count, new_count) =
+            (next_old, next_new, next_old_count, next_new_count);
     }
     flush(
         &mut parts,
@@ -329,6 +332,18 @@ mod tests {
         assert_eq!(truncated_paths(&files, 200), ["long.rs"]);
         let chunks = chunk_files(&files, 200, 100_000);
         assert!(chunks[0].text.contains("[diff truncated by cururu]"));
+    }
+
+    #[test]
+    fn line_numbers_that_overflow_keep_the_hunk_whole_and_truncated() {
+        let patch = format!(
+            "@@ -{max},1 +{max},40 @@\n-old\n{}",
+            "+line\n".repeat(40),
+            max = u32::MAX
+        );
+        let files = [changed_file("big.rs", &patch, &[1])];
+        assert_eq!(split_patch(&patch, 100), std::slice::from_ref(&patch));
+        assert_eq!(truncated_paths(&files, 100), ["big.rs"]);
     }
 
     #[test]
