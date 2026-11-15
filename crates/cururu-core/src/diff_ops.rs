@@ -21,6 +21,14 @@ pub fn chunk_files(
     let mut total = 0usize;
 
     for file in files {
+        // The budget is charged per whole file at its original size, the same
+        // measure `ensure_review_diff_limits` validates, so headers repeated by
+        // splitting never push a file out, and a file is never sent partially.
+        if total + file.patch.len() > max_diff_bytes {
+            break;
+        }
+        total += file.patch.len();
+
         // A file larger than a chunk is reviewed in several chunks, each a
         // valid patch; only a single line longer than a chunk is truncated.
         let pieces = if file.patch.len() > chunk_bytes {
@@ -35,10 +43,6 @@ pub fn chunk_files(
                 piece
             };
 
-            if total + patch.len() > max_diff_bytes {
-                break;
-            }
-
             if !current.is_empty() && current.len() + patch.len() > chunk_bytes {
                 chunks.push(DiffChunk {
                     index: chunks.len(),
@@ -52,7 +56,6 @@ pub fn chunk_files(
             if current_files.last() != Some(&file.path) {
                 current_files.push(file.path.clone());
             }
-            total += patch.len();
         }
     }
 
@@ -256,7 +259,19 @@ mod tests {
             .flat_map(|file| file.right_lines)
             .collect();
         assert_eq!(rebuilt, crate::parse_unified_diff(&patch)[0].right_lines);
-        let chunks = chunk_files(&files, 200, 100_000);
+        // A budget equal to the original diff keeps every piece, although
+        // the repeated headers make the pieces larger in total.
+        let chunks = chunk_files(&files, 200, patch.len());
+        assert!(
+            chunks.iter().map(|chunk| chunk.text.len()).sum::<usize>() > patch.len(),
+            "headers are repeated"
+        );
+        let kept: Vec<u32> = chunks
+            .iter()
+            .flat_map(|chunk| crate::parse_unified_diff(&chunk.text))
+            .flat_map(|file| file.right_lines)
+            .collect();
+        assert_eq!(kept, crate::parse_unified_diff(&patch)[0].right_lines);
         assert!(chunks.len() > 2);
         assert!(chunks.iter().all(|chunk| chunk.files == ["big.rs"]));
         assert!(
