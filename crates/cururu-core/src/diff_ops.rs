@@ -115,6 +115,10 @@ pub fn split_patch(patch: &str, max: usize) -> Vec<String> {
     pieces
 }
 
+/// Longest `@@ -N,N +N,N @@\n` header with four `u32` values.
+const MAX_SUBHUNK_HEADER_BYTES: usize =
+    "@@ -4294967295,4294967295 +4294967295,4294967295 @@\n".len();
+
 fn hunk_range(header: &str) -> Option<(u32, u32)> {
     let rest = header.strip_prefix("@@ -")?;
     let (old, rest) = rest.split_once(" +")?;
@@ -142,7 +146,7 @@ fn split_hunk(hunk: &[&str], budget: usize) -> Vec<String> {
         }
     };
     for line in &hunk[1..] {
-        if !body.is_empty() && body.len() + line.len() + 32 > budget {
+        if !body.is_empty() && body.len() + line.len() + MAX_SUBHUNK_HEADER_BYTES > budget {
             flush(
                 &mut parts,
                 &mut body,
@@ -279,6 +283,17 @@ mod tests {
                 .iter()
                 .any(|chunk| chunk.text.contains("[diff truncated"))
         );
+    }
+
+    #[test]
+    fn sub_hunks_fit_the_budget_with_large_line_numbers() {
+        let header = "diff --git a/big.rs b/big.rs\n--- a/big.rs\n+++ b/big.rs\n";
+        // Two-byte lines fill a sub-hunk up to the header margin exactly.
+        let mut patch = format!("{header}@@ -4000000000,0 +4000000000,200 @@\n");
+        patch.push_str(&"+\n".repeat(200));
+        for piece in split_patch(&patch, 200) {
+            assert!(piece.len() <= 200, "{} bytes: {piece}", piece.len());
+        }
     }
 
     #[test]
