@@ -29,14 +29,7 @@ pub fn chunk_files(
         }
         total += file.patch.len();
 
-        // A file larger than a chunk is reviewed in several chunks, each a
-        // valid patch; only a single line longer than a chunk is truncated.
-        let pieces = if file.patch.len() > chunk_bytes {
-            split_patch(&file.patch, chunk_bytes)
-        } else {
-            vec![file.patch.clone()]
-        };
-        for piece in pieces {
+        for piece in file_pieces(file, chunk_bytes) {
             let patch = if piece.len() > chunk_bytes {
                 truncate_at_boundary(&piece, chunk_bytes)
             } else {
@@ -68,6 +61,31 @@ pub fn chunk_files(
     }
 
     chunks
+}
+
+/// A file larger than a chunk is reviewed in several chunks, each a valid
+/// patch; only a piece holding a single line longer than a chunk is truncated.
+fn file_pieces(file: &ChangedFile, chunk_bytes: usize) -> Vec<String> {
+    if file.patch.len() > chunk_bytes {
+        split_patch(&file.patch, chunk_bytes)
+    } else {
+        vec![file.patch.clone()]
+    }
+}
+
+/// Paths that [`chunk_files`] sends only partially, because one of their diff
+/// lines is longer than a whole chunk and is cut. Their review is incomplete.
+#[must_use]
+pub fn truncated_paths(files: &[ChangedFile], chunk_bytes: usize) -> Vec<String> {
+    files
+        .iter()
+        .filter(|file| {
+            file_pieces(file, chunk_bytes)
+                .iter()
+                .any(|piece| piece.len() > chunk_bytes)
+        })
+        .map(|file| file.path.clone())
+        .collect()
 }
 
 /// Split one file patch into pieces of at most `max` bytes where possible.
@@ -194,7 +212,7 @@ fn truncate_at_boundary(value: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{chunk_files, is_valid_anchor, split_patch};
+    use super::{chunk_files, is_valid_anchor, split_patch, truncated_paths};
     use crate::{ChangedFile, DiffChunk};
     use std::fmt::Write as _;
 
@@ -294,6 +312,23 @@ mod tests {
         for piece in split_patch(&patch, 200) {
             assert!(piece.len() <= 200, "{} bytes: {piece}", piece.len());
         }
+    }
+
+    #[test]
+    fn a_line_longer_than_a_chunk_marks_its_file_as_truncated() {
+        let long = format!("+{}\n", "x".repeat(300));
+        let files = [
+            changed_file("long.rs", &format!("@@ -1,0 +1,1 @@\n{long}"), &[1]),
+            changed_file("short.rs", "@@ -1 +1 @@\n-a\n+b\n", &[1]),
+            changed_file(
+                "split.rs",
+                &format!("@@ -1,0 +1,40 @@\n{}", "+line\n".repeat(40)),
+                &[1],
+            ),
+        ];
+        assert_eq!(truncated_paths(&files, 200), ["long.rs"]);
+        let chunks = chunk_files(&files, 200, 100_000);
+        assert!(chunks[0].text.contains("[diff truncated by cururu]"));
     }
 
     #[test]

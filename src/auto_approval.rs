@@ -33,6 +33,9 @@ pub enum Veto {
     UnconfirmedCoverage {
         path: String,
     },
+    TruncatedDiff {
+        path: String,
+    },
     OutsideAllowedPaths {
         path: String,
     },
@@ -181,6 +184,9 @@ pub fn evaluate(
     for path in &output.unconfirmed_paths {
         vetoes.push(Veto::UnconfirmedCoverage { path: path.clone() });
     }
+    for path in &output.truncated_paths {
+        vetoes.push(Veto::TruncatedDiff { path: path.clone() });
+    }
     let mut changed_lines = 0usize;
     for file in &output.changed_files {
         changed_lines = changed_lines.saturating_add(changed_line_count(file));
@@ -317,6 +323,19 @@ pub fn describe(veto: &Veto, language: &str) -> String {
             } else {
                 format!(
                     "the model did not confirm reviewing {} completely",
+                    code(path)
+                )
+            }
+        }
+        Veto::TruncatedDiff { path } => {
+            if pt {
+                format!(
+                    "uma linha do diff de {} é maior que `review.chunk_bytes` e foi cortada, então ele foi revisado só em parte",
+                    code(path)
+                )
+            } else {
+                format!(
+                    "a diff line in {} is longer than `review.chunk_bytes` and was cut, so it was only partially reviewed",
                     code(path)
                 )
             }
@@ -770,6 +789,7 @@ mod tests {
             pr_usage: None,
             ignored_paths: vec![],
             unreviewable_paths: vec![],
+            truncated_paths: vec![],
             unconfirmed_paths: vec![],
             auto_approval: None,
             language: "en".into(),
@@ -987,6 +1007,7 @@ mod tests {
         out.review.files_reviewed = 2;
         out.ignored_paths = vec!["Cargo.lock".into()];
         out.unreviewable_paths = vec!["logo.png".into()];
+        out.truncated_paths = vec!["data/blob.json".into()];
         out.analysis.status = "failed".into();
         let decision = evaluate(&policy(), true, &out).unwrap();
         let codes: Vec<String> = decision
@@ -1001,6 +1022,7 @@ mod tests {
             .collect();
         for expected in [
             "unreviewable",
+            "truncated_diff",
             "not_reviewed",
             "too_many_files",
             "too_many_lines",

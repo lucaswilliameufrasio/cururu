@@ -23,6 +23,9 @@ pub struct PreparedReview {
     /// They are left out of the review and reported, not silently dropped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unreviewable_paths: Vec<String>,
+    /// Files sent only partially because a diff line is longer than a chunk.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub truncated_paths: Vec<String>,
     pub review_instructions: &'static str,
     pub review_preferences: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -337,6 +340,7 @@ pub fn prepare(
         config.review.chunk_bytes,
         config.review.max_diff_bytes,
     );
+    let truncated_paths = diff::truncated_paths(&files, config.review.chunk_bytes);
     let raw_hash = hex::encode(Sha256::digest(raw.as_bytes()));
     let preferences = serde_json::json!({
         "language": config.review.language,
@@ -391,6 +395,7 @@ pub fn prepare(
         },
         ignored_paths,
         unreviewable_paths,
+        truncated_paths,
         review_instructions: cururu_engine::DEFAULT_REVIEW_PROMPT,
         review_preferences: preferences,
         repository_context: None,

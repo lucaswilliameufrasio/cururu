@@ -159,10 +159,16 @@ with tempfile.TemporaryDirectory() as directory:
     assert mixed.returncode == 0, mixed.stderr
     assert json.loads(mixed.stdout)["unreviewable_paths"] == ["logo.png"], mixed.stdout
     assert "unreviewable_paths" not in json.loads(accepted.stdout)
+    # A line longer than a chunk (250 bytes here) is cut; its file is reported as partial.
+    state["diff"] = "diff --git a/a b/a\n@@ -1 +1 @@\n-old\n+" + "x" * 400 + "\n"
+    cut = run("api-review", "--pr", "--confirm-send")
+    assert cut.returncode == 0, cut.stderr
+    assert json.loads(cut.stdout)["truncated_paths"] == ["a"], cut.stdout
+    assert "truncated_paths" not in json.loads(accepted.stdout)
     state["diff"] = original_diff
     del env["CURURU_CHUNK_BYTES"]
     state["change_after_send"] = True
     stale = run("api-review", "--pr", "--confirm-send", "--expected-snapshot", snapshot)
     assert stale.returncode != 0 and "snapshot changed" in stale.stderr, stale.stderr
-    assert state["api_calls"] == 14 and state["other_posts"] == 0
+    assert state["api_calls"] == 16 and state["other_posts"] == 0
 server.shutdown()

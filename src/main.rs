@@ -74,6 +74,9 @@ struct ApiReviewReceipt<'a> {
     /// Binary files and submodule changes that were left out of the review.
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     unreviewable_paths: &'a [String],
+    /// Files sent only partially because a diff line is longer than a chunk.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    truncated_paths: &'a [String],
 }
 
 #[derive(serde::Serialize)]
@@ -575,6 +578,7 @@ async fn main() -> anyhow::Result<()> {
                     usage,
                     coverage_unconfirmed,
                     unreviewable_paths: &current.unreviewable_paths,
+                    truncated_paths: &current.truncated_paths,
                 })?
             );
             return Ok(());

@@ -69,6 +69,8 @@ pub struct ReviewOutput {
     pub ignored_paths: Vec<String>,
     /// Binary files and submodule changes left out of the review.
     pub unreviewable_paths: Vec<String>,
+    /// Files sent only partially because a diff line is longer than a chunk.
+    pub truncated_paths: Vec<String>,
     /// Files in chunks whose coverage the model never reported consistently.
     pub unconfirmed_paths: Vec<String>,
     /// Auto-approval decision, when the policy is enabled.
@@ -352,6 +354,7 @@ pub async fn run_review_with_evaluator(
         pr_usage: None,
         ignored_paths: prepared.ignored_paths.clone(),
         unreviewable_paths: prepared.unreviewable_paths.clone(),
+        truncated_paths: prepared.truncated_paths.clone(),
         unconfirmed_paths,
         auto_approval: None,
         language: config.review.language.clone(),

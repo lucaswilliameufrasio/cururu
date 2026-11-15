@@ -194,6 +194,7 @@ mod tests {
                 scope: "fixture",
                 ignored_paths: vec![],
                 unreviewable_paths: vec![],
+                truncated_paths: vec![],
                 review_instructions: "fixture",
                 review_preferences: json!({}),
                 repository_context: None,

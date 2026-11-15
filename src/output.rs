@@ -171,6 +171,19 @@ fn render_overview(output: &ReviewOutput, out: &mut String) {
 }
 
 fn render_not_reviewed(output: &ReviewOutput, out: &mut String) {
+    if !output.truncated_paths.is_empty() {
+        let paths: Vec<String> = output
+            .truncated_paths
+            .iter()
+            .take(20)
+            .map(|path| format!("`{}`", path.replace('`', "'")))
+            .collect();
+        let _ = write!(
+            out,
+            "**Partially reviewed:** {} — a diff line longer than `review.chunk_bytes` was cut before review, so part of these changes was not seen.\n\n",
+            paths.join(", ")
+        );
+    }
     if !output.unconfirmed_paths.is_empty() {
         let paths: Vec<String> = output
             .unconfirmed_paths
@@ -517,6 +530,7 @@ mod tests {
             pr_usage: None,
             ignored_paths: vec![],
             unreviewable_paths: vec![],
+            truncated_paths: vec![],
             unconfirmed_paths: vec![],
             auto_approval: None,
             language: "en".into(),
@@ -586,6 +600,7 @@ mod tests {
             pr_usage: None,
             ignored_paths: vec![],
             unreviewable_paths: vec![],
+            truncated_paths: vec![],
             unconfirmed_paths: vec![],
             auto_approval: None,
             language: "en".into(),
@@ -595,6 +610,10 @@ mod tests {
         assert!(!body.contains("**Tokens"));
         assert!(body.contains("**Summary:** s"));
         assert!(body.contains(&run_marker("run")));
+        output.truncated_paths = vec!["data/blob.json".into()];
+        assert!(
+            render_summary_comment(&output).contains("**Partially reviewed:** `data/blob.json`")
+        );
         output.unreviewable_paths = vec!["assets/logo.png".into()];
         assert!(
             render_summary_comment(&output).contains(
@@ -650,6 +669,7 @@ mod tests {
             }),
             ignored_paths: vec![],
             unreviewable_paths: vec![],
+            truncated_paths: vec![],
             unconfirmed_paths: vec![],
             auto_approval: None,
             language: "en".into(),
