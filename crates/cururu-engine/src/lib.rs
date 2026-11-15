@@ -116,6 +116,38 @@ mod tests {
         );
     }
 
+    /// Proves only that the canonical prompt carries each comment-quality
+    /// rule; whether a model follows them needs a real evaluation.
+    #[test]
+    fn canonical_review_prompt_carries_the_comment_quality_rules() {
+        for rule in [
+            // Concrete scenario and consequence; alternative with rationale,
+            // open to the author's own; a verifying test when useful.
+            "the concrete scenario in which the problem happens",
+            "a viable alternative and why it resolves the problem",
+            "one option the author may replace with another",
+            "name the test that would verify the fix",
+            "never reduce the suggestion to a vague",
+            // Evidence: no hypothesis as defect, no impact beyond evidence.
+            "do not present the\n  hypothesis as a defect",
+            "does not prove production\n  impact",
+            "check the callers, validations,\n  and contracts",
+            // Legacy versus regression.
+            "Separate what the change introduces from a pre-existing problem",
+            // Deployments: partial failure, no assumed rollback.
+            "partial failure,\n  and recovery",
+            "an automatic rollback exists",
+            // Resolved feedback and coverage claims.
+            "Do not report again a problem that prior feedback shows was resolved",
+            "do not describe the review as complete in `summary`",
+            // Bounded output against truncated JSON.
+            "Report at most 10 findings per chunk",
+        ] {
+            assert!(DEFAULT_REVIEW_PROMPT.contains(rule), "missing rule: {rule}");
+        }
+        assert!(!DEFAULT_REVIEW_PROMPT.contains("Only report high-confidence findings"));
+    }
+
     #[tokio::test]
     async fn reviews_chunks_sequentially_and_preserves_order() {
         let seen = Arc::new(Mutex::new(Vec::new()));

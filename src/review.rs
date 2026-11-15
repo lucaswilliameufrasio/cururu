@@ -80,6 +80,15 @@ pub struct ReviewOutput {
 }
 
 impl ReviewOutput {
+    /// Whether every reviewable file was sent in full and its coverage was
+    /// confirmed. Paths excluded by configuration are a deliberate choice.
+    #[must_use]
+    pub const fn fully_reviewed(&self) -> bool {
+        self.unreviewable_paths.is_empty()
+            && self.truncated_paths.is_empty()
+            && self.unconfirmed_paths.is_empty()
+    }
+
     pub fn usage_record(&self) -> crate::review_usage::UsageRecord {
         crate::review_usage::UsageRecord::new(&self.run_id, &self.head_sha, self.usage.as_ref())
     }
