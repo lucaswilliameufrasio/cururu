@@ -107,7 +107,7 @@ impl GitHubClient {
             let detail = response
                 .json::<GitHubError>()
                 .await
-                .map(|error| {
+                .map_or_default(|error| {
                     let extra = error
                         .errors
                         .iter()
@@ -119,8 +119,7 @@ impl GitHubClient {
                     } else {
                         format!("{}: {extra}", error.message)
                     }
-                })
-                .unwrap_or_default();
+                });
             let detail: String = detail.chars().take(300).collect();
             return Ok(ApprovalOutcome::NotPermitted(format!(
                 "HTTP {}{}",
