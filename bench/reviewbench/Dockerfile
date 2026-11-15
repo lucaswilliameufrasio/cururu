@@ -9,7 +9,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git jq xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl --fail --location --proto '=https' --tlsv1.2 \
+RUN curl --fail --location --proto '=https' --tlsv1.2 --connect-timeout 30 --max-time 600 --retry 3 \
         "https://github.com/lucaswilliameufrasio/cururu/releases/download/v${CURURU_VERSION}/cururu-x86_64-unknown-linux-gnu.tar.xz" \
         --output /tmp/cururu.tar.xz \
     && echo "${CURURU_SHA256}  /tmp/cururu.tar.xz" | sha256sum --check - \
