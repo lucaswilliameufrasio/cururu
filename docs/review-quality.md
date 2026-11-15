@@ -98,3 +98,11 @@ finding on a line outside the diff, which aborted the review. Both now have
 a fallback: a cut-off chunk is requested once more with twice the output
 limit, and a finding still outside the diff after a retry is dropped and
 reported instead of failing the review.
+
+With those fallbacks (`fa6482e`), the two failed pull requests completed: one
+chunk stopped at the limit and its retry with twice the limit finished; the
+model placed no finding outside the diff this time, so dropping was not
+exercised by a real run. The matcher found 17 of their 52 labelled true
+positives (32.7% recall, matched precision 83.3%) against 15 (28.8%, 86.7%)
+for E3 on the same two. Across the four pull requests, Cururu now completes
+all of them; E3 also completed them, by chance on one of the two failures.
