@@ -86,3 +86,12 @@ removal and the addition replacing it, since the model reliably read the bare
 removal as deleted content even with a part note. What stays open: a model
 still asserts hypotheses that depend on unseen callers or retries, which a
 prompt alone did not fix.
+
+ReviewBench rerun (same day, same model, `minimum_confidence` 0.5 and
+automatic context, as in the earlier E3 experiment) of the four pull requests
+that had been cut off with the broadened prompt alone: two completed, and the
+matcher (Claude Code, Sonnet 5.5, official matcher prompt) found 6 of their 42
+labelled true positives against 5 for E3 on the same two. One still ran out of
+output tokens with only 2.5 KB of answer, so the model's reasoning, not the
+findings, used the budget; the other failed because the model twice placed a
+finding on a line outside the diff, which aborts the review by design.
