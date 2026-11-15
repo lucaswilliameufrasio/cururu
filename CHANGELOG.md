@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [5.2.0] - 2026-11-15
+
+### Bug Fixes
+
+- Run git asynchronously with time and output bounds
+- Validate context paths by component, allowing names with dots
+- Keep removals with their replacement when splitting files
+- Retry cut-off chunks with more output and drop unanchored findings
+
+### Chores
+
+- Pin v5.1.1 OCI digest
+- Adopt Cururu v5.1.1
+
+### Documentation
+
+- Describe repository context in local reviews
+- Record the first real-model quality runs
+- Record the ReviewBench rerun of the cut-off pull requests
+- Record the ReviewBench rerun with the fallbacks
+
+### Features
+
+- Load repository context for local reviews
+- Ask for actionable, evidence-bound review comments
+
+### Other
+
+- Update Rust to 1.100.0 and compatible crates
+
+### Testing
+
+- Add synthetic review-quality scenarios and a real-model runner
 ## [5.1.1] - 2026-11-15
 
 ### Bug Fixes
@@ -20,6 +53,7 @@ All notable changes to this project will be documented in this file.
 
 - Pin v5.1.0 OCI digest
 - Adopt Cururu v5.1.0
+- Prepare for v5.1.1
 
 ### Documentation
 
