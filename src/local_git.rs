@@ -6,10 +6,21 @@ use crate::scm::ScmProvider;
 use anyhow::Context;
 use async_trait::async_trait;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
 
 /// Largest repository file read as context.
-const MAX_CONTEXT_FILE_BYTES: u64 = 1024 * 1024;
+const MAX_CONTEXT_FILE_BYTES: usize = 1024 * 1024;
+/// Most tree entries accepted, matching the GitHub tree API's limit; a larger
+/// tree fails instead of producing an incomplete context selection.
+const MAX_TREE_ENTRIES: usize = 100_000;
+/// Bound on the raw `ls-tree` output for [`MAX_TREE_ENTRIES`] entries.
+const MAX_TREE_BYTES: usize = 32 * 1024 * 1024;
+/// Bound on small metadata answers such as a SHA or an object size.
+const MAX_METADATA_BYTES: usize = 128;
+const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct LocalGit {
     root: PathBuf,
@@ -20,8 +31,11 @@ impl LocalGit {
         Self { root: root.into() }
     }
 
-    fn git(&self, args: &[&str]) -> anyhow::Result<Vec<u8>> {
-        let output = Command::new("git")
+    /// Run git without blocking the async runtime, reading at most
+    /// `max_bytes` of output within [`GIT_TIMEOUT`].
+    async fn git(&self, args: &[&str], max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+        let command = args.first().copied().unwrap_or_default();
+        let mut child = Command::new("git")
             .current_dir(&self.root)
             .args([
                 "-c",
@@ -31,14 +45,34 @@ impl LocalGit {
                 "--no-pager",
             ])
             .args(args)
-            .output()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
             .context("failed to run git")?;
-        anyhow::ensure!(
-            output.status.success(),
-            "git {} failed",
-            args.first().copied().unwrap_or_default()
-        );
-        Ok(output.stdout)
+        let mut stdout = child.stdout.take().context("git output is unavailable")?;
+        let mut output = Vec::new();
+        let limit = u64::try_from(max_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let finished = tokio::time::timeout(GIT_TIMEOUT, async {
+            (&mut stdout).take(limit).read_to_end(&mut output).await?;
+            if output.len() > max_bytes {
+                return Ok(None);
+            }
+            child.wait().await.map(Some)
+        })
+        .await;
+        // Dropping `child` on an early return kills the process.
+        let status = match finished {
+            Err(_) => anyhow::bail!("git {command} timed out"),
+            Ok(Err(error)) => return Err(error).context("failed to read git output"),
+            Ok(Ok(None)) => anyhow::bail!("git {command} output exceeds {max_bytes} bytes"),
+            Ok(Ok(Some(status))) => status,
+        };
+        anyhow::ensure!(status.success(), "git {command} failed");
+        Ok(output)
     }
 
     fn valid_revision(revision: &str) -> anyhow::Result<()> {
@@ -53,11 +87,12 @@ impl LocalGit {
 #[async_trait]
 impl ScmProvider for LocalGit {
     async fn fetch_head_sha(&self) -> anyhow::Result<String> {
-        Ok(
-            String::from_utf8(self.git(&["rev-parse", "--verify", "HEAD"])?)?
-                .trim()
-                .to_string(),
-        )
+        Ok(String::from_utf8(
+            self.git(&["rev-parse", "--verify", "HEAD"], MAX_METADATA_BYTES)
+                .await?,
+        )?
+        .trim()
+        .to_string())
     }
 
     async fn fetch_diff_with_limit(&self, _: usize) -> anyhow::Result<(String, bool)> {
@@ -74,18 +109,30 @@ impl ScmProvider for LocalGit {
         revision: &str,
     ) -> anyhow::Result<Vec<String>> {
         Self::valid_revision(revision)?;
-        let raw = self.git(&[
-            "ls-tree",
-            "-r",
-            "-z",
-            "--name-only",
-            "--full-tree",
-            revision,
-        ])?;
-        Ok(raw
+        let raw = self
+            .git(
+                &["ls-tree", "-r", "-z", "--full-tree", revision],
+                MAX_TREE_BYTES,
+            )
+            .await?;
+        // Entries are `<mode> <type> <object>\t<path>`; only files are kept,
+        // as with the GitHub tree API (submodules are commits, not blobs).
+        let entries: Vec<&[u8]> = raw
             .split(|byte| *byte == 0)
-            .filter(|path| !path.is_empty())
-            .filter_map(|path| String::from_utf8(path.to_vec()).ok())
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        anyhow::ensure!(
+            entries.len() <= MAX_TREE_ENTRIES,
+            "local repository tree has more than {MAX_TREE_ENTRIES} entries; context matching cannot be complete"
+        );
+        Ok(entries
+            .into_iter()
+            .filter_map(|entry| {
+                let tab = entry.iter().position(|byte| *byte == b'\t')?;
+                let (meta, path) = (&entry[..tab], &entry[tab + 1..]);
+                let is_blob = meta.split(|byte| *byte == b' ').nth(1) == Some(b"blob".as_slice());
+                is_blob.then(|| String::from_utf8(path.to_vec()).ok())?
+            })
             .collect())
     }
 
@@ -96,16 +143,22 @@ impl ScmProvider for LocalGit {
             "invalid repository path"
         );
         let object = format!("{revision}:{path}");
-        let size: u64 = String::from_utf8(self.git(&["cat-file", "-s", &object])?)?
-            .trim()
-            .parse()
-            .context("invalid git object size")?;
+        let size: usize = String::from_utf8(
+            self.git(&["cat-file", "-s", &object], MAX_METADATA_BYTES)
+                .await?,
+        )?
+        .trim()
+        .parse()
+        .context("invalid git object size")?;
         anyhow::ensure!(
             size <= MAX_CONTEXT_FILE_BYTES,
             "repository file is too large for context"
         );
-        String::from_utf8(self.git(&["cat-file", "blob", &object])?)
-            .context("repository file is not UTF-8 text")
+        String::from_utf8(
+            self.git(&["cat-file", "blob", &object], MAX_CONTEXT_FILE_BYTES)
+                .await?,
+        )
+        .context("repository file is not UTF-8 text")
     }
 }
 
@@ -115,7 +168,7 @@ mod tests {
 
     fn git(dir: &std::path::Path, args: &[&str]) {
         assert!(
-            Command::new("git")
+            std::process::Command::new("git")
                 .current_dir(dir)
                 .args(args)
                 .status()
@@ -134,6 +187,22 @@ mod tests {
         std::fs::write(dir.path().join("src/lib.rs"), "committed\n").unwrap();
         git(dir.path(), &["add", "."]);
         git(dir.path(), &["commit", "-q", "-m", "init"]);
+        // A submodule is a commit entry in the tree, not a file.
+        let commit = String::from_utf8(
+            std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        let gitlink = format!("160000,{},vendor/sub", commit.trim());
+        git(
+            dir.path(),
+            &["update-index", "--add", "--cacheinfo", &gitlink],
+        );
+        git(dir.path(), &["commit", "-q", "-m", "submodule"]);
         std::fs::write(dir.path().join("src/lib.rs"), "uncommitted\n").unwrap();
 
         let local = LocalGit::new(dir.path());
@@ -149,6 +218,15 @@ mod tests {
         assert_eq!(
             local.fetch_file_at_ref("src/lib.rs", &head).await.unwrap(),
             "committed\n"
+        );
+        let object = format!("{head}:src/lib.rs");
+        assert!(
+            local
+                .git(&["cat-file", "blob", &object], 4)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds 4 bytes")
         );
         assert!(
             local
