@@ -75,6 +75,13 @@ impl LocalGit {
         Ok(output)
     }
 
+    /// A repository-relative path: no empty, `.` or `..` components, so it
+    /// cannot leave the tree or be resolved against the working directory.
+    fn valid_path(path: &str) -> bool {
+        path.split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+    }
+
     fn valid_revision(revision: &str) -> anyhow::Result<()> {
         anyhow::ensure!(
             !revision.is_empty() && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
@@ -138,10 +145,7 @@ impl ScmProvider for LocalGit {
 
     async fn fetch_file_at_ref(&self, path: &str, revision: &str) -> anyhow::Result<String> {
         Self::valid_revision(revision)?;
-        anyhow::ensure!(
-            !path.is_empty() && !path.starts_with('/') && !path.contains(".."),
-            "invalid repository path"
-        );
+        anyhow::ensure!(Self::valid_path(path), "invalid repository path");
         let object = format!("{revision}:{path}");
         let size: usize = String::from_utf8(
             self.git(&["cat-file", "-s", &object], MAX_METADATA_BYTES)
@@ -219,6 +223,17 @@ mod tests {
             local.fetch_file_at_ref("src/lib.rs", &head).await.unwrap(),
             "committed\n"
         );
+        for invalid in [
+            "../etc/passwd",
+            "src/../lib.rs",
+            "./src/lib.rs",
+            "/src/lib.rs",
+            "src//lib.rs",
+            "",
+        ] {
+            assert!(!LocalGit::valid_path(invalid), "{invalid}");
+        }
+        assert!(LocalGit::valid_path("docs/guia..md"));
         let object = format!("{head}:src/lib.rs");
         assert!(
             local
