@@ -150,13 +150,12 @@ async fn evaluate_with_jev_at(
         let evidence = changed_files
             .iter()
             .find(|file| file.path == finding.path)
-            .map(|file| {
+            .map_or_default(|file| {
                 relevant_hunk(file, finding.line)
                     .chars()
                     .take(MAX_EVIDENCE_CHARS_PER_FINDING.min(evidence_budget))
                     .collect::<String>()
-            })
-            .unwrap_or_default();
+            });
         evidence_budget -= evidence.chars().count();
         state.push(JevFindingState {
             id,

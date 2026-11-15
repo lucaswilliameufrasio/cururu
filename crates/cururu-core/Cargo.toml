@@ -2,7 +2,7 @@
 name = "cururu-core"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.99"
+rust-version = "1.100"
 license = "MIT OR Apache-2.0"
 description = "Provider- and UI-independent domain types for Cururu code review"
 repository = "https://github.com/lucaswilliameufrasio/cururu"

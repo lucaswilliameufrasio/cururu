@@ -2,7 +2,7 @@
 name = "cururu"
 version = "5.1.1"
 edition = "2024"
-rust-version = "1.99"
+rust-version = "1.100"
 license = "MIT OR Apache-2.0"
 description = "Self-service AI code review for GitHub pull requests"
 repository = "https://github.com/lucaswilliameufrasio/cururu"
