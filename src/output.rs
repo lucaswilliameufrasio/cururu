@@ -176,6 +176,13 @@ fn render_overview(output: &ReviewOutput, out: &mut String) {
 }
 
 fn render_not_reviewed(output: &ReviewOutput, out: &mut String) {
+    if output.dropped_findings > 0 {
+        let _ = write!(
+            out,
+            "**Findings dropped:** {} — the model placed them on lines outside the diff twice, so they were not published.\n\n",
+            output.dropped_findings
+        );
+    }
     if !output.truncated_paths.is_empty() {
         let paths: Vec<String> = output
             .truncated_paths
@@ -537,6 +544,7 @@ mod tests {
             unreviewable_paths: vec![],
             truncated_paths: vec![],
             unconfirmed_paths: vec![],
+            dropped_findings: 0,
             auto_approval: None,
             language: "en".into(),
             evaluation: Some(crate::evaluation::EvaluationReport {
@@ -607,6 +615,7 @@ mod tests {
             unreviewable_paths: vec![],
             truncated_paths: vec![],
             unconfirmed_paths: vec![],
+            dropped_findings: 0,
             auto_approval: None,
             language: "en".into(),
         };
@@ -616,6 +625,9 @@ mod tests {
         assert!(body.contains("**Summary:** s"));
         assert!(body.contains(&run_marker("run")));
         assert!(body.contains("No issues found.\n"), "{body}");
+        output.dropped_findings = 2;
+        assert!(render_summary_comment(&output).contains("**Findings dropped:** 2"));
+        output.dropped_findings = 0;
         output.truncated_paths = vec!["data/blob.json".into()];
         let partial = render_summary_comment(&output);
         assert!(partial.contains("**Partially reviewed:** `data/blob.json`"));
@@ -679,6 +691,7 @@ mod tests {
             unreviewable_paths: vec![],
             truncated_paths: vec![],
             unconfirmed_paths: vec![],
+            dropped_findings: 0,
             auto_approval: None,
             language: "en".into(),
         };

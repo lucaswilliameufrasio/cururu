@@ -94,4 +94,7 @@ matcher (Claude Code, Sonnet 5.5, official matcher prompt) found 6 of their 42
 labelled true positives against 5 for E3 on the same two. One still ran out of
 output tokens with only 2.5 KB of answer, so the model's reasoning, not the
 findings, used the budget; the other failed because the model twice placed a
-finding on a line outside the diff, which aborts the review by design.
+finding on a line outside the diff, which aborted the review. Both now have
+a fallback: a cut-off chunk is requested once more with twice the output
+limit, and a finding still outside the diff after a retry is dropped and
+reported instead of failing the review.

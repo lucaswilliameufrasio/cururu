@@ -78,6 +78,17 @@ struct ApiReviewReceipt<'a> {
     /// Files sent only partially because a diff line is longer than a chunk.
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     truncated_paths: &'a [String],
+    /// Findings dropped because the model placed them outside the diff.
+    #[serde(skip_serializing_if = "is_zero")]
+    dropped_findings: usize,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(serde::Serialize)]
@@ -542,6 +553,12 @@ async fn main() -> anyhow::Result<()> {
                     coverage_unconfirmed.len()
                 );
             }
+            let dropped_findings: usize = checked.iter().map(|item| item.dropped_findings).sum();
+            if dropped_findings > 0 {
+                eprintln!(
+                    "Warning: {dropped_findings} finding(s) pointed at lines outside the diff and were dropped."
+                );
+            }
             let results: Vec<cururu_engine::ChunkResult> =
                 checked.into_iter().map(|item| item.result).collect();
             let usage = complete_api_usage(&results);
@@ -580,6 +597,7 @@ async fn main() -> anyhow::Result<()> {
                     coverage_unconfirmed,
                     unreviewable_paths: &current.unreviewable_paths,
                     truncated_paths: &current.truncated_paths,
+                    dropped_findings,
                 })?
             );
             return Ok(());

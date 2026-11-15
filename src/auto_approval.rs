@@ -36,6 +36,9 @@ pub enum Veto {
     TruncatedDiff {
         path: String,
     },
+    DroppedFindings {
+        count: usize,
+    },
     OutsideAllowedPaths {
         path: String,
     },
@@ -187,6 +190,11 @@ pub fn evaluate(
     for path in &output.truncated_paths {
         vetoes.push(Veto::TruncatedDiff { path: path.clone() });
     }
+    if output.dropped_findings > 0 {
+        vetoes.push(Veto::DroppedFindings {
+            count: output.dropped_findings,
+        });
+    }
     let mut changed_lines = 0usize;
     for file in &output.changed_files {
         changed_lines = changed_lines.saturating_add(changed_line_count(file));
@@ -324,6 +332,17 @@ pub fn describe(veto: &Veto, language: &str) -> String {
                 format!(
                     "the model did not confirm reviewing {} completely",
                     code(path)
+                )
+            }
+        }
+        Veto::DroppedFindings { count } => {
+            if pt {
+                format!(
+                    "{count} achado(s) apontavam para linhas fora do diff e foram descartados, então não dá para confirmar que o PR está limpo"
+                )
+            } else {
+                format!(
+                    "{count} finding(s) pointed at lines outside the diff and were dropped, so the PR cannot be confirmed clean"
                 )
             }
         }
@@ -791,6 +810,7 @@ mod tests {
             unreviewable_paths: vec![],
             truncated_paths: vec![],
             unconfirmed_paths: vec![],
+            dropped_findings: 0,
             auto_approval: None,
             language: "en".into(),
         }
@@ -1008,6 +1028,7 @@ mod tests {
         out.ignored_paths = vec!["Cargo.lock".into()];
         out.unreviewable_paths = vec!["logo.png".into()];
         out.truncated_paths = vec!["data/blob.json".into()];
+        out.dropped_findings = 1;
         out.analysis.status = "failed".into();
         let decision = evaluate(&policy(), true, &out).unwrap();
         let codes: Vec<String> = decision
@@ -1023,6 +1044,7 @@ mod tests {
         for expected in [
             "unreviewable",
             "truncated_diff",
+            "dropped_findings",
             "not_reviewed",
             "too_many_files",
             "too_many_lines",

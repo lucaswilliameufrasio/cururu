@@ -190,6 +190,9 @@ pub struct CheckedChunk {
     /// False when the model kept reporting a file count that does not match
     /// the chunk; its findings are valid but its coverage is not confirmed.
     pub coverage_confirmed: bool,
+    /// Findings left out because the model kept placing them on lines
+    /// outside the diff, where they cannot be published.
+    pub dropped_findings: usize,
 }
 
 /// Review chunks with Cururu's own agent. A chunk whose findings are invalid
@@ -204,7 +207,7 @@ pub async fn review_chunks_checked(
 ) -> anyhow::Result<Vec<CheckedChunk>> {
     let mut checked = Vec::with_capacity(chunks.len());
     for chunk in chunks {
-        let mut result = agent.review_chunk(chunk).await?;
+        let mut result = review_chunk_or_retry_cut_off(agent, chunk).await?;
         let valid = |result: &cururu_engine::ChunkResult| {
             validate_chunk_findings(prepared, chunk, &result.review).is_ok()
                 && coverage_consistent(chunk, &result.review)
@@ -214,7 +217,22 @@ pub async fn review_chunks_checked(
                 chunk = chunk.index,
                 "chunk review was invalid or inconsistent; retrying once"
             );
-            result = agent.review_chunk(chunk).await?;
+            result = review_chunk_or_retry_cut_off(agent, chunk).await?;
+        }
+        // A finding still on a line outside the diff after the retry is
+        // dropped and counted; any other invalid finding stays fatal.
+        let dropped_findings = if validate_chunk_findings(prepared, chunk, &result.review).is_err()
+        {
+            drop_findings_outside_diff(prepared, &mut result.review)
+        } else {
+            0
+        };
+        if dropped_findings > 0 {
+            tracing::warn!(
+                chunk = chunk.index,
+                dropped_findings,
+                "findings on lines outside the diff were dropped"
+            );
         }
         validate_chunk_findings(prepared, chunk, &result.review)?;
         let coverage_confirmed = coverage_consistent(chunk, &result.review);
@@ -224,9 +242,55 @@ pub async fn review_chunks_checked(
         checked.push(CheckedChunk {
             result,
             coverage_confirmed,
+            dropped_findings,
         });
     }
     Ok(checked)
+}
+
+/// Remove findings whose line is outside the diff of their file, and return
+/// how many were removed. Findings with other problems are kept, so their
+/// validation still fails.
+fn drop_findings_outside_diff(
+    prepared: &PreparedReview,
+    review: &mut cururu_core::ReviewResult,
+) -> usize {
+    let before = review.findings.len();
+    review.findings.retain(|finding| {
+        let Some(line) = finding.line else {
+            return true;
+        };
+        prepared
+            .files
+            .iter()
+            .find(|file| file.path == finding.path)
+            .is_none_or(|file| file.right_lines.contains(&line))
+    });
+    before - review.findings.len()
+}
+
+/// Review a chunk; when the response was cut off at the output limit (often
+/// by the model's own reasoning), ask once more with a larger limit.
+async fn review_chunk_or_retry_cut_off(
+    agent: &dyn cururu_engine::ReviewAgent,
+    chunk: &DiffChunk,
+) -> anyhow::Result<cururu_engine::ChunkResult> {
+    match agent.review_chunk(chunk).await {
+        Err(error)
+            if error
+                .downcast_ref::<cururu_engine::InvalidReviewOutput>()
+                .is_some_and(|failure| {
+                    matches!(failure.finish_reason.as_str(), "length" | "max_tokens")
+                }) =>
+        {
+            tracing::warn!(
+                chunk = chunk.index,
+                "review was cut off at the output limit; retrying once with a larger limit"
+            );
+            agent.review_chunk_with_more_output(chunk).await
+        }
+        other => other,
+    }
 }
 
 /// Validate findings against the full diff and the chunk they belong to.

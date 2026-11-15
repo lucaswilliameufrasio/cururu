@@ -19,6 +19,20 @@ pub use provider::{
 };
 
 /// Canonical Cururu review instructions shared by CLI and desktop consumers.
+/// Most output tokens a retry after a cut-off response asks for.
+pub const MAX_RETRY_OUTPUT_TOKENS: u32 = 32_000;
+
+/// Output limit for a retry after a cut-off response: double the configured
+/// limit, capped at [`MAX_RETRY_OUTPUT_TOKENS`] but never lower than the
+/// configured limit itself.
+#[must_use]
+pub fn more_output_tokens(configured: u32) -> u32 {
+    configured
+        .saturating_mul(2)
+        .min(MAX_RETRY_OUTPUT_TOKENS)
+        .max(configured)
+}
+
 pub const DEFAULT_REVIEW_PROMPT: &str = include_str!("../../../prompts/review.md");
 
 #[derive(Debug, Clone)]
@@ -31,6 +45,13 @@ pub struct ChunkResult {
 #[async_trait]
 pub trait ReviewAgent: Send + Sync {
     async fn review_chunk(&self, chunk: &DiffChunk) -> Result<ChunkResult>;
+
+    /// Review a chunk again after its response was cut off at the output
+    /// limit. Adapters that control that limit raise it for this call (see
+    /// [`more_output_tokens`]); others repeat the request.
+    async fn review_chunk_with_more_output(&self, chunk: &DiffChunk) -> Result<ChunkResult> {
+        self.review_chunk(chunk).await
+    }
 
     async fn answer_question(
         &self,

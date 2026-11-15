@@ -73,6 +73,8 @@ pub struct ReviewOutput {
     pub truncated_paths: Vec<String>,
     /// Files in chunks whose coverage the model never reported consistently.
     pub unconfirmed_paths: Vec<String>,
+    /// Findings dropped because the model placed them outside the diff.
+    pub dropped_findings: usize,
     /// Auto-approval decision, when the policy is enabled.
     pub auto_approval: Option<crate::auto_approval::Decision>,
     /// Configured review language, used for Cururu's own explanations.
@@ -80,11 +82,13 @@ pub struct ReviewOutput {
 }
 
 impl ReviewOutput {
-    /// Whether every reviewable file was sent in full and its coverage was
-    /// confirmed. Paths excluded by configuration are a deliberate choice.
+    /// Whether every reviewable file was sent in full, its coverage was
+    /// confirmed and no finding was dropped. Paths excluded by configuration
+    /// are a deliberate choice.
     #[must_use]
     pub const fn fully_reviewed(&self) -> bool {
-        self.unreviewable_paths.is_empty()
+        self.dropped_findings == 0
+            && self.unreviewable_paths.is_empty()
             && self.truncated_paths.is_empty()
             && self.unconfirmed_paths.is_empty()
     }
@@ -248,6 +252,7 @@ pub async fn run_review_with_evaluator(
             }
         }
     }
+    let dropped_findings = checked.iter().map(|item| item.dropped_findings).sum();
     let mut chunk_results: Vec<cururu_engine::ChunkResult> =
         checked.into_iter().map(|item| item.result).collect();
     ensure_trusted_config_unchanged(config, source_control).await?;
@@ -365,6 +370,7 @@ pub async fn run_review_with_evaluator(
         unreviewable_paths: prepared.unreviewable_paths.clone(),
         truncated_paths: prepared.truncated_paths.clone(),
         unconfirmed_paths,
+        dropped_findings,
         auto_approval: None,
         language: config.review.language.clone(),
     })
@@ -883,15 +889,19 @@ mod tests {
                     let number = counter.fetch_add(1, Ordering::SeqCst) + 1;
                     let review = serde_json::json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[]}).to_string();
                     let usage = if number == 1 { Some(serde_json::json!({"prompt_tokens":10,"completion_tokens":2,"total_tokens":12})) } else { None };
-                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":if fail_second && number == 2 { "length" } else { "stop" }}], "usage":usage}))
-                }).expect(2).mount(&server).await;
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":if fail_second && number >= 2 { "length" } else { "stop" }}], "usage":usage}))
+                // A cut-off chunk is requested once more with a larger limit.
+                }).expect(if fail_second { 3 } else { 2 }).mount(&server).await;
             let mut config = crate::config::AppConfig::from_local_env().unwrap();
             config.llm.provider = crate::config::LlmProvider::OpenAI;
             config.llm.base_url = server.uri();
             config.llm.api_key = "fixture".into();
             config.review.chunk_bytes = 250;
             let result = super::run_review(&config, &MultiChunkScm).await;
-            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                if fail_second { 3 } else { 2 }
+            );
             if fail_second {
                 let Err(error) = result else {
                     panic!("partial review was accepted")
@@ -964,24 +974,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hosted_review_rejects_unanchored_model_findings() {
+    async fn hosted_review_never_publishes_unanchored_model_findings() {
         use wiremock::{
             Mock, MockServer, ResponseTemplate,
             matchers::{method, path},
         };
-        for (line, expected_ok) in [(1, true), (99, false)] {
+        for (line, anchored) in [(1, true), (99, false)] {
             let server = MockServer::start().await;
             let review = serde_json::json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[{"severity":"high","path":"a","line":line,"title":"fixture","message":"fixture","suggestion":"fix","confidence":0.9}]}).to_string();
             Mock::given(method("POST")).and(path("/chat/completions"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]})))
-                // An invalid finding is requested once more before failing.
-                .expect(if expected_ok { 1 } else { 2 }).mount(&server).await;
+                // An unanchored finding is requested once more, then dropped.
+                .expect(if anchored { 1 } else { 2 }).mount(&server).await;
             let mut config = crate::config::AppConfig::from_local_env().unwrap();
             config.llm.provider = crate::config::LlmProvider::OpenAI;
             config.llm.base_url = server.uri();
             config.llm.api_key = "fixture".into();
-            let result = super::run_review(&config, &FixtureReviewScm).await;
-            assert_eq!(result.is_ok(), expected_ok);
+            let output = super::run_review(&config, &FixtureReviewScm).await.unwrap();
+            assert_eq!(output.review.findings.len(), usize::from(anchored));
+            assert_eq!(output.dropped_findings, usize::from(!anchored));
         }
     }
 
@@ -1029,6 +1040,94 @@ mod tests {
         let output = super::run_review(&config, &FixtureReviewScm).await.unwrap();
         assert_eq!(output.unconfirmed_paths, ["a"]);
         assert_eq!(output.review.findings.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn cut_off_review_is_retried_once_with_a_larger_output_limit() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let review =
+            serde_json::json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[]})
+                .to_string();
+        let mut config = crate::config::AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.api_key = "fixture".into();
+        config.llm.max_output_tokens = 8000;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"choices":[{"message":{"content":"{\"model\":"},"finish_reason":"length"}]}),
+            ))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]}),
+            ))
+            .mount(&server)
+            .await;
+        config.llm.base_url = server.uri();
+        super::run_review(&config, &FixtureReviewScm).await.unwrap();
+        let limits: Vec<u64> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|request| {
+                request.body_json::<serde_json::Value>().unwrap()["max_tokens"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(limits, [8000, 16000]);
+    }
+
+    #[tokio::test]
+    async fn findings_outside_the_diff_are_dropped_after_a_retry_and_reported() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let reply = |severity: &str, line: u32| {
+            let review = serde_json::json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[
+                {"severity":severity,"path":"a","line":line,"title":"fixture","message":"fixture","suggestion":"fix","confidence":0.9},
+                {"severity":"high","path":"a","line":1,"title":"kept","message":"fixture","suggestion":"fix","confidence":0.9}]}).to_string();
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]}))
+        };
+        let mut config = crate::config::AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.api_key = "fixture".into();
+
+        // A line outside the diff twice: only that finding is dropped.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(reply("high", 999))
+            .expect(2)
+            .mount(&server)
+            .await;
+        config.llm.base_url = server.uri();
+        let output = super::run_review(&config, &FixtureReviewScm).await.unwrap();
+        assert_eq!(output.dropped_findings, 1);
+        assert_eq!(output.review.findings.len(), 1);
+        assert_eq!(output.review.findings[0].title, "kept");
+        assert!(!output.fully_reviewed());
+
+        // Any other invalid finding still fails the review.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(reply("<LEVEL>", 1))
+            .expect(2)
+            .mount(&server)
+            .await;
+        config.llm.base_url = server.uri();
+        assert!(super::run_review(&config, &FixtureReviewScm).await.is_err());
     }
 
     struct UnreviewableScm(&'static str);
