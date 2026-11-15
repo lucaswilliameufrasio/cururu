@@ -469,6 +469,33 @@ pub async fn prepare_agent_pr(
     Ok(prepared)
 }
 
+/// Prepare local changes and, when configured, the same repository context
+/// (explicit files and automatic related files) as a hosted review, read
+/// from the committed `HEAD` of the checkout.
+pub async fn prepare_local_with_context(
+    config: &AppConfig,
+    root: &Path,
+) -> anyhow::Result<PreparedReview> {
+    let mut prepared = prepare_local(config, root)?;
+    let context_configured = config.context.auto.enabled
+        || !(config.context.conventions.is_empty()
+            && config.context.specifications.is_empty()
+            && config.context.skills.is_empty()
+            && config.context.additional.is_empty());
+    if !context_configured {
+        return Ok(prepared);
+    }
+    let local = crate::local_git::LocalGit::new(root);
+    let mut context = review::fetch_repo_context(config, &local).await?;
+    if config.context.auto.enabled {
+        review::append_auto_context(config, &local, &mut context, &prepared.files).await?;
+    }
+    let bytes = serde_json::to_vec(&(&prepared.snapshot_sha256, &context))?;
+    prepared.snapshot_sha256 = hex::encode(Sha256::digest(bytes));
+    prepared.repository_context = Some(context);
+    Ok(prepared)
+}
+
 pub fn prepare_local(config: &AppConfig, root: &Path) -> anyhow::Result<PreparedReview> {
     let revision = git_head(root)?;
     let mut child = Command::new("git")
@@ -1235,6 +1262,53 @@ mod tests {
             .downcast_ref::<review::DiffTotalLimit>()
             .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn local_preparation_loads_configured_context_from_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .current_dir(dir.path())
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        run(&["init", "-q"]);
+        std::fs::write(dir.path().join("AGENTS.md"), "Use checked arithmetic.\n").unwrap();
+        std::fs::write(dir.path().join("a.rs"), "old\n").unwrap();
+        run(&["add", "."]);
+        run(&[
+            "-c",
+            "user.name=Cururu Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ]);
+        std::fs::write(dir.path().join("a.rs"), "new\n").unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "uncommitted change\n").unwrap();
+        let mut config = AppConfig::from_local_env().unwrap();
+        config.review.max_diff_bytes = 10_000;
+        config.review.chunk_bytes = 10_000;
+        let without = prepare_local_with_context(&config, dir.path())
+            .await
+            .unwrap();
+        assert!(without.repository_context.is_none());
+        config.context.conventions = vec!["AGENTS.md".into()];
+        let with = prepare_local_with_context(&config, dir.path())
+            .await
+            .unwrap();
+        let context = serde_json::to_string(&with.repository_context).unwrap();
+        // Context comes from HEAD, not from the working tree.
+        assert!(context.contains("Use checked arithmetic."), "{context}");
+        assert!(!context.contains("uncommitted change"));
+        assert_ne!(with.snapshot_sha256, without.snapshot_sha256);
     }
 
     #[test]

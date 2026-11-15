@@ -78,7 +78,9 @@ configured review preferences (language, tone, audience, suggestion detail and
 focus). For hosted PRs it also collects explicitly configured repository context
 from the base revision and sends it as untrusted data; the snapshot includes the
 context and its truncation/skipped diagnostics. Inspect `prepare-review --pr`
-before confirming disclosure. Local review does not collect repository context.
+before confirming disclosure. Local reviews collect the same context from the
+committed `HEAD` of the checkout, never from uncommitted files; inspect
+`prepare-review --local` before sending.
 When automatic context is enabled, the adapter also includes selected base files
 within its configured limits; review these additional files before consenting.
 Paths absent from the base tree are reported as skipped (including new or renamed
