@@ -44,6 +44,83 @@ pub struct OpenAiCompatibleAgent {
 }
 
 impl OpenAiCompatibleAgent {
+    async fn review_chunk_limited(
+        &self,
+        chunk: &cururu_core::DiffChunk,
+        max_output_tokens: u32,
+    ) -> anyhow::Result<ChunkResult> {
+        let user = format!(
+            "Review this unified diff chunk. Return JSON only matching the schema.\n\nFiles: {:?}\n\n```diff\n{}\n```",
+            chunk.files, chunk.text
+        );
+        let mut messages = vec![
+            ChatMessage {
+                role: "system",
+                content: self.system_prompt.clone(),
+            },
+            ChatMessage {
+                role: "user",
+                content: user,
+            },
+        ];
+        if let Some(context) = &self.review_context_message {
+            messages.push(ChatMessage {
+                role: "user",
+                content: context.clone(),
+            });
+        }
+        if let Some(preferences) = &self.review_preferences_message {
+            messages.push(ChatMessage {
+                role: "user",
+                content: preferences.clone(),
+            });
+        }
+        if let Some(evidence) = &self.analysis_evidence_message {
+            messages.push(ChatMessage {
+                role: "user",
+                content: evidence.clone(),
+            });
+        }
+        if let Some(evidence) = &self.host_review_evidence_message {
+            messages.push(ChatMessage {
+                role: "user",
+                content: evidence.clone(),
+            });
+        }
+        let request = ChatRequest {
+            model: &self.settings.model,
+            messages,
+            temperature: self.settings.temperature,
+            max_tokens: max_output_tokens,
+            response_format: ResponseFormat {
+                kind: "json_object",
+            },
+        };
+        let url = self.completions_url();
+        let mut attempt = 0;
+        let response = loop {
+            match self.send_review_request(&url, &request).await {
+                Ok(response) => break response,
+                Err(error)
+                    if error.is::<TransientProviderError>()
+                        && attempt < self.retry_delays.len() =>
+                {
+                    warn!(%error, attempt = attempt + 1, "transient LLM failure; retrying");
+                    tokio::time::sleep(self.retry_delays[attempt]).await;
+                    attempt += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        };
+
+        let choice = response.first_choice("LLM returned no choices")?;
+        let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
+        let mut review = parse_review_json(choice.message.content.trim(), finish_reason)?;
+        review.model.clone_from(&self.settings.model);
+        let usage = response.extract_metadata().usage;
+        Ok(ChunkResult { review, usage })
+    }
+
     pub fn new(settings: OpenAiCompatibleSettings, system_prompt: String) -> anyhow::Result<Self> {
         Ok(Self {
             client: reqwest::Client::builder()
@@ -275,76 +352,19 @@ impl ReviewAgent for OpenAiCompatibleAgent {
     }
 
     async fn review_chunk(&self, chunk: &cururu_core::DiffChunk) -> anyhow::Result<ChunkResult> {
-        let user = format!(
-            "Review this unified diff chunk. Return JSON only matching the schema.\n\nFiles: {:?}\n\n```diff\n{}\n```",
-            chunk.files, chunk.text
-        );
-        let mut messages = vec![
-            ChatMessage {
-                role: "system",
-                content: self.system_prompt.clone(),
-            },
-            ChatMessage {
-                role: "user",
-                content: user,
-            },
-        ];
-        if let Some(context) = &self.review_context_message {
-            messages.push(ChatMessage {
-                role: "user",
-                content: context.clone(),
-            });
-        }
-        if let Some(preferences) = &self.review_preferences_message {
-            messages.push(ChatMessage {
-                role: "user",
-                content: preferences.clone(),
-            });
-        }
-        if let Some(evidence) = &self.analysis_evidence_message {
-            messages.push(ChatMessage {
-                role: "user",
-                content: evidence.clone(),
-            });
-        }
-        if let Some(evidence) = &self.host_review_evidence_message {
-            messages.push(ChatMessage {
-                role: "user",
-                content: evidence.clone(),
-            });
-        }
-        let request = ChatRequest {
-            model: &self.settings.model,
-            messages,
-            temperature: self.settings.temperature,
-            max_tokens: self.settings.max_output_tokens,
-            response_format: ResponseFormat {
-                kind: "json_object",
-            },
-        };
-        let url = self.completions_url();
-        let mut attempt = 0;
-        let response = loop {
-            match self.send_review_request(&url, &request).await {
-                Ok(response) => break response,
-                Err(error)
-                    if error.is::<TransientProviderError>()
-                        && attempt < self.retry_delays.len() =>
-                {
-                    warn!(%error, attempt = attempt + 1, "transient LLM failure; retrying");
-                    tokio::time::sleep(self.retry_delays[attempt]).await;
-                    attempt += 1;
-                }
-                Err(error) => return Err(error),
-            }
-        };
+        self.review_chunk_limited(chunk, self.settings.max_output_tokens)
+            .await
+    }
 
-        let choice = response.first_choice("LLM returned no choices")?;
-        let finish_reason = choice.finish_reason.as_deref().unwrap_or("unknown");
-        let mut review = parse_review_json(choice.message.content.trim(), finish_reason)?;
-        review.model.clone_from(&self.settings.model);
-        let usage = response.extract_metadata().usage;
-        Ok(ChunkResult { review, usage })
+    async fn review_chunk_with_more_output(
+        &self,
+        chunk: &cururu_core::DiffChunk,
+    ) -> anyhow::Result<ChunkResult> {
+        self.review_chunk_limited(
+            chunk,
+            crate::more_output_tokens(self.settings.max_output_tokens),
+        )
+        .await
     }
 }
 

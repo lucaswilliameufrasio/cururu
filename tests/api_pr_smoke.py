@@ -70,7 +70,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         review = {"model": "fixture", "files_reviewed": 1, "summary": "", "findings": []}
         if state["multi_mode"] == "bad_coverage" and state["multi_calls"] == 2:
             review["files_reviewed"] = 0
-        reason = "length" if state["multi_mode"] == "late_failure" and state["multi_calls"] == 2 else "stop"
+        reason = "length" if state["multi_mode"] == "late_failure" and state["multi_calls"] >= 2 else "stop"
         self.reply(200, {"choices": [{"message": {"content": json.dumps(review)}, "finish_reason": reason}]})
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -142,8 +142,9 @@ with tempfile.TemporaryDirectory() as directory:
         state["multi_mode"] = mode
         state["multi_calls"] = 0
         result = run("api-review", "--pr", "--confirm-send", "--expected-snapshot", prepared["snapshot_sha256"], *evidence)
-        # An inconsistent file count is requested once more and then accepted.
-        assert state["multi_calls"] == (3 if mode == "bad_coverage" else 2)
+        # An inconsistent file count is requested once more and then accepted;
+        # a cut-off chunk is requested once more with a larger limit.
+        assert state["multi_calls"] == (3 if mode in ("bad_coverage", "late_failure") else 2)
         if mode in ("success", "bad_coverage"):
             assert result.returncode == 0, result.stderr
             receipt = json.loads(result.stdout)

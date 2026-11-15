@@ -19,6 +19,20 @@ pub use provider::{
 };
 
 /// Canonical Cururu review instructions shared by CLI and desktop consumers.
+/// Most output tokens a retry after a cut-off response asks for.
+pub const MAX_RETRY_OUTPUT_TOKENS: u32 = 32_000;
+
+/// Output limit for a retry after a cut-off response: double the configured
+/// limit, capped at [`MAX_RETRY_OUTPUT_TOKENS`] but never lower than the
+/// configured limit itself.
+#[must_use]
+pub fn more_output_tokens(configured: u32) -> u32 {
+    configured
+        .saturating_mul(2)
+        .min(MAX_RETRY_OUTPUT_TOKENS)
+        .max(configured)
+}
+
 pub const DEFAULT_REVIEW_PROMPT: &str = include_str!("../../../prompts/review.md");
 
 #[derive(Debug, Clone)]
@@ -31,6 +45,13 @@ pub struct ChunkResult {
 #[async_trait]
 pub trait ReviewAgent: Send + Sync {
     async fn review_chunk(&self, chunk: &DiffChunk) -> Result<ChunkResult>;
+
+    /// Review a chunk again after its response was cut off at the output
+    /// limit. Adapters that control that limit raise it for this call (see
+    /// [`more_output_tokens`]); others repeat the request.
+    async fn review_chunk_with_more_output(&self, chunk: &DiffChunk) -> Result<ChunkResult> {
+        self.review_chunk(chunk).await
+    }
 
     async fn answer_question(
         &self,
@@ -114,6 +135,41 @@ mod tests {
             DEFAULT_REVIEW_PROMPT
                 .contains("\"suggested_change\": {\"replacement\": \"replacement text\"}")
         );
+    }
+
+    /// Proves only that the canonical prompt carries each comment-quality
+    /// rule; whether a model follows them needs a real evaluation.
+    #[test]
+    fn canonical_review_prompt_carries_the_comment_quality_rules() {
+        for rule in [
+            // Concrete scenario and consequence; alternative with rationale,
+            // open to the author's own; a verifying test when useful.
+            "the concrete scenario in which the problem happens",
+            "a viable alternative and why it resolves the problem",
+            "one option the author may replace with another",
+            "name the test that would verify the fix",
+            "never reduce the suggestion to a vague",
+            "Phrase it as a proposal",
+            "scenarios that depend on behavior the diff and context do not show",
+            "do not conclude from one part that content was\n  deleted",
+            // Evidence: no hypothesis as defect, no impact beyond evidence.
+            "do not present the\n  hypothesis as a defect",
+            "does not prove production\n  impact",
+            "check the callers, validations,\n  and contracts",
+            // Legacy versus regression.
+            "Separate what the change introduces from a pre-existing problem",
+            // Deployments: partial failure, no assumed rollback.
+            "partial failure,\n  and recovery",
+            "an automatic rollback exists",
+            // Resolved feedback and coverage claims.
+            "Do not report again a problem that prior feedback shows was resolved",
+            "do not describe the review as complete in `summary`",
+            // Bounded output against truncated JSON.
+            "Report at most 10 findings per chunk",
+        ] {
+            assert!(DEFAULT_REVIEW_PROMPT.contains(rule), "missing rule: {rule}");
+        }
+        assert!(!DEFAULT_REVIEW_PROMPT.contains("Only report high-confidence findings"));
     }
 
     #[tokio::test]

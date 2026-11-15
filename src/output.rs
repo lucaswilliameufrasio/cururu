@@ -73,7 +73,12 @@ pub fn render_summary_comment(output: &ReviewOutput) -> String {
                 "No findings passed Cururu's review policy; see evaluator judgments below.\n",
             );
         } else {
-            out.push_str("No high-confidence issues found.\n");
+            // Never imply full coverage when part of the change was not reviewed.
+            out.push_str(if output.fully_reviewed() {
+                "No issues found.\n"
+            } else {
+                "No issues found in the reviewed changes; the files listed above were not fully reviewed.\n"
+            });
         }
     } else {
         out.push_str("| Severity | File | Line | Finding | Suggestion |\n");
@@ -171,6 +176,13 @@ fn render_overview(output: &ReviewOutput, out: &mut String) {
 }
 
 fn render_not_reviewed(output: &ReviewOutput, out: &mut String) {
+    if output.dropped_findings > 0 {
+        let _ = write!(
+            out,
+            "**Findings dropped:** {} — the model placed them on lines outside the diff twice, so they were not published.\n\n",
+            output.dropped_findings
+        );
+    }
     if !output.truncated_paths.is_empty() {
         let paths: Vec<String> = output
             .truncated_paths
@@ -532,6 +544,7 @@ mod tests {
             unreviewable_paths: vec![],
             truncated_paths: vec![],
             unconfirmed_paths: vec![],
+            dropped_findings: 0,
             auto_approval: None,
             language: "en".into(),
             evaluation: Some(crate::evaluation::EvaluationReport {
@@ -602,6 +615,7 @@ mod tests {
             unreviewable_paths: vec![],
             truncated_paths: vec![],
             unconfirmed_paths: vec![],
+            dropped_findings: 0,
             auto_approval: None,
             language: "en".into(),
         };
@@ -610,10 +624,16 @@ mod tests {
         assert!(!body.contains("**Tokens"));
         assert!(body.contains("**Summary:** s"));
         assert!(body.contains(&run_marker("run")));
+        assert!(body.contains("No issues found.\n"), "{body}");
+        output.dropped_findings = 2;
+        assert!(render_summary_comment(&output).contains("**Findings dropped:** 2"));
+        output.dropped_findings = 0;
         output.truncated_paths = vec!["data/blob.json".into()];
-        assert!(
-            render_summary_comment(&output).contains("**Partially reviewed:** `data/blob.json`")
-        );
+        let partial = render_summary_comment(&output);
+        assert!(partial.contains("**Partially reviewed:** `data/blob.json`"));
+        // A partial review never reads as a clean full review.
+        assert!(!partial.contains("No issues found.\n"), "{partial}");
+        assert!(partial.contains("files listed above were not fully reviewed"));
         output.unreviewable_paths = vec!["assets/logo.png".into()];
         assert!(
             render_summary_comment(&output).contains(
@@ -671,6 +691,7 @@ mod tests {
             unreviewable_paths: vec![],
             truncated_paths: vec![],
             unconfirmed_paths: vec![],
+            dropped_findings: 0,
             auto_approval: None,
             language: "en".into(),
         };

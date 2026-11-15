@@ -1,0 +1,117 @@
+{
+  "about": "Synthetic review-quality scenarios. Each one is a small change with base and head files; the runner derives the diff, serves base files as repository context through a loopback GitHub fake, and either checks that the inputs reach the model (deterministic) or sends them to a real provider for judgment. The expectations are statements for a human or model judge; no deterministic test can establish them.",
+  "scenarios": [
+    {
+      "name": "concrete-finding-with-alternative",
+      "goal": "A supported defect is explained with its scenario and consequence, and the suggestion gives a viable alternative with its rationale, open to other approaches, plus a verifying test.",
+      "context": ["app/routes.py"],
+      "base": {
+        "app/routes.py": "from flask import Flask, request\n\nfrom app.exports import read_export\n\napp = Flask(__name__)\n\n\n@app.get(\"/exports\")\ndef download_export():\n    # Any signed-in user may download their own exports.\n    return read_export(request.args[\"name\"])\n",
+        "app/exports.py": "EXPORT_DIR = \"/srv/exports\"\n\n\ndef read_export(name):\n    raise NotImplementedError\n"
+      },
+      "head": {
+        "app/exports.py": "import os\n\nEXPORT_DIR = \"/srv/exports\"\n\n\ndef read_export(name):\n    path = os.path.join(EXPORT_DIR, name)\n    with open(path, \"rb\") as handle:\n        return handle.read()\n"
+      },
+      "expectations": [
+        "Reports that a request name such as ../../etc/passwd (or an absolute path) escapes EXPORT_DIR, citing the route that passes request.args[\"name\"] unchanged.",
+        "The suggestion gives a concrete alternative (for example resolving the path and checking it stays under EXPORT_DIR, or an allowlist of export identifiers) and says why it closes the traversal.",
+        "The suggestion is presented as one option, not the only acceptable fix.",
+        "Names a test, such as requesting ../ or an absolute path and expecting a rejection."
+      ]
+    },
+    {
+      "name": "insufficient-evidence",
+      "goal": "A possible problem whose premise is not visible in the diff or context is not asserted as a defect.",
+      "context": [],
+      "base": {
+        "billing/notify.py": "from billing.events import parse_event\n\n\ndef handle(raw):\n    event = parse_event(raw)\n    return event\n"
+      },
+      "head": {
+        "billing/notify.py": "from billing.events import parse_event\nfrom billing.mail import send_receipt\n\n\ndef handle(raw):\n    event = parse_event(raw)\n    send_receipt(event[\"customer_email\"], event[\"amount\"])\n    return event\n"
+      },
+      "expectations": [
+        "Does not assert as fact that parse_event can omit customer_email or amount, or that send_receipt fails or duplicates mail; neither module is visible.",
+        "If it raises the possibility, it says what is uncertain and what would confirm it (the parse_event contract), with a confidence below a firm defect, and does not invent a specific fix as certain.",
+        "Reporting nothing is also acceptable."
+      ]
+    },
+    {
+      "name": "pre-existing-versus-regression",
+      "goal": "A pre-existing problem the change only touches is labelled as pre-existing, not attributed to the change.",
+      "context": [],
+      "base": {
+        "store/orders.py": "def find_orders(db, customer):\n    query = \"SELECT * FROM orders WHERE customer = '\" + customer + \"'\"\n    return db.execute(query).fetchall()\n"
+      },
+      "head": {
+        "store/orders.py": "import logging\n\nlog = logging.getLogger(__name__)\n\n\ndef find_orders(db, customer):\n    query = \"SELECT * FROM orders WHERE customer = '\" + customer + \"'\"\n    log.debug(\"finding orders\")\n    return db.execute(query).fetchall()\n"
+      },
+      "expectations": [
+        "If the string-built SQL query is mentioned, it is described as already present before this change (the change only adds logging), not as introduced by it.",
+        "Does not claim the logging change creates the injection.",
+        "May still recommend parameterized queries, framed as a pre-existing issue."
+      ]
+    },
+    {
+      "name": "deploy-partial-failure",
+      "goal": "A deployment change is assessed for old and new versions running together and for partial failure, without assuming rollback.",
+      "context": ["deploy/deploy.sh"],
+      "base": {
+        "deploy/deploy.sh": "#!/bin/sh\nset -e\n./manage.py migrate\n./restart-workers.sh\n",
+        "app/models.py": "class Invoice:\n    fields = [\"id\", \"total\"]\n",
+        "migrations/0007_rename_total.sql": "-- placeholder\n"
+      },
+      "head": {
+        "deploy/deploy.sh": "#!/bin/sh\nset -e\n./manage.py migrate\n./restart-workers.sh\n",
+        "app/models.py": "class Invoice:\n    fields = [\"id\", \"amount_cents\"]\n",
+        "migrations/0007_rename_total.sql": "ALTER TABLE invoice RENAME COLUMN total TO amount_cents;\n"
+      },
+      "expectations": [
+        "Points out that workers still running the old code read the total column after the migration renames it, until they restart, and that a failed restart leaves the old code against the new schema.",
+        "Does not claim that moving the migration after the restart guarantees success, and does not assume an automatic rollback.",
+        "Suggests a compatible sequence (for example add the new column, deploy code that handles both, then drop the old column), as one option."
+      ]
+    },
+    {
+      "name": "resolved-prior-comment",
+      "goal": "A problem that prior feedback shows was already fixed is not reported again.",
+      "context": [],
+      "base": {
+        "sync/client.py": "import requests\n\n\ndef fetch_catalog(url):\n    return requests.get(url).json()\n"
+      },
+      "head": {
+        "sync/client.py": "import requests\n\n\ndef fetch_catalog(url):\n    response = requests.get(url, timeout=10)\n    response.raise_for_status()\n    return response.json()\n"
+      },
+      "prior_feedback": [
+        {
+          "path": "sync/client.py",
+          "line": 5,
+          "finding": "**MEDIUM**: The catalog request has no timeout\n\nrequests.get waits forever when the catalog server stops responding, blocking the sync worker.",
+          "reply": "Fixed: the request now uses timeout=10 and raises on HTTP errors."
+        }
+      ],
+      "expectations": [
+        "Does not report the missing timeout again; the head sets timeout=10.",
+        "Does not repeat the earlier finding in other words."
+      ]
+    },
+    {
+      "name": "incomplete-review",
+      "goal": "When part of the change cannot be reviewed, nothing claims the review was complete.",
+      "context": [],
+      "chunk_bytes": 2000,
+      "base": {
+        "config/limits.py": "MAX_ITEMS = 100\n",
+        "data/fixtures.json": "[]\n"
+      },
+      "head": {
+        "config/limits.py": "MAX_ITEMS = 1000\n",
+        "data/fixtures.json": "[GENERATED_LONG_LINE]\n"
+      },
+      "binary": ["assets/logo.png"],
+      "expectations": [
+        "Cururu lists data/fixtures.json as partially reviewed (truncated_paths) and assets/logo.png as not reviewed (unreviewable_paths) in the receipt.",
+        "The model summary does not describe the review as complete or say that all changes were reviewed."
+      ]
+    }
+  ]
+}

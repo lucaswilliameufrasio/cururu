@@ -63,14 +63,39 @@ pub fn chunk_files(
     chunks
 }
 
+/// Says that a piece is one part of a file reviewed separately, so a model
+/// does not read a removal as final when its replacement is in another part.
+fn part_note(part: usize, parts: usize) -> String {
+    format!(
+        "[cururu: part {part}/{parts} of this file; lines removed here may be replaced in another part]\n"
+    )
+}
+
+/// Room reserved in each piece of a split file for its [`part_note`].
+fn part_note_reserve() -> usize {
+    part_note(99_999, 99_999).len()
+}
+
 /// A file larger than a chunk is reviewed in several chunks, each a valid
-/// patch; only a piece holding a single line longer than a chunk is truncated.
+/// patch preceded by a [`part_note`]; only a piece holding a single line
+/// longer than a chunk is truncated.
 fn file_pieces(file: &ChangedFile, chunk_bytes: usize) -> Vec<String> {
-    if file.patch.len() > chunk_bytes {
-        split_patch(&file.patch, chunk_bytes)
-    } else {
-        vec![file.patch.clone()]
+    if file.patch.len() <= chunk_bytes {
+        return vec![file.patch.clone()];
     }
+    let pieces = split_patch(
+        &file.patch,
+        chunk_bytes.saturating_sub(part_note_reserve()).max(1),
+    );
+    let parts = pieces.len();
+    if parts == 1 {
+        return pieces;
+    }
+    pieces
+        .into_iter()
+        .enumerate()
+        .map(|(index, piece)| part_note(index + 1, parts) + &piece)
+        .collect()
 }
 
 /// Paths that [`chunk_files`] sends only partially, because one of their diff
@@ -163,8 +188,18 @@ fn split_hunk(hunk: &[&str], budget: usize) -> Vec<String> {
             ));
         }
     };
+    let mut previous: Option<&str> = None;
     for line in &hunk[1..] {
-        if !body.is_empty() && body.len() + line.len() + MAX_SUBHUNK_HEADER_BYTES > budget {
+        // Never split a removal from the addition right after it: alone, the
+        // removal reads as deleted content. An oversized pair is truncated
+        // later and reported as partially reviewed instead.
+        let replaces_previous =
+            line.starts_with('+') && previous.is_some_and(|p| p.starts_with('-'));
+        previous = Some(line);
+        if !body.is_empty()
+            && !replaces_previous
+            && body.len() + line.len() + MAX_SUBHUNK_HEADER_BYTES > budget
+        {
             flush(
                 &mut parts,
                 &mut body,
@@ -287,6 +322,18 @@ mod tests {
         // A budget equal to the original diff keeps every piece, although
         // the repeated headers make the pieces larger in total.
         let chunks = chunk_files(&files, 200, patch.len());
+        // Each part says it is one part, so a removal is not read as final.
+        let parts = chunks.len();
+        assert!(
+            chunks[0].text.starts_with("[cururu: part 1/"),
+            "{}",
+            chunks[0].text
+        );
+        assert!(
+            chunks[parts - 1]
+                .text
+                .contains(&format!("part {parts}/{parts} of this file"))
+        );
         assert!(
             chunks.iter().map(|chunk| chunk.text.len()).sum::<usize>() > patch.len(),
             "headers are repeated"
@@ -344,6 +391,20 @@ mod tests {
         let files = [changed_file("big.rs", &patch, &[1])];
         assert_eq!(split_patch(&patch, 100), std::slice::from_ref(&patch));
         assert_eq!(truncated_paths(&files, 100), ["big.rs"]);
+    }
+
+    #[test]
+    fn a_removal_stays_with_the_addition_that_replaces_it() {
+        let long = format!("+{}\n", "x".repeat(300));
+        let patch = format!(
+            "diff --git a/f.json b/f.json\n--- a/f.json\n+++ b/f.json\n@@ -1 +1 @@\n-[]\n{long}"
+        );
+        let files = [changed_file("f.json", &patch, &[1])];
+        let chunks = chunk_files(&files, 200, 100_000);
+        // One piece with both lines, cut and reported, not a bare removal.
+        assert_eq!(chunks.len(), 1, "{chunks:?}");
+        assert!(chunks[0].text.contains("-[]\n+xxx"));
+        assert_eq!(truncated_paths(&files, 200), ["f.json"]);
     }
 
     #[test]

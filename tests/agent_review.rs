@@ -654,8 +654,9 @@ async fn api_review_multiple_chunks_fails_closed_for_late_failure_and_evidence_c
                 std::fs::write(&sarif, "{\"runs\":[]} ").unwrap();
             }
             let review = json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[]}).to_string();
-            ResponseTemplate::new(200).set_body_json(json!({"stop_reason":if mode == "late_failure" && number == 2 { "max_tokens" } else { "end_turn" },"content":[{"type":"text","text":review}]}))
-        }).expect(2).mount(&server).await;
+            ResponseTemplate::new(200).set_body_json(json!({"stop_reason":if mode == "late_failure" && number >= 2 { "max_tokens" } else { "end_turn" },"content":[{"type":"text","text":review}]}))
+        // A cut-off chunk is requested once more with a larger limit.
+        }).expect(if mode == "late_failure" { 3 } else { 2 }).mount(&server).await;
         let run = |args: &[&str]| {
             Command::new(env!("CARGO_BIN_EXE_cururu"))
                 .current_dir(dir.path())
@@ -701,7 +702,10 @@ async fn api_review_multiple_chunks_fails_closed_for_late_failure_and_evidence_c
             options[2],
             options[3],
         ]);
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            if mode == "late_failure" { 3 } else { 2 }
+        );
         if mode == "success" {
             assert!(
                 output.status.success(),
@@ -859,6 +863,22 @@ fn auto_approval_approves_simple_changes_and_escalates_sensitive_ones() {
             "/tests/auto_approval_smoke.py"
         ))
         .arg(env!("CARGO_BIN_EXE_cururu"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+/// Fixture validity for the review-quality scenarios: each builds and its
+/// diff, context and prior feedback reach the model. Not a quality check.
+#[test]
+fn review_quality_scenarios_reach_the_model_intact() {
+    let status = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/review_quality/run.py"
+        ))
+        .arg(env!("CARGO_BIN_EXE_cururu"))
+        .arg("--check")
         .status()
         .unwrap();
     assert!(status.success());

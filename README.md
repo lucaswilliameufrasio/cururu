@@ -313,8 +313,14 @@ or many findings. Lower it (for example `4000`) to cap cost on repositories with
 small PRs. You only pay for tokens the model actually generates, so a higher
 limit raises the worst case, not every review.
 `cururu setup limits` samples recent PRs and the token usage Cururu recorded on
-their checks, and suggests higher limits when they would help. When a review
-stops at the limit, the Action and the App explain which setting to change.
+their checks, and suggests higher limits when they would help. A chunk whose
+response stops at the limit is requested once more with twice the limit (at
+most 32000 tokens), since reasoning models can spend the budget before writing
+any finding; when the retry also stops, the Action and the App explain which
+setting to change. A finding the model places on a line outside the diff is
+requested again and, if it is still outside, dropped: the summary and the
+`api-review` receipt (`dropped_findings`) report how many, and auto-approval
+does not approve.
 Transient provider failures (rate limits, overload, 5xx) are retried with
 bounded backoff before the review fails.
 

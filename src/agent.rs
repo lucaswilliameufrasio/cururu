@@ -130,10 +130,7 @@ pub fn apply_policy(mut candidates: ReviewResult, policy: &ReviewPolicy) -> Revi
     });
     sort_review_findings(&mut candidates.findings);
     candidates.findings.truncate(policy.max_findings);
-    candidates.summary = format!(
-        "Found {} high-confidence review finding(s).",
-        candidates.findings.len()
-    );
+    candidates.summary = format!("Found {} review finding(s).", candidates.findings.len());
     candidates
 }
 
