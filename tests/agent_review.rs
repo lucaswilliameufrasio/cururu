@@ -863,3 +863,19 @@ fn auto_approval_approves_simple_changes_and_escalates_sensitive_ones() {
         .unwrap();
     assert!(status.success());
 }
+
+/// Fixture validity for the review-quality scenarios: each builds and its
+/// diff, context and prior feedback reach the model. Not a quality check.
+#[test]
+fn review_quality_scenarios_reach_the_model_intact() {
+    let status = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/review_quality/run.py"
+        ))
+        .arg(env!("CARGO_BIN_EXE_cururu"))
+        .arg("--check")
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
