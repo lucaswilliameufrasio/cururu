@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [5.1.1] - 2026-11-15
+
+### Bug Fixes
+
+- Bound the release download time in the ReviewBench image
+- Split files larger than a chunk instead of aborting
+- Leave binary and submodule changes out instead of aborting
+- Retry inconsistent chunks and keep unconfirmed coverage
+- Charge the diff budget per whole file when splitting
+- List binary and submodule changes left out in the receipt
+- Reserve the longest sub-hunk header when splitting hunks
+- Report files cut by an over-long diff line as partially reviewed
+- Keep a hunk whole when its line numbers would overflow
+
+### Chores
+
+- Pin v5.1.0 OCI digest
+- Adopt Cururu v5.1.0
+
+### Documentation
+
+- Record the first offline ReviewBench run
+
+### Features
+
+- Add a ReviewBench agent adapter for the Cururu CLI
 ## [5.1.0] - 2026-11-13
 
 ### Bug Fixes
@@ -19,6 +45,7 @@ All notable changes to this project will be documented in this file.
 
 - Pin v5.0.1 OCI digest
 - Adopt Cururu v5.0.1
+- Prepare for v5.1.0
 
 ### Documentation
 
