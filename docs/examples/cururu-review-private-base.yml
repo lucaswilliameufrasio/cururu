@@ -99,7 +99,7 @@ jobs:
 
       - name: Review PR
         id: review
-        uses: lucaswilliameufrasio/cururu@d74d73e67cb0d82ecc7388955e0efdcf6ecc26ec # v5.1.1
+        uses: lucaswilliameufrasio/cururu@dcb0b3c25e6774fb67d6dea19453039e2f1ac0c6 # v5.2.0
         with:
           github_token: ${{ steps.consumer-token.outputs.token }}
           shared_config_token: ${{ steps.base-token.outputs.token }}
@@ -164,7 +164,7 @@ jobs:
         with:
           name: cururu-candidate
       - name: Publish approved review
-        uses: lucaswilliameufrasio/cururu@d74d73e67cb0d82ecc7388955e0efdcf6ecc26ec # v5.1.1
+        uses: lucaswilliameufrasio/cururu@dcb0b3c25e6774fb67d6dea19453039e2f1ac0c6 # v5.2.0
         with:
           mode: publish
           github_token: ${{ steps.consumer-token.outputs.token }}
