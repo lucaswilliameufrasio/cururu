@@ -31,6 +31,12 @@ impl CodebaseCandidate {
     }
 }
 
+/// GitHub accepts at most 65536 characters, not bytes, in an issue or
+/// comment body; keep room for the heading the App adds.
+fn fits_github_body(body: &str) -> bool {
+    body.chars().count() <= 60_000
+}
+
 /// Whether the candidate file holds a codebase report.
 pub fn is_codebase_candidate(path: &Path) -> anyhow::Result<bool> {
     let raw = std::fs::read(path).context("failed to read the review candidate")?;
@@ -119,9 +125,8 @@ pub async fn build_report(
             "{report}\nSelection: {selection}.\n\n<!-- cururu:codebase-review:v1 revision={revision} -->\n"
         ),
     };
-    // GitHub accepts at most 65536 characters in an issue or comment body.
     anyhow::ensure!(
-        candidate.body.len() <= 60_000,
+        fits_github_body(&candidate.body),
         "the codebase report is longer than GitHub accepts; select fewer paths or lower policy.max_findings"
     );
     Ok(candidate)
@@ -215,4 +220,14 @@ pub async fn publish_approved(
         approvers.join(", ")
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_size_limit_counts_characters_not_bytes() {
+        // 50000 two-byte characters: 100000 bytes, within the limit.
+        assert!(super::fits_github_body(&"ç".repeat(50_000)));
+        assert!(!super::fits_github_body(&"a".repeat(60_001)));
+    }
 }
