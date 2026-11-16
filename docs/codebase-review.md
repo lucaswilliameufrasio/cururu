@@ -37,7 +37,7 @@ selection.
 | --- | --- | --- |
 | CLI | `cururu prepare-review --codebase [--path GLOB]...`, then `cururu api-review --codebase [--path GLOB]... --confirm-send [--format markdown]` | The JSON receipt, or with `--format markdown` a readable list of the problems found. Nothing is published; `publish-agent-review` refuses codebase receipts. |
 | MCP | `prepare_review`, `validate_review` and `assemble_review` with `"source": "codebase"` and optional `"paths": [...]` | The prepared input for the host's own agent; nothing is published. |
-| GitHub Action | Planned: `workflow_dispatch` and an optional schedule | An issue with the report. |
+| GitHub Action | `mode: codebase` with optional `codebase_paths`, run by `workflow_dispatch` and optionally a schedule; see [`docs/examples/cururu-codebase-review.yml`](examples/cururu-codebase-review.yml). The trusted configuration, files and context come from the reviewed commit (`GITHUB_SHA`, or `codebase_revision`). | An issue with the report, linking each finding to its file and line at that commit; `issue_url` output. With `publication.require_approval`, the report is shown in the job summary and the issue is opened only after the `cururu-publish` environment approves the publish job; a report that does not match its digest is refused. |
 | GitHub App | Planned: `/cururu review codebase [paths]` in an issue | A reply in that issue. |
 
 Hosted publication follows `[publication] require_approval`: directly by

@@ -27,7 +27,7 @@ pub fn approval_environment() -> String {
         .unwrap_or_else(|| DEFAULT_APPROVAL_ENVIRONMENT.into())
 }
 
-fn append(variable: &str, lines: &str) -> anyhow::Result<()> {
+pub fn append(variable: &str, lines: &str) -> anyhow::Result<()> {
     let Some(path) = std::env::var_os(variable) else {
         return Ok(());
     };
@@ -97,7 +97,7 @@ pub async fn prepare(
 /// in a container as root, while `actions/upload-artifact` runs as the runner
 /// user, so the file must be world-readable. Its content is not secret: the
 /// same preview is in the job summary and the PR check.
-fn write_candidate_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+pub fn write_candidate_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     std::fs::write(path, bytes)
         .with_context(|| format!("failed to write candidate to {}", path.display()))?;
     #[cfg(unix)]
@@ -173,13 +173,12 @@ fn named_digest(comment: &str) -> Option<String> {
     )
 }
 
-/// Publish the approved candidate from the protected publication job.
-pub async fn publish_approved(current: &AppConfig, github: &GitHubClient) -> anyhow::Result<()> {
-    let digest = std::env::var("CURURU_CANDIDATE_DIGEST").context(
-        "CURURU_CANDIDATE_DIGEST is required; pass the review job's candidate_digest output",
-    )?;
-    let candidate = read_candidate(&candidate_path(), &digest)?;
-    let digest = candidate.digest();
+/// Approvers of this run through the protected environment, which must
+/// require reviewers; any approval naming a candidate must name `digest`.
+pub async fn verified_approvers(
+    github: &GitHubClient,
+    digest: &str,
+) -> anyhow::Result<Vec<String>> {
     let environment = approval_environment();
     anyhow::ensure!(
         github.environment_requires_reviewers(&environment).await?,
@@ -189,11 +188,21 @@ pub async fn publish_approved(current: &AppConfig, github: &GitHubClient) -> any
         .context("GITHUB_RUN_ID is required")?
         .parse()
         .context("GITHUB_RUN_ID must be numeric")?;
-    let approvers = approved_by(
+    approved_by(
         &github.workflow_run_approvals(run_id).await?,
         &environment,
-        &digest,
+        digest,
+    )
+}
+
+/// Publish the approved candidate from the protected publication job.
+pub async fn publish_approved(current: &AppConfig, github: &GitHubClient) -> anyhow::Result<()> {
+    let digest = std::env::var("CURURU_CANDIDATE_DIGEST").context(
+        "CURURU_CANDIDATE_DIGEST is required; pass the review job's candidate_digest output",
     )?;
+    let candidate = read_candidate(&candidate_path(), &digest)?;
+    let digest = candidate.digest();
+    let approvers = verified_approvers(github, &digest).await?;
     hosted_publication::ensure_candidate_current(&candidate, current, github).await?;
     hosted_publication::publish_candidate(&candidate, github, None)
         .await

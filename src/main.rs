@@ -6,6 +6,7 @@ mod anthropic;
 mod app;
 mod auto_approval;
 mod codebase;
+mod codebase_action;
 mod commands;
 mod config;
 mod context;
@@ -200,6 +201,10 @@ enum Command {
     /// Publish a GitHub Action candidate from a job approved through a
     /// protected GitHub Environment.
     PublishApprovedReview,
+    /// Review the repository's committed files at the workflow's commit as
+    /// existing code and post the report as an issue (GitHub Action).
+    /// `CURURU_CODEBASE_PATHS` limits the selection with globs.
+    ReviewCodebase,
     /// Inspect a hosted review candidate and approve exactly that candidate.
     ApproveHostedReview {
         /// Pull request number (defaults to `PR_NUMBER`).
@@ -406,6 +411,15 @@ async fn main() -> anyhow::Result<()> {
             target: SetupTarget::AutoApproval { write },
         } => return setup::auto_approval(std::path::Path::new(".cururu.toml"), *write, true).await,
         Command::Status => return setup::status(std::path::Path::new(".cururu.toml")),
+        Command::ReviewCodebase => return codebase_action::review().await,
+        // A codebase report has no change request, so it is published before
+        // the change-request configuration is loaded.
+        Command::PublishApprovedReview
+            if codebase_action::is_codebase_candidate(&action_publication::candidate_path())
+                .unwrap_or(false) =>
+        {
+            return codebase_action::publish_approved_from_env().await;
+        }
         _ => {}
     }
     match &cli.command {
@@ -546,6 +560,7 @@ async fn main() -> anyhow::Result<()> {
                         unreviewable_paths: &current.unreviewable_paths,
                         truncated_paths: &current.truncated_paths,
                         dropped_findings,
+                        link_base: None,
                     })
                 );
                 return Ok(());
@@ -790,6 +805,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Init
         | Command::Setup { .. }
         | Command::Status
+        | Command::ReviewCodebase
         | Command::PrepareReview { .. }
         | Command::AgentReview { .. }
         | Command::ApiReview { .. }
@@ -963,18 +979,18 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// One review of prepared input by Cururu's own call to the configured API.
-struct ApiReviewRun {
-    reviews: Vec<review_input::ChunkReview>,
+pub(crate) struct ApiReviewRun {
+    pub(crate) reviews: Vec<review_input::ChunkReview>,
     /// Chunks whose coverage the model never reported consistently.
-    unconfirmed: Vec<usize>,
-    coverage_unconfirmed: Vec<String>,
-    dropped_findings: usize,
-    usage: Option<ApiUsage>,
+    pub(crate) unconfirmed: Vec<usize>,
+    pub(crate) coverage_unconfirmed: Vec<String>,
+    pub(crate) dropped_findings: usize,
+    pub(crate) usage: Option<ApiUsage>,
 }
 
 /// Review every chunk of `prepared` with the configured provider, retrying
 /// inconsistent or cut-off chunks; the caller assembles and revalidates.
-async fn review_with_api(
+pub(crate) async fn review_with_api(
     config: &AppConfig,
     prepared: &review_input::PreparedReview,
 ) -> anyhow::Result<ApiReviewRun> {
@@ -1156,7 +1172,7 @@ fn local_review_config() -> anyhow::Result<AppConfig> {
     Ok(config)
 }
 
-async fn merge_repository_config(
+pub(crate) async fn merge_repository_config(
     config: &mut AppConfig,
     source_control: &dyn scm::ScmProvider,
 ) -> anyhow::Result<bool> {

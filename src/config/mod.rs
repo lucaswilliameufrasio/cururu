@@ -265,12 +265,7 @@ impl AppConfig {
     }
 
     pub fn from_env() -> anyhow::Result<Self> {
-        let mut config = Self::from_local_env()?;
-        anyhow::ensure!(
-            !config.source_control.repository.is_empty(),
-            "repository not configured; set CURURU_REPOSITORY or add an origin remote to this Git checkout"
-        );
-
+        let mut config = Self::from_repository_env()?;
         let pr_number = env::env_optional("CURURU_CHANGE_REQUEST_NUMBER")
             .or_else(|| env::env_optional("PR_NUMBER"))
             .or_else(|| {
@@ -284,10 +279,21 @@ impl AppConfig {
                 )
             })
             .context("set CURURU_CHANGE_REQUEST_NUMBER or PR_NUMBER, or use an authenticated host CLI in an active change-request checkout")?;
+        config.source_control.change_request_number = pr_number;
+        Ok(config)
+    }
+
+    /// Configuration for a hosted repository without a change request, such
+    /// as a codebase review: the repository and its token, no PR number.
+    pub fn from_repository_env() -> anyhow::Result<Self> {
+        let mut config = Self::from_local_env()?;
+        anyhow::ensure!(
+            !config.source_control.repository.is_empty(),
+            "repository not configured; set CURURU_REPOSITORY or add an origin remote to this Git checkout"
+        );
         config.source_control.token = env::env_optional("CURURU_SCM_TOKEN")
             .or_else(|| env::env_optional("GITHUB_TOKEN"))
             .context("set CURURU_SCM_TOKEN (or GITHUB_TOKEN) env var")?;
-        config.source_control.change_request_number = pr_number;
         Ok(config)
     }
 

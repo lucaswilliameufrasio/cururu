@@ -186,6 +186,9 @@ pub struct ReportInput<'a> {
     pub unreviewable_paths: &'a [String],
     pub truncated_paths: &'a [String],
     pub dropped_findings: usize,
+    /// When set (`https://host/owner/repo/blob/<sha>`), locations link to
+    /// the reviewed file and line.
+    pub link_base: Option<&'a str>,
 }
 
 /// A plain Markdown list of the problems found, for reading in a terminal or
@@ -211,19 +214,31 @@ pub fn render_report(input: &ReportInput<'_>) -> String {
     } else {
         let _ = writeln!(out, "{} finding(s):\n", findings.len());
     }
+    // Model text must not forge Cururu's hidden markers.
+    let text = |value: &str| value.replace("<!--", "&lt;!--");
     for (index, finding) in findings.iter().enumerate() {
-        let location = finding.line.map_or_else(
+        let label = finding.line.map_or_else(
             || finding.path.clone(),
             |line| format!("{}:{line}", finding.path),
         );
+        let location = input.link_base.map_or_else(
+            || format!("`{label}`"),
+            |base| {
+                let anchor = finding.line.map_or_default(|line| format!("#L{line}"));
+                format!(
+                    "[`{label}`]({base}/{}{anchor})",
+                    finding.path.replace(' ', "%20")
+                )
+            },
+        );
         let _ = writeln!(
             out,
-            "## {}. [{}] `{location}` {}\n\n{}\n\n**Suggestion:** {}\n\n_Confidence {:.2}_\n",
+            "## {}. [{}] {location} {}\n\n{}\n\n**Suggestion:** {}\n\n_Confidence {:.2}_\n",
             index + 1,
             finding.severity.to_uppercase(),
-            finding.title,
-            finding.message,
-            finding.suggestion,
+            text(&finding.title),
+            text(&finding.message),
+            text(&finding.suggestion),
             finding.confidence
         );
     }

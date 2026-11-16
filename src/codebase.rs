@@ -155,6 +155,49 @@ pub async fn collect(
     Ok(Selection { files, ignored })
 }
 
+/// A hosted repository seen at one fixed revision: both its base and its
+/// head are that revision, so the trusted configuration, repository context
+/// and files of a codebase review all come from the commit being reviewed.
+pub struct AtRevision<'a> {
+    inner: &'a dyn ScmProvider,
+    revision: String,
+}
+
+impl<'a> AtRevision<'a> {
+    pub fn new(inner: &'a dyn ScmProvider, revision: String) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "a codebase review needs a full 40-character commit SHA"
+        );
+        Ok(Self { inner, revision })
+    }
+}
+
+#[async_trait::async_trait]
+impl ScmProvider for AtRevision<'_> {
+    async fn fetch_head_sha(&self) -> anyhow::Result<String> {
+        Ok(self.revision.clone())
+    }
+    async fn fetch_base_sha(&self) -> anyhow::Result<String> {
+        Ok(self.revision.clone())
+    }
+    async fn fetch_diff_with_limit(&self, _: usize) -> anyhow::Result<(String, bool)> {
+        anyhow::bail!("a codebase review has no change-request diff")
+    }
+    async fn fetch_file_at_ref(&self, path: &str, revision: &str) -> anyhow::Result<String> {
+        self.inner.fetch_file_at_ref(path, revision).await
+    }
+    async fn list_repository_paths_at_revision(
+        &self,
+        revision: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        self.inner.list_repository_paths_at_revision(revision).await
+    }
+    async fn fetch_config_toml(&self, revision: &str) -> anyhow::Result<Option<String>> {
+        self.inner.fetch_config_toml(revision).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
