@@ -209,7 +209,7 @@ impl GitHubClient {
                 head_sha: check.head_sha,
                 external_id: check.external_id,
                 status: "completed",
-                conclusion: "neutral",
+                conclusion: check.conclusion,
                 output: CheckRunOutputBody {
                     title: check.title,
                     summary: check.summary,
@@ -426,6 +426,7 @@ mod tests {
                 summary: "summary",
                 text: "preview",
                 approval_action: true,
+                conclusion: "neutral",
             })
             .await
             .unwrap();

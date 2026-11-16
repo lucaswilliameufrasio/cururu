@@ -360,9 +360,15 @@ pub fn status(path: &Path) -> anyhow::Result<()> {
         review.policy.fail_on,
         on_off(review.policy.suggested_changes)
     );
-    println!(
-        "  Hosted publication: each review needs a separate approval (App check or `/cururu approve`; Action environment `cururu-publish`; or `cururu approve-hosted-review`)"
-    );
+    if config.publication.require_approval {
+        println!(
+            "  Hosted publication: each review needs a separate approval (App check or `/cururu approve`; Action environment `cururu-publish`; or `cururu approve-hosted-review`)"
+        );
+    } else {
+        println!(
+            "  Hosted publication: reviews are published as soon as they complete (opt in to a separate approval per review with `[publication] require_approval = true`)"
+        );
+    }
     let approval = &config.auto_approval;
     if approval.enabled {
         println!(

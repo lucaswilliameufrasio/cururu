@@ -2,11 +2,31 @@
 
 Status: **implemented and verified locally against protocol-level fakes**; not
 yet exercised against the real GitHub API. Released as a breaking change in the
-first v5 release; v4 Actions publish directly.
+first v5 release, which required it for every review; **opt-in since v6**.
 
-The user decided that both the GitHub App and the Action require a separate
-approval for each publication, and that the operator chooses to approve through
-GitHub or the CLI.
+The approval is controlled by `[publication] require_approval` in the trusted
+configuration (the base revision's `.cururu.toml` or the shared base), off by
+default. Some organizations find approving every review tedious, so the v5 rule
+became a choice. When it is off, the Action and the App publish a review as
+soon as it completes and record it as a completed `Cururu review` check that
+carries its usage, so PR cost totals still count it. When it is on, everything
+below applies. The setting is read from the base revision, so a pull request
+cannot turn it off for itself.
+
+Enable it per repository or for an organization's shared base:
+
+```toml
+[publication]
+require_approval = true
+```
+
+For the Action, also create the `cururu-publish` environment with required
+reviewers; the publication job refuses to publish without that protection.
+`cururu status` shows whether the approval is on.
+
+The user decided that, when the approval is on, both the GitHub App and the
+Action require it for each publication, and that the operator chooses to
+approve through GitHub or the CLI.
 
 ## Decisions
 

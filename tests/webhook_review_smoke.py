@@ -15,7 +15,7 @@ import urllib.request
 
 head = "a" * 40
 test_evaluator = len(sys.argv) > 2 and sys.argv[2] == "--test-evaluator"
-state = {"changed": False, "mutate": False, "models": 0, "evaluations": 0, "writes": [], "checks": [], "check_updates": [], "head": head}
+state = {"changed": False, "mutate": False, "models": 0, "evaluations": 0, "writes": [], "checks": [], "check_updates": [], "head": head, "required": True}
 
 
 class Fake(http.server.BaseHTTPRequestHandler):
@@ -38,7 +38,8 @@ class Fake(http.server.BaseHTTPRequestHandler):
                 self.reply(200, {"head": {"sha": state["head"], "ref": "branch"}, "base": {"sha": head, "ref": "main"}})
         elif self.path.startswith("/repos/test/repo/contents/.cururu.toml?"):
             value = "true" if state["changed"] and state["mutate"] else "false"
-            self.reply(200, "version = 1\n[policy]\nsuggested_changes = " + value + "\n[summary]\nshow_cost = true\nshow_usage = true\n")
+            approval = "[publication]\nrequire_approval = true\n" if state["required"] else ""
+            self.reply(200, "version = 1\n[policy]\nsuggested_changes = " + value + "\n[summary]\nshow_cost = true\nshow_usage = true\n" + approval)
         elif self.path.startswith("/repos/test/repo/git/ref/heads/"):
             self.reply(200, {"object": {"sha": head}})
         elif self.path.startswith("/repos/test/repo/pulls/1/commits?"):
@@ -233,6 +234,18 @@ with tempfile.TemporaryDirectory() as directory:
                 assert candidate_state(stale) == "invalidated"
                 assert state["check_updates"][-1][1]["conclusion"] == "neutral", state["check_updates"]
                 state["head"] = head
+
+            # Publication approval off (the default): the App publishes the
+            # review at once and records it as a completed check with usage.
+            state.update(changed=False, mutate=False, models=0, evaluations=0, writes=[], checks=[], check_updates=[],
+                         head="d" * 40, required=False)
+            send("pull_request", {"action": "synchronize", "installation": installation, "repository": repo, "pull_request": {"number": 1, "draft": False}}, "direct")
+            wait("direct", True)
+            paths = [item[0] for item in state["writes"]]
+            assert "/repos/test/repo/pulls/1/reviews" in paths and "/repos/test/repo/issues/1/comments" in paths, paths
+            assert [check["conclusion"] for check in state["checks"]] == ["success"], state["checks"]
+            assert "cururu:usage:v1" in state["checks"][0]["output"]["summary"], state["checks"]
+            assert not state["checks"][0].get("actions"), "no publish button without approval"
         finally:
             process.terminate()
             process.wait(timeout=10)

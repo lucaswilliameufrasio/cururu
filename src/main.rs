@@ -955,7 +955,7 @@ async fn main() -> anyhow::Result<()> {
                     "Cururu: PR auto-approved and review published at {}",
                     result.head_sha
                 );
-            } else {
+            } else if config.publication.require_approval {
                 write_auto_approval_outputs(&config, &result)?;
                 review::ensure_review_head_unchanged(
                     &result.head_sha,
@@ -966,6 +966,24 @@ async fn main() -> anyhow::Result<()> {
                     "Cururu: candidate {} prepared; nothing was published. Approve the publication job to publish it.",
                     candidate.digest()
                 );
+            } else {
+                // Publication approval is opt-in (`publication.require_approval`):
+                // without it the review is published as soon as it completes.
+                write_auto_approval_outputs(&config, &result)?;
+                review::ensure_review_head_unchanged(
+                    &result.head_sha,
+                    &source_control.fetch_head_sha().await?,
+                )?;
+                hosted_publication::publish_candidate(&candidate, source_control.as_ref(), None)
+                    .await?;
+                hosted_publication::record_published(
+                    &candidate,
+                    source_control.as_ref(),
+                    "Published without a separate approval (`publication.require_approval` is off).",
+                )
+                .await;
+                append_github_output("review_status=completed\n")?;
+                println!("Cururu: review published at {}", result.head_sha);
             }
             if !report.passed {
                 anyhow::bail!(
@@ -1188,6 +1206,7 @@ async fn report_incomplete_review(
                 summary: &diagnostic.body,
                 text: &diagnostic.body,
                 approval_action: false,
+                conclusion: "neutral",
             })
             .await
     {

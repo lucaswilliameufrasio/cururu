@@ -194,6 +194,8 @@ pub struct CandidateCheck<'a> {
     pub text: &'a str,
     /// Offer an in-check approval action (GitHub App only).
     pub approval_action: bool,
+    /// `neutral` for a candidate; `success` once a review was published.
+    pub conclusion: &'a str,
 }
 
 #[cfg(test)]

@@ -2,14 +2,19 @@
 #
 # Requirements:
 #   1. Add LLM_API_KEY as a repository secret.
-#   2. Create the `cururu-publish` environment (Settings > Environments) with
-#      required reviewers. Cururu refuses to publish without that protection.
+#   2. Optional: to approve every review before it is posted, set
+#      `[publication] require_approval = true` in .cururu.toml and create the
+#      `cururu-publish` environment (Settings > Environments) with required
+#      reviewers. Cururu refuses to publish an approved candidate without that
+#      protection. Without it, reviews are published as soon as they complete
+#      and the `publish` job is skipped.
 #   3. Optionally add .cururu.toml at the repository root.
 #   4. Keep only one Cururu review workflow active for the repository.
 #
-# The review job comments nothing: it shows the exact candidate in the job
-# summary and in a "Cururu review" check. A required reviewer approves the
-# publish job in the run page, or runs `cururu approve-hosted-review --pr N`.
+# With the approval on, the review job comments nothing: it shows the exact
+# candidate in the job summary and in a "Cururu review" check. A required
+# reviewer approves the publish job in the run page, or runs
+# `cururu approve-hosted-review --pr N`.
 
 name: Cururu PR Review
 

@@ -134,7 +134,7 @@ the shared configuration client uses the same access identity as the initial loa
 | Analyzer evidence | Selected evidence is sent and promoted | Exposes prepared check-run evidence to the client and promotes it | Configured evidence is collected and promoted; not sent to the model |
 | Executable suggestions | Governed by review policy | Governed by review policy | Governed by review policy |
 | Evaluator | Not invoked | Not invoked | Optional configured evaluator; filtering is not part of the approved rollout |
-| Publication | Separate interactive confirmation for PR receipts | No publication tool; separate CLI confirmation | Candidate shown in a Check Run; published only after a separate approval per candidate (GitHub or CLI) |
+| Publication | Separate interactive confirmation for PR receipts | No publication tool; separate CLI confirmation | Published when the review completes; with `publication.require_approval`, a candidate shown in a Check Run is published only after a separate approval (GitHub or CLI) |
 
 The API/MCP disclosure and separate-publication boundaries are intentional. The
 other differences describe current behavior, not a decision that exact parity is
@@ -176,12 +176,22 @@ automatically load `.env`.
 
 Add [`docs/examples/cururu-review.yml`](docs/examples/cururu-review.yml) as
 `.github/workflows/cururu-review.yml` (or run `cururu init`), set `LLM_API_KEY`
-as a repository secret, and create a `cururu-publish` environment
-(**Settings → Environments**) with required reviewers. If the secret is not
-configured, the review is skipped with a notice instead of failing the PR.
+as a repository secret. If the secret is not configured, the review is
+skipped with a notice instead of failing the PR.
 
-Publication requires a separate approval for every review (Cururu v5 and
-later; v4 publishes directly):
+By default the review is published on the PR as soon as it completes. To
+inspect every review before anything is posted, turn on the separate
+publication approval in the trusted `.cururu.toml` (or the shared base):
+
+```toml
+[publication]
+require_approval = true
+```
+
+and create a `cururu-publish` environment (**Settings → Environments**) with
+required reviewers. Cururu v5 required this approval for every review; since
+v6 it is opt-in. Cururu reads the setting from the base revision, so a pull
+request cannot turn it off for itself. With the approval on:
 
 1. The `review` job reviews the PR and comments **nothing**. It shows the exact
    candidate (summary and every inline comment) in the job summary and in a
@@ -193,6 +203,11 @@ later; v4 publishes directly):
    the run was approved, that any approval naming a candidate names this one,
    that the candidate file matches the review job's digest, and that the PR head
    and trusted configuration are unchanged. Otherwise nothing is published.
+
+Without the approval, the `publish` job is skipped and the `Cururu review`
+check only records the published review and its usage. The GitHub App follows
+the same setting: with it on, the check's **Publish review** button or
+`/cururu approve <digest>` publishes the candidate.
 
 The workflow needs `checks: write` and `actions: read` in addition to the PR and
 issue permissions. A new push cancels a run still waiting for approval. The

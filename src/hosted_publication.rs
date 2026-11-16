@@ -279,6 +279,37 @@ pub async fn ensure_candidate_current(
 /// approval and called [`ensure_candidate_current`]. A failure after the first
 /// write leaves an uncertain partial publication and must not be retried
 /// automatically.
+/// Record a review published without a separate approval (publication
+/// approval off, or auto-approved) as a completed `Cururu review` check. It
+/// carries the run's usage marker, so the PR's cost totals keep counting it.
+/// Best effort: the review is already published.
+pub async fn record_published(
+    candidate: &HostedCandidate,
+    source_control: &dyn ScmProvider,
+    note: &str,
+) {
+    let summary = format!("{note}\n\n{}", candidate.usage.marker());
+    let external_id = format!("{}:published", candidate.digest());
+    if let Err(error) = source_control
+        .create_candidate_check(&crate::scm::CandidateCheck {
+            head_sha: &candidate.head_sha,
+            external_id: &external_id,
+            title: if candidate.portuguese() {
+                "Publicado"
+            } else {
+                "Published"
+            },
+            summary: &summary,
+            text: &candidate.preview(),
+            approval_action: false,
+            conclusion: "success",
+        })
+        .await
+    {
+        tracing::warn!(%error, "could not record the published review check; its usage is missing from PR totals");
+    }
+}
+
 pub async fn publish_candidate(
     candidate: &HostedCandidate,
     source_control: &dyn ScmProvider,

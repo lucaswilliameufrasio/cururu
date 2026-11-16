@@ -347,7 +347,8 @@ async fn run_pull_request_review(
     .await
 }
 
-/// Review the PR and present a publication candidate for approval. Nothing is
+/// Review the PR and publish it, or, when `publication.require_approval` is
+/// on, present a publication candidate for approval; then nothing is
 /// commented on the PR here except the diff-limit notice.
 async fn run_pull_request_review_with_evaluator(
     store: &DeliveryStore,
@@ -401,6 +402,9 @@ async fn run_pull_request_review_with_evaluator(
         return publish_auto_approved(config, source_control, &result, inline).await;
     }
     let candidate = HostedCandidate::from_review(config, &result, inline, true, true);
+    if !config.publication.require_approval {
+        return publish_without_approval(app_slug, source_control, &candidate).await;
+    }
     let digest = candidate.digest();
     if !candidate.approvable() {
         source_control
@@ -411,6 +415,7 @@ async fn run_pull_request_review_with_evaluator(
                 summary: &candidate.check_summary(true),
                 text: &candidate.approval_instructions(true),
                 approval_action: false,
+                conclusion: "neutral",
             })
             .await?;
         info!("Cururu App candidate exceeds the inspection limit; nothing was published");
@@ -438,6 +443,7 @@ async fn run_pull_request_review_with_evaluator(
             summary: &candidate.check_summary(true),
             text: &preview,
             approval_action: true,
+            conclusion: "neutral",
         })
         .await?;
     store
@@ -458,6 +464,32 @@ async fn request_cururu_as_reviewer(source_control: &dyn ScmProvider, app_slug: 
         Ok(false) => info!("SCM provider does not accept Cururu as a requested reviewer"),
         Err(_) => warn!("could not request Cururu as a reviewer; continuing"),
     }
+}
+
+/// Publication approval is opt-in (`publication.require_approval`): without
+/// it the review is published as soon as it completes.
+async fn publish_without_approval(
+    app_slug: &str,
+    source_control: &dyn ScmProvider,
+    candidate: &HostedCandidate,
+) -> anyhow::Result<()> {
+    review::ensure_review_head_unchanged(
+        &candidate.head_sha,
+        &source_control.fetch_head_sha().await?,
+    )?;
+    let bot_login = format!("{app_slug}[bot]");
+    hosted_publication::publish_candidate(candidate, source_control, Some(&bot_login)).await?;
+    hosted_publication::record_published(
+        candidate,
+        source_control,
+        "Published without a separate approval (`publication.require_approval` is off).",
+    )
+    .await;
+    info!(
+        findings = candidate.findings_count,
+        "Cururu App published its review"
+    );
+    Ok(())
 }
 
 /// The repository's opt-in policy replaces the per-candidate approval; the
@@ -646,6 +678,7 @@ async fn show_truncation_diagnostic(
             summary: &body,
             text: &body,
             approval_action: false,
+            conclusion: "neutral",
         })
         .await
     {
@@ -1033,8 +1066,10 @@ mod tests {
         let review = serde_json::json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[{"severity":"high","path":"a","line":1,"title":"fixture","message":"issue","suggestion":"fix","confidence":0.99}]}).to_string();
         Mock::given(method("POST")).and(path("/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]})))
-            .expect(2).mount(&server).await;
-        for mutate in [false, true] {
+            .expect(3).mount(&server).await;
+        // A configuration change stops publication with or without the
+        // opt-in publication approval.
+        for (mutate, require_approval) in [(false, true), (true, true), (true, false)] {
             let (_dir, store) = temporary_store().await;
             let changed = Arc::new(AtomicBool::new(false));
             let scm = ObserveScm {
@@ -1057,6 +1092,7 @@ mod tests {
             config.source_control.change_request_number = 1;
             config.trusted_config_snapshot =
                 Some(("base".into(), Some(review::trusted_config_hash("original"))));
+            config.publication.require_approval = require_approval;
             let result = run_pull_request_review_with_evaluator(
                 &store,
                 "fixture",
@@ -1250,7 +1286,14 @@ mod tests {
         for (file, expected) in [
             (
                 "docs/guide.md",
-                vec!["approve", "inline", "summary", "Cururu triage:success"],
+                // The published review is recorded as a check carrying its usage.
+                vec![
+                    "approve",
+                    "inline",
+                    "summary",
+                    "candidate",
+                    "Cururu triage:success",
+                ],
             ),
             (
                 "src/payments/fees.rs",
@@ -1271,6 +1314,7 @@ mod tests {
             config.source_control.change_request_number = 1;
             config.auto_approval.enabled = true;
             config.auto_approval.blocked_paths = vec!["**/payments/**".into()];
+            config.publication.require_approval = true;
             run_pull_request_review(&store, "fixture", &config, &scm, false, true)
                 .await
                 .unwrap();
@@ -1291,6 +1335,7 @@ mod tests {
         config.source_control.repository = "owner/repo".into();
         config.source_control.change_request_number = 1;
         config.auto_approval.enabled = true;
+        config.publication.require_approval = true;
         run_pull_request_review(&store, "fixture", &config, &scm, false, true)
             .await
             .unwrap();
@@ -1313,6 +1358,7 @@ mod tests {
         config.source_control.repository = "owner/repo".into();
         config.source_control.change_request_number = 1;
         config.auto_approval.enabled = true;
+        config.publication.require_approval = true;
         let error = run_pull_request_review(&store, "fixture", &config, &scm, false, true)
             .await
             .unwrap_err();
@@ -1340,6 +1386,7 @@ mod tests {
         config.source_control.repository = "owner/repo".into();
         config.source_control.change_request_number = 1;
         config.auto_approval.enabled = true;
+        config.publication.require_approval = true;
         let error = run_pull_request_review(&store, "fixture", &config, &scm, false, true)
             .await
             .unwrap_err();
@@ -1363,6 +1410,7 @@ mod tests {
         config.source_control.repository = "owner/repo".into();
         config.source_control.change_request_number = 1;
         config.auto_approval.enabled = true;
+        config.publication.require_approval = true;
         let error = run_pull_request_review(&store, "fixture", &config, &scm, false, true)
             .await
             .unwrap_err();

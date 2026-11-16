@@ -15,6 +15,9 @@ POLICY = """version = 1
 [policy]
 suggested_changes = false
 """
+APPROVAL = """[publication]
+require_approval = {required}
+"""
 AUTO_APPROVAL = """[auto_approval]
 enabled = {enabled}
 allowed_paths = ["docs/**", "**/*.md"]
@@ -24,9 +27,9 @@ max_changed_lines = 50
 """
 
 
-def reset(path, findings=None, enabled="true", approval_status=200, reviews=None, finish="stop"):
+def reset(path, findings=None, enabled="true", approval_status=200, reviews=None, finish="stop", required="true"):
     state.clear()
-    state.update(path=path, findings=findings or [], enabled=enabled, approval_status=approval_status, finish=finish,
+    state.update(path=path, findings=findings or [], enabled=enabled, approval_status=approval_status, finish=finish, required=required,
                  reviews=reviews or [], posts=[], patches=[], puts=[], checks=[])
 
 
@@ -53,7 +56,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path.startswith("/repos/test/repo/contents/.cururu.toml?"):
             # enabled=None omits the section entirely, which is the default.
             section = "" if state["enabled"] is None else AUTO_APPROVAL.format(enabled=state["enabled"])
-            self.reply(200, POLICY + section)
+            self.reply(200, POLICY + APPROVAL.format(required=state["required"]) + section)
         elif self.path == "/user":
             self.reply(200, {"login": "fixture[bot]"})
         elif self.path.startswith("/repos/test/repo/pulls/1/reviews?"):
@@ -140,7 +143,10 @@ with tempfile.TemporaryDirectory() as directory:
     assert "Auto-aprovado" in summary, summary
     triage = [c for c in state["checks"] if c["name"] == "Cururu triage"]
     assert triage and triage[0]["conclusion"] == "success", state["checks"]
-    assert not [c for c in state["checks"] if c["name"] == "Cururu review"], "no candidate when approved"
+    review_checks = [c for c in state["checks"] if c["name"] == "Cururu review"]
+    # No candidate when approved: only the published record, with the usage marker.
+    assert [c["conclusion"] for c in review_checks] == ["success"], review_checks
+    assert "cururu:usage:v1" in review_checks[0]["output"]["summary"], review_checks
 
     # Scenario 1: a payments change needs a human; nothing is approved and only the notice is posted.
     reset("src/payments/fees.rs")
@@ -202,6 +208,17 @@ with tempfile.TemporaryDirectory() as directory:
     diagnostic = [c for c in state["checks"] if c["name"] == "Cururu review"]
     assert diagnostic and diagnostic[0]["output"]["title"] == "Review não concluído", state["checks"]
     assert not approvals() and not [p for p, _ in state["posts"] if p.endswith("/comments")], state["posts"]
+
+    # Publication approval off (the default): a needs-human review is published
+    # directly, without a candidate, and its usage is still recorded.
+    reset("src/payments/fees.rs", required="false")
+    out = review("direct")
+    assert out["auto_approval"] == "needs_human" and out["review_status"] == "completed", out
+    assert not approvals(), state["posts"]
+    assert "/repos/test/repo/issues/1/comments" in paths(), paths()
+    review_checks = [c for c in state["checks"] if c["name"] == "Cururu review"]
+    assert [c["conclusion"] for c in review_checks] == ["success"], review_checks
+    assert "cururu:usage:v1" in review_checks[0]["output"]["summary"], review_checks
 
     # Disabled by default: no approval, no notice, regular flow.
     reset("docs/guide.md", enabled=None)

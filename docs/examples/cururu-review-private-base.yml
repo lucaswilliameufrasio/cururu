@@ -1,8 +1,10 @@
 # Example for a private shared base in a separate GitHub organization.
 # Keep .cururu.toml and all context files on the trusted base commit.
 # The Cururu GitHub App needs Contents (read), Checks (write), Actions (read),
-# Pull requests (write) and Issues (write). Create a `cururu-publish`
-# environment with required reviewers; the publish job waits for its approval.
+# Pull requests (write) and Issues (write). With `[publication]
+# require_approval = true` in the trusted configuration, create a
+# `cururu-publish` environment with required reviewers; the publish job waits
+# for its approval. Without it, reviews are published as soon as they complete.
 name: Cururu PR Review
 
 on:
