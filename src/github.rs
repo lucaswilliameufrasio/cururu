@@ -1396,6 +1396,46 @@ impl GitHubClient {
             .map(|c| c.id))
     }
 
+    /// The commit at the head of the repository's default branch.
+    pub async fn default_branch_head(&self) -> anyhow::Result<String> {
+        #[derive(Deserialize)]
+        struct Repository {
+            default_branch: String,
+        }
+        let get = |url: String| async move {
+            self.client
+                .get(&url)
+                .timeout(Duration::from_secs(15))
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2026-03-10")
+                .bearer_auth(&self.cfg.token)
+                .send()
+                .await?
+                .error_for_status()
+                .map_err(anyhow::Error::from)
+        };
+        let repository: Repository = get(format!(
+            "{}/repos/{}/{}",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo
+        ))
+        .await?
+        .json()
+        .await
+        .context("failed to read the repository")?;
+        let reference: GitRef = get(format!(
+            "{}/repos/{}/{}/git/ref/heads/{}",
+            self.cfg.api_url,
+            self.cfg.owner,
+            self.cfg.repo,
+            url_encode(&repository.default_branch)
+        ))
+        .await?
+        .json()
+        .await
+        .context("failed to read the default branch")?;
+        Ok(reference.object.sha)
+    }
+
     /// Open an issue and return its URL. Not retried: a lost response after
     /// GitHub created the issue would otherwise open a duplicate.
     pub async fn create_issue(&self, title: &str, body: &str) -> anyhow::Result<String> {

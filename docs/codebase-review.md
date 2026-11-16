@@ -28,6 +28,9 @@ selection.
   replacement characters, so a file containing U+FFFD is treated as binary
   there; legitimate text with that character is rare and is reported, not
   hidden.
+- **GitHub size limit:** a report longer than 60000 characters fails and
+  suggests narrowing the selection or lowering `policy.max_findings`, since
+  GitHub rejects longer issues and comments.
 - **Paths that cannot be written into a diff header safely** (a newline or
   other control character, or ` b/`) are left out and listed as not reviewed.
 
@@ -38,7 +41,7 @@ selection.
 | CLI | `cururu prepare-review --codebase [--path GLOB]...`, then `cururu api-review --codebase [--path GLOB]... --confirm-send [--format markdown]` | The JSON receipt, or with `--format markdown` a readable list of the problems found. Nothing is published; `publish-agent-review` refuses codebase receipts. |
 | MCP | `prepare_review`, `validate_review` and `assemble_review` with `"source": "codebase"` and optional `"paths": [...]` | The prepared input for the host's own agent; nothing is published. |
 | GitHub Action | `mode: codebase` with optional `codebase_paths`, run by `workflow_dispatch` and optionally a schedule; see [`docs/examples/cururu-codebase-review.yml`](examples/cururu-codebase-review.yml). The trusted configuration, files and context come from the reviewed commit (`GITHUB_SHA`, or `codebase_revision`). | An issue with the report, linking each finding to its file and line at that commit; `issue_url` output. With `publication.require_approval`, the report is shown in the job summary and the issue is opened only after the `cururu-publish` environment approves the publish job; a report that does not match its digest is refused. |
-| GitHub App | Planned: `/cururu review codebase [paths]` in an issue | A reply in that issue. |
+| GitHub App | `/cururu review codebase [GLOB]...` in an issue (not a pull request), by an account with write access; reviews the head of the default branch, with the trusted configuration and context of that commit. | A reply in that issue with the report. With `publication.require_approval`, a short notice (no review content) points to a `Cururu review` check on that commit; **Publish review** or `/cururu approve <digest>` in the issue posts exactly that report. |
 
 Hosted publication follows `[publication] require_approval`: directly by
 default, or after a separate approval when it is on.

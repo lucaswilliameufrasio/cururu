@@ -1,3 +1,4 @@
+mod codebase;
 mod db;
 mod github_app;
 
@@ -516,6 +517,9 @@ async fn publish_approved_candidate(
     stored: &StoredCandidate,
     approver: &str,
 ) -> anyhow::Result<()> {
+    if codebase::is_codebase_candidate(stored) {
+        return codebase::publish_approved(state, payload, stored, approver).await;
+    }
     let Some((config, github)) =
         app_config_for_event(state, payload, Some(approver), Some(stored.pr_number)).await?
     else {
@@ -687,9 +691,10 @@ async fn show_truncation_diagnostic(
 }
 
 async fn process_issue_comment(state: &AppState, payload: &Value) -> anyhow::Result<()> {
-    if payload["action"].as_str() != Some("created") || payload["issue"]["pull_request"].is_null() {
+    if payload["action"].as_str() != Some("created") {
         return Ok(());
     }
+    let is_pull_request = !payload["issue"]["pull_request"].is_null();
     let body = string_at(payload, &["comment", "body"]).unwrap_or_default();
     let login = string_at(payload, &["comment", "user", "login"]).unwrap_or_default();
     let kind = string_at(payload, &["comment", "user", "type"]).unwrap_or_default();
@@ -709,6 +714,14 @@ async fn process_issue_comment(state: &AppState, payload: &Value) -> anyhow::Res
             return publish_approved_candidate(state, payload, &stored, &login).await;
         }
         return Ok(());
+    }
+    // In an issue, only codebase reviews (and approvals, above) are commands.
+    if !is_pull_request {
+        return match codebase::parse_command(trimmed) {
+            Some(Ok(paths)) => codebase::review_command(state, payload, &login, paths).await,
+            Some(Err(count)) => codebase::too_many_paths(state, payload, &login, count).await,
+            None => Ok(()),
+        };
     }
     let command = matches!(trimmed, "/cururu review" | "/cururu review --full");
     if !command && !mentions_cururu(&body, &state.app_slug) {
