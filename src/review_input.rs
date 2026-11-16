@@ -394,7 +394,7 @@ pub async fn prepare_codebase(
     revision: String,
     paths: &[String],
 ) -> anyhow::Result<PreparedReview> {
-    let files = crate::codebase::collect(
+    let crate::codebase::Selection { files, ignored } = crate::codebase::collect(
         scm,
         &revision,
         paths,
@@ -416,6 +416,7 @@ pub async fn prepare_codebase(
     codebase_config.review.max_diff_bytes = usize::MAX;
     let mut prepared = prepare(&codebase_config, &raw, revision, "codebase")?;
     prepared.unreviewable_paths.extend(skipped);
+    prepared.ignored_paths = ignored;
     let context_configured = config.context.auto.enabled
         || !(config.context.conventions.is_empty()
             && config.context.specifications.is_empty()

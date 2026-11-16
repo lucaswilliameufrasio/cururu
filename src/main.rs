@@ -624,6 +624,7 @@ async fn main() -> anyhow::Result<()> {
                         scope: current.scope,
                         revision: &current.revision,
                         coverage_unconfirmed: &coverage_unconfirmed,
+                        ignored_paths: &current.ignored_paths,
                         unreviewable_paths: &current.unreviewable_paths,
                         truncated_paths: &current.truncated_paths,
                         dropped_findings,

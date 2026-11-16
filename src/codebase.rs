@@ -81,10 +81,11 @@ pub fn diff_from_empty_tree(files: &[CodebaseFile]) -> String {
     diff
 }
 
-/// Whether `path` is in the selection: any of `patterns` (all paths when
-/// empty) and none of the configured ignores.
-fn selected(path: &str, patterns: &globset::GlobSet, any: bool, ignore: &globset::GlobSet) -> bool {
-    (any || patterns.is_match(path)) && !ignore.is_match(path)
+/// The files of a codebase review and the paths `review.ignore` left out.
+#[derive(Debug)]
+pub struct Selection {
+    pub files: Vec<CodebaseFile>,
+    pub ignored: Vec<String>,
 }
 
 /// Collect the selected committed files at `revision` through any SCM
@@ -96,7 +97,7 @@ pub async fn collect(
     patterns: &[String],
     ignore: &globset::GlobSet,
     max_bytes: usize,
-) -> anyhow::Result<Vec<CodebaseFile>> {
+) -> anyhow::Result<Selection> {
     let mut builder = globset::GlobSetBuilder::new();
     for pattern in patterns {
         builder.add(globset::Glob::new(pattern).map_err(|error| {
@@ -104,13 +105,14 @@ pub async fn collect(
         })?);
     }
     let selection = builder.build()?;
-    let mut paths: Vec<String> = scm
+    let (mut paths, mut ignored): (Vec<String>, Vec<String>) = scm
         .list_repository_paths_at_revision(revision)
         .await?
         .into_iter()
-        .filter(|path| selected(path, &selection, patterns.is_empty(), ignore))
-        .collect();
+        .filter(|path| patterns.is_empty() || selection.is_match(path))
+        .partition(|path| !ignore.is_match(path));
     paths.sort();
+    ignored.sort();
     anyhow::ensure!(
         !paths.is_empty(),
         "no committed file matches the codebase selection"
@@ -150,7 +152,7 @@ pub async fn collect(
         };
         files.push(file);
     }
-    Ok(files)
+    Ok(Selection { files, ignored })
 }
 
 #[cfg(test)]
@@ -209,7 +211,9 @@ mod tests {
                 .collect()
         };
 
-        let all = collect(&local, &head, &[], &ignore, 1000).await.unwrap();
+        let selection = collect(&local, &head, &[], &ignore, 1000).await.unwrap();
+        assert_eq!(selection.ignored, ["src/gen/out.rs"]);
+        let all = selection.files;
         assert_eq!(
             names(&all),
             [
@@ -225,7 +229,8 @@ mod tests {
 
         let src = collect(&local, &head, &["src/**".into()], &ignore, 1000)
             .await
-            .unwrap();
+            .unwrap()
+            .files;
         assert_eq!(names(&src), ["src/lib.rs"]);
 
         let error = collect(&local, &head, &[], &ignore, 10).await.unwrap_err();

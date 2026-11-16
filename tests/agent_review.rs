@@ -910,6 +910,12 @@ async fn api_review_codebase_reviews_committed_files_and_prints_a_report() {
     )
     .unwrap();
     std::fs::write(dir.path().join("notes.md"), "# Notes\n").unwrap();
+    std::fs::write(dir.path().join("src/generated.py"), "x = 1\n").unwrap();
+    std::fs::write(
+        dir.path().join(".cururu.toml"),
+        "version = 1\n[review]\nignore = [\"**/generated.py\"]\n",
+    )
+    .unwrap();
     git(&["add", "."]);
     git(&[
         "-c",
@@ -998,6 +1004,10 @@ async fn api_review_codebase_reviews_committed_files_and_prints_a_report() {
     );
     assert!(
         report.contains("**Suggestion:** One option is a with block."),
+        "{report}"
+    );
+    assert!(
+        report.contains("**Excluded by review.ignore:** src/generated.py"),
         "{report}"
     );
     let requests = server.received_requests().await.unwrap();

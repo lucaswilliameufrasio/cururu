@@ -181,6 +181,8 @@ pub struct ReportInput<'a> {
     pub scope: &'a str,
     pub revision: &'a str,
     pub coverage_unconfirmed: &'a [String],
+    /// Paths excluded by `review.ignore`.
+    pub ignored_paths: &'a [String],
     pub unreviewable_paths: &'a [String],
     pub truncated_paths: &'a [String],
     pub dropped_findings: usize,
@@ -227,7 +229,7 @@ pub fn render_report(input: &ReportInput<'_>) -> String {
     }
     for (label, paths) in [
         (
-            "Not reviewed (binary files or submodule changes)",
+            "Not reviewed (binary, unreadable or oversized files, submodule changes, or unsafe paths)",
             input.unreviewable_paths,
         ),
         (
@@ -238,6 +240,7 @@ pub fn render_report(input: &ReportInput<'_>) -> String {
             "Coverage not confirmed by the model",
             input.coverage_unconfirmed,
         ),
+        ("Excluded by review.ignore", input.ignored_paths),
     ] {
         if !paths.is_empty() {
             let _ = writeln!(out, "**{label}:** {}\n", paths.join(", "));
