@@ -60,24 +60,24 @@ fn revision() -> anyhow::Result<String> {
         .context("set CURURU_CODEBASE_REVISION or run inside a GitHub workflow (GITHUB_SHA)")
 }
 
-/// Review the codebase at the workflow's commit and publish or present the
-/// report.
-pub async fn review() -> anyhow::Result<()> {
-    let mut config = AppConfig::from_repository_env()?;
-    let github = GitHubClient::from_scm_config(&config.source_control)?;
-    let revision = revision()?;
-    let scm = crate::codebase::AtRevision::new(&github, revision.clone())?;
-    crate::merge_repository_config(&mut config, &scm).await?;
-    config.require_llm_api_key()?;
-    let paths = selected_paths();
+/// Review the selected committed files at `revision`, read through `scm`
+/// (fixed at that revision), and build the report to publish. Shared by the
+/// Action and the App.
+pub async fn build_report(
+    config: &AppConfig,
+    scm: &dyn crate::scm::ScmProvider,
+    revision: &str,
+    paths: &[String],
+) -> anyhow::Result<CodebaseCandidate> {
     let prepared =
-        crate::review_input::prepare_codebase(&config, &scm, revision.clone(), &paths).await?;
-    println!(
-        "Cururu: reviewing {} file(s) in {} chunk(s) at {revision}",
-        prepared.files.len(),
-        prepared.chunks.len()
+        crate::review_input::prepare_codebase(config, scm, revision.to_owned(), paths).await?;
+    tracing::info!(
+        files = prepared.files.len(),
+        chunks = prepared.chunks.len(),
+        revision,
+        "reviewing the codebase"
     );
-    let run = crate::review_with_api(&config, &prepared).await?;
+    let run = crate::review_with_api(config, &prepared).await?;
     let result = crate::review_input::assemble_review_with_unconfirmed(
         &prepared,
         &prepared.snapshot_sha256,
@@ -92,7 +92,7 @@ pub async fn review() -> anyhow::Result<()> {
     let report = crate::output::render_report(&crate::output::ReportInput {
         review: &result,
         scope: prepared.scope,
-        revision: &revision,
+        revision,
         coverage_unconfirmed: &run.coverage_unconfirmed,
         ignored_paths: &prepared.ignored_paths,
         unreviewable_paths: &prepared.unreviewable_paths,
@@ -109,7 +109,7 @@ pub async fn review() -> anyhow::Result<()> {
         version: 1,
         kind: KIND.into(),
         repository: config.source_control.repository.clone(),
-        revision: revision.clone(),
+        revision: revision.to_owned(),
         title: format!(
             "Cururu codebase review: {} finding(s) at {}",
             result.findings.len(),
@@ -119,6 +119,25 @@ pub async fn review() -> anyhow::Result<()> {
             "{report}\nSelection: {selection}.\n\n<!-- cururu:codebase-review:v1 revision={revision} -->\n"
         ),
     };
+    // GitHub accepts at most 65536 characters in an issue or comment body.
+    anyhow::ensure!(
+        candidate.body.len() <= 60_000,
+        "the codebase report is longer than GitHub accepts; select fewer paths or lower policy.max_findings"
+    );
+    Ok(candidate)
+}
+
+/// Review the codebase at the workflow's commit and publish or present the
+/// report.
+pub async fn review() -> anyhow::Result<()> {
+    let mut config = AppConfig::from_repository_env()?;
+    let github = GitHubClient::from_scm_config(&config.source_control)?;
+    let revision = revision()?;
+    let scm = crate::codebase::AtRevision::new(&github, revision.clone())?;
+    crate::merge_repository_config(&mut config, &scm).await?;
+    config.require_llm_api_key()?;
+    let paths = selected_paths();
+    let candidate = build_report(&config, &scm, &revision, &paths).await?;
     append(
         "GITHUB_STEP_SUMMARY",
         &format!("## {}\n\n{}\n", candidate.title, candidate.body),

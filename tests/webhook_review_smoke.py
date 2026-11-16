@@ -42,6 +42,14 @@ class Fake(http.server.BaseHTTPRequestHandler):
             self.reply(200, "version = 1\n[policy]\nsuggested_changes = " + value + "\n[summary]\nshow_cost = true\nshow_usage = true\n" + approval)
         elif self.path.startswith("/repos/test/repo/git/ref/heads/"):
             self.reply(200, {"object": {"sha": head}})
+        elif self.path == "/repos/test/repo":
+            self.reply(200, {"default_branch": "main"})
+        elif self.path.startswith("/repos/test/repo/git/trees/" + head):
+            self.reply(200, {"tree": [{"path": "src/old.py", "type": "blob"}, {"path": "README.md", "type": "blob"}], "truncated": False})
+        elif self.path.startswith("/repos/test/repo/contents/src%2Fold.py?ref=" + head):
+            self.reply(200, "x = 1\n")
+        elif self.path.startswith("/repos/test/repo/contents/README.md?ref=" + head):
+            self.reply(200, "# Old project\n")
         elif self.path.startswith("/repos/test/repo/pulls/1/commits?"):
             self.reply(200, [{"sha": head}, {"sha": "b" * 40}])
         elif "/check-runs?" in self.path and self.path.startswith("/repos/test/repo/commits/"):
@@ -246,6 +254,41 @@ with tempfile.TemporaryDirectory() as directory:
             assert [check["conclusion"] for check in state["checks"]] == ["success"], state["checks"]
             assert "cururu:usage:v1" in state["checks"][0]["output"]["summary"], state["checks"]
             assert not state["checks"][0].get("actions"), "no publish button without approval"
+
+            # Codebase reviews do not involve the evaluator; its fake model
+            # answers with a finding outside any codebase selection.
+            if not test_evaluator:
+                def issue_comment(text, login, delivery):
+                    send("issue_comment", {"action": "created", "issue": {"number": 7}, "comment": {"body": text, "user": {"login": login, "type": "User"}}, "repository": repo, "installation": installation}, delivery)
+                    wait(delivery, True)
+
+                def issue_writes():
+                    return [json.loads(item[1])["body"] for item in state["writes"] if item[0] == "/repos/test/repo/issues/7/comments"]
+
+                # A codebase review requested in an issue is answered in that issue.
+                state.update(writes=[], checks=[], check_updates=[], models=0, head=head, required=False)
+                issue_comment("/cururu review codebase src/**", "mallory", "codebase-read-only")
+                assert state["models"] == 0 and not issue_writes(), "read-only accounts cannot start it"
+                issue_comment("/cururu review codebase src/**", "alice", "codebase-direct")
+                assert state["models"] == 1, state
+                reports = issue_writes()
+                assert len(reports) == 1 and "Cururu codebase review: 0 finding(s)" in reports[0], reports
+                assert "Selection: src/**." in reports[0] and not state["checks"], reports
+
+                # With the approval on, only a notice is posted until the exact
+                # report is approved in the issue.
+                state.update(writes=[], checks=[], check_updates=[], models=0, required=True)
+                issue_comment("/cururu review codebase", "alice", "codebase-candidate")
+                notices = issue_writes()
+                assert len(notices) == 1 and "after approval" in notices[0] and "Cururu codebase review" not in notices[0], notices
+                check = state["checks"][0]
+                digest = check["external_id"]
+                assert hashlib.sha256(check["output"]["text"].encode()).hexdigest() == digest
+                assert check["actions"][0]["identifier"] == "cururu_publish", check
+                issue_comment("/cururu approve " + digest, "alice", "codebase-approve")
+                reports = issue_writes()
+                assert len(reports) == 2 and "Cururu codebase review" in reports[1], reports
+                assert state["check_updates"][-1][1]["conclusion"] == "success", state["check_updates"]
         finally:
             process.terminate()
             process.wait(timeout=10)
