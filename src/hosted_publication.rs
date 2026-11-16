@@ -282,7 +282,8 @@ pub async fn ensure_candidate_current(
 /// Record a review published without a separate approval (publication
 /// approval off, or auto-approved) as a completed `Cururu review` check. It
 /// carries the run's usage marker, so the PR's cost totals keep counting it.
-/// Best effort: the review is already published.
+/// The review is already published, so a failure is retried briefly and then
+/// only reported. Retrying is safe: totals count each run once by its id.
 pub async fn record_published(
     candidate: &HostedCandidate,
     source_control: &dyn ScmProvider,
@@ -290,21 +291,22 @@ pub async fn record_published(
 ) {
     let summary = format!("{note}\n\n{}", candidate.usage.marker());
     let external_id = format!("{}:published", candidate.digest());
-    if let Err(error) = source_control
-        .create_candidate_check(&crate::scm::CandidateCheck {
-            head_sha: &candidate.head_sha,
-            external_id: &external_id,
-            title: if candidate.portuguese() {
-                "Publicado"
-            } else {
-                "Published"
-            },
-            summary: &summary,
-            text: &candidate.preview(),
-            approval_action: false,
-            conclusion: "success",
-        })
-        .await
+    let preview = candidate.preview();
+    let check = crate::scm::CandidateCheck {
+        head_sha: &candidate.head_sha,
+        external_id: &external_id,
+        title: if candidate.portuguese() {
+            "Publicado"
+        } else {
+            "Published"
+        },
+        summary: &summary,
+        text: &preview,
+        approval_action: false,
+        conclusion: "success",
+    };
+    if let Err(error) =
+        crate::retry::retry_with_backoff(|| source_control.create_candidate_check(&check), 2).await
     {
         tracing::warn!(%error, "could not record the published review check; its usage is missing from PR totals");
     }
@@ -377,6 +379,49 @@ pub mod tests {
             run_id: "run".into(),
             usage: UsageRecord::new("run", "head", None),
         }
+    }
+
+    /// Fails the first check creation, as a transient API error would.
+    struct FlakyChecks {
+        calls: std::sync::atomic::AtomicUsize,
+        recorded: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ScmProvider for FlakyChecks {
+        async fn fetch_head_sha(&self) -> anyhow::Result<String> {
+            Ok("head".into())
+        }
+        async fn fetch_diff_with_limit(&self, _: usize) -> anyhow::Result<(String, bool)> {
+            Ok((String::new(), false))
+        }
+        async fn create_candidate_check(
+            &self,
+            check: &crate::scm::CandidateCheck<'_>,
+        ) -> anyhow::Result<u64> {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                anyhow::bail!("HTTP 502");
+            }
+            self.recorded
+                .lock()
+                .unwrap()
+                .push((check.conclusion.to_owned(), check.summary.to_owned()));
+            Ok(1)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_published_review_is_recorded_with_its_usage_despite_a_transient_failure() {
+        let scm = FlakyChecks {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            recorded: std::sync::Mutex::new(Vec::new()),
+        };
+        let candidate = sample("en-US");
+        record_published(&candidate, &scm, "Published.").await;
+        let recorded = scm.recorded.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "success");
+        assert!(recorded[0].1.contains(&candidate.usage.marker()));
     }
 
     #[test]
