@@ -418,7 +418,7 @@ pub mod tests {
         };
         let candidate = sample("en-US");
         record_published(&candidate, &scm, "Published.").await;
-        let recorded = scm.recorded.lock().unwrap();
+        let recorded = scm.recorded.lock().unwrap().clone();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].0, "success");
         assert!(recorded[0].1.contains(&candidate.usage.marker()));
