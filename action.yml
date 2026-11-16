@@ -100,7 +100,7 @@ outputs:
 
 runs:
   using: "docker"
-  image: docker://ghcr.io/lucaswilliameufrasio/cururu:v5.2.0
+  image: docker://ghcr.io/lucaswilliameufrasio/cururu@sha256:91f773eec2fd2b54776b87d7e294167d7fbedf0f13560ec596c38c5c0eb5947d
   args:
     - ${{ inputs.mode == 'publish' && 'publish-approved-review' || 'review' }}
   env:
