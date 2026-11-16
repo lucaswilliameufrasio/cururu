@@ -47,7 +47,9 @@ jobs:
         env:
           V: ${{ steps.version-check.outputs.version }}
         run: |
-          git cliff --bump --tag "v$V" -o CHANGELOG.md
+          # Prepend only the new release: regenerating the whole file rewrote
+          # earlier sections (dates taken from tag commits, in UTC).
+          git cliff --unreleased --bump --tag "v$V" --prepend CHANGELOG.md
 
       - name: Update version in Cargo.toml
         env:
