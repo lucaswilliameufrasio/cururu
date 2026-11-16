@@ -217,18 +217,16 @@ pub fn render_report(input: &ReportInput<'_>) -> String {
     // Model text must not forge Cururu's hidden markers.
     let text = |value: &str| value.replace("<!--", "&lt;!--");
     for (index, finding) in findings.iter().enumerate() {
-        let label = finding.line.map_or_else(
-            || finding.path.clone(),
-            |line| format!("{}:{line}", finding.path),
-        );
+        // A backtick would end the inline code span of the label.
+        let path = finding.path.replace('`', "'");
+        let label = finding
+            .line
+            .map_or_else(|| path.clone(), |line| format!("{path}:{line}"));
         let location = input.link_base.map_or_else(
             || format!("`{label}`"),
             |base| {
                 let anchor = finding.line.map_or_default(|line| format!("#L{line}"));
-                format!(
-                    "[`{label}`]({base}/{}{anchor})",
-                    finding.path.replace(' ', "%20")
-                )
+                format!("[`{label}`]({base}/{}{anchor})", url_path(&finding.path))
             },
         );
         let _ = writeln!(
@@ -269,6 +267,21 @@ pub fn render_report(input: &ReportInput<'_>) -> String {
         );
     }
     out
+}
+
+/// Percent-encode a repository path for a URL, keeping `/` between
+/// segments, so characters such as `)`, `#` or spaces cannot change where a
+/// Markdown link points.
+fn url_path(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'.' | b'_' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
 
 fn render_not_reviewed(output: &ReviewOutput, out: &mut String) {
@@ -528,6 +541,44 @@ fn truncate_chars(value: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_links_cannot_be_redirected_by_file_names() {
+        assert_eq!(url_path("src/a b).rs#x"), "src/a%20b%29.rs%23x");
+        assert_eq!(url_path("docs/ação.md"), "docs/a%C3%A7%C3%A3o.md");
+        let review = crate::agent::ReviewResult {
+            model: "m".into(),
+            files_reviewed: 1,
+            summary: String::new(),
+            findings: vec![crate::agent::ReviewFinding {
+                severity: "low".into(),
+                path: "a`b).rs".into(),
+                line: Some(3),
+                title: "t".into(),
+                message: "m".into(),
+                suggestion: "s".into(),
+                confidence: 0.9,
+                suggested_change: None,
+                source: None,
+                rule: None,
+            }],
+        };
+        let report = render_report(&ReportInput {
+            review: &review,
+            scope: "scope",
+            revision: "rev",
+            coverage_unconfirmed: &[],
+            ignored_paths: &[],
+            unreviewable_paths: &[],
+            truncated_paths: &[],
+            dropped_findings: 0,
+            link_base: Some("https://github.example/o/r/blob/rev"),
+        });
+        assert!(
+            report.contains("[`a'b).rs:3`](https://github.example/o/r/blob/rev/a%60b%29.rs#L3)"),
+            "{report}"
+        );
+    }
     use crate::agent::ReviewFinding;
 
     fn finding() -> ReviewFinding {
