@@ -94,6 +94,7 @@ pub async fn review() -> anyhow::Result<()> {
         scope: prepared.scope,
         revision: &revision,
         coverage_unconfirmed: &run.coverage_unconfirmed,
+        ignored_paths: &prepared.ignored_paths,
         unreviewable_paths: &prepared.unreviewable_paths,
         truncated_paths: &prepared.truncated_paths,
         dropped_findings: run.dropped_findings,
