@@ -216,18 +216,29 @@ pub fn annotate_cross_references(chunks: &mut [DiffChunk], max_note_bytes: usize
                 let per_name: Vec<(String, Vec<&NewLine<'_>>)> = defined_names(lines)
                     .into_iter()
                     .map(|name| {
-                        let mut mentions: Vec<&NewLine<'_>> = index
-                            .get(name.as_str())
-                            .into_iter()
-                            .flatten()
-                            .filter(|(other, _)| *other != chunk_index)
-                            .map(|&(other, line_index)| &parsed[other][line_index])
-                            .collect();
-                        mentions.sort_by_key(|mention| {
-                            defined_names(std::slice::from_ref(*mention)).contains(&name)
-                        });
-                        mentions.truncate(MAX_PER_NAME);
-                        (name, mentions)
+                        // One pass, stopping once enough uses are found:
+                        // uses first, other definitions only to fill up.
+                        let mut uses = Vec::with_capacity(MAX_PER_NAME);
+                        let mut definitions = Vec::with_capacity(MAX_PER_NAME);
+                        for &(other, line_index) in index.get(name.as_str()).into_iter().flatten() {
+                            if other == chunk_index {
+                                continue;
+                            }
+                            let mention = &parsed[other][line_index];
+                            if defined_names(std::slice::from_ref(mention)).contains(&name) {
+                                if definitions.len() < MAX_PER_NAME {
+                                    definitions.push(mention);
+                                }
+                            } else {
+                                uses.push(mention);
+                                if uses.len() == MAX_PER_NAME {
+                                    break;
+                                }
+                            }
+                        }
+                        uses.extend(definitions);
+                        uses.truncate(MAX_PER_NAME);
+                        (name, uses)
                     })
                     .collect();
                 // One mention of every name first, then the further ones, so
