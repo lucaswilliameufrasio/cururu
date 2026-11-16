@@ -43,6 +43,7 @@ fn base_config() -> AppConfig {
         analysis: AnalysisConfig::default(),
         auto_approval: crate::config::AutoApprovalConfig::default(),
         publication: crate::config::PublicationConfig::default(),
+        codebase: crate::config::CodebaseConfig::default(),
         evaluator: EvaluatorConfig {
             mode: None,
             api_key: String::new(),

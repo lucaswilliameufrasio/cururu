@@ -226,6 +226,20 @@ requirements, and `cururu status` to see which features are enabled. See
 [auto-approval](docs/auto-approval.md), including workflow outputs for your own
 chat notifications.
 
+### Codebase review
+
+To audit existing code rather than a change, review the committed files at
+`HEAD`, optionally limited by globs:
+
+```bash
+cururu prepare-review --codebase --path 'src/**'
+cururu api-review --codebase --path 'src/**' --confirm-send --format markdown
+```
+
+MCP clients use `"source": "codebase"` with optional `"paths"`. The collected
+content is bounded by `[codebase] max_bytes` (default 1000000). See
+[codebase review](docs/codebase-review.md).
+
 ## Integration discovery prompt
 
 Before choosing a model or enabling Cururu in a production repository, use the

@@ -16,6 +16,7 @@ pub struct CururuToml {
     pub analysis: Option<AnalysisToml>,
     pub auto_approval: Option<AutoApprovalToml>,
     pub publication: Option<PublicationToml>,
+    pub codebase: Option<CodebaseToml>,
     pub evaluator: Option<toml::Value>,
 }
 
@@ -130,6 +131,12 @@ pub struct AutoApprovalToml {
 #[serde(deny_unknown_fields)]
 pub struct PublicationToml {
     pub require_approval: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodebaseToml {
+    pub max_bytes: Option<usize>,
 }
 
 pub fn validate_confidence(value: f32) -> anyhow::Result<()> {

@@ -364,6 +364,64 @@ pub fn validate_publication_findings(
     validate_findings(prepared, &normalized)
 }
 
+/// The review prompt for an input source: existing code for a codebase,
+/// changes otherwise.
+const fn instructions_for(source: &str) -> &'static str {
+    if matches!(source.as_bytes(), b"codebase") {
+        cururu_engine::CODEBASE_REVIEW_PROMPT
+    } else {
+        cururu_engine::DEFAULT_REVIEW_PROMPT
+    }
+}
+
+/// What a prepared review covers, for its source.
+fn scope_for(source: &str) -> &'static str {
+    match source {
+        "local" => "tracked staged and unstaged changes against HEAD; excludes untracked files",
+        "codebase" => {
+            "committed files at the revision, shown as added to an empty tree; not a change"
+        }
+        _ => "hosted pull request diff",
+    }
+}
+
+/// Prepare a whole-codebase review of the committed files at `revision`,
+/// read through `scm` (a local checkout or the hosting API), with the same
+/// repository context as other reviews.
+pub async fn prepare_codebase(
+    config: &AppConfig,
+    scm: &dyn crate::scm::ScmProvider,
+    revision: String,
+    paths: &[String],
+) -> anyhow::Result<PreparedReview> {
+    let files = crate::codebase::collect(
+        scm,
+        &revision,
+        paths,
+        &config.review.ignore,
+        config.codebase.max_bytes,
+    )
+    .await?;
+    let raw = crate::codebase::diff_from_empty_tree(&files);
+    // The content bound is `codebase.max_bytes`, checked while collecting; the
+    // change-request diff limit does not apply to existing code.
+    let mut codebase_config = config.clone();
+    codebase_config.review.max_diff_bytes = usize::MAX;
+    let mut prepared = prepare(&codebase_config, &raw, revision, "codebase")?;
+    let context_configured = config.context.auto.enabled
+        || !(config.context.conventions.is_empty()
+            && config.context.specifications.is_empty()
+            && config.context.skills.is_empty()
+            && config.context.additional.is_empty());
+    if context_configured {
+        let context = review::fetch_repo_context(config, scm).await?;
+        let bytes = serde_json::to_vec(&(&prepared.snapshot_sha256, &context))?;
+        prepared.snapshot_sha256 = hex::encode(Sha256::digest(bytes));
+        prepared.repository_context = Some(context);
+    }
+    Ok(prepared)
+}
+
 pub fn prepare(
     config: &AppConfig,
     raw: &str,
@@ -437,7 +495,7 @@ pub fn prepare(
         &unreviewable_paths,
         &files,
         &chunks,
-        cururu_engine::DEFAULT_REVIEW_PROMPT,
+        instructions_for(source),
         &preferences,
         (
             config.review.policy.minimum_confidence,
@@ -452,15 +510,11 @@ pub fn prepare(
         revision,
         diff_sha256: raw_hash,
         snapshot_sha256: hex::encode(Sha256::digest(snapshot)),
-        scope: if source == "local" {
-            "tracked staged and unstaged changes against HEAD; excludes untracked files"
-        } else {
-            "hosted pull request diff"
-        },
+        scope: scope_for(source),
         ignored_paths,
         unreviewable_paths,
         truncated_paths,
-        review_instructions: cururu_engine::DEFAULT_REVIEW_PROMPT,
+        review_instructions: instructions_for(source),
         review_preferences: preferences,
         repository_context: None,
         prior_feedback: Vec::new(),

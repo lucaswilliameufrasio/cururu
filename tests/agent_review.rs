@@ -883,3 +883,128 @@ fn review_quality_scenarios_reach_the_model_intact() {
         .unwrap();
     assert!(status.success());
 }
+
+/// A codebase review reads committed files as existing code, uses the
+/// codebase prompt, and prints a readable report of the problems found.
+#[tokio::test]
+async fn api_review_codebase_reviews_committed_files_and_prints_a_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .current_dir(dir.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/app.py"),
+        "def load(path):\n    return open(path).read()\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("notes.md"), "# Notes\n").unwrap();
+    git(&["add", "."]);
+    git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "fixture",
+    ]);
+    // An uncommitted edit is not part of a codebase review.
+    std::fs::write(dir.path().join("src/app.py"), "uncommitted\n").unwrap();
+    let server = MockServer::start().await;
+    let result = json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[
+        {"severity":"medium","path":"src/app.py","line":2,"title":"File handle is never closed","message":"Each call leaks a descriptor.","suggestion":"One option is a with block.","confidence":0.9}]}).to_string();
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"choices":[{"message":{"content":result},"finish_reason":"stop"}]}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_cururu"))
+            .current_dir(dir.path())
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("CURURU_PROVIDER", "openai")
+            .env("LLM_BASE_URL", server.uri())
+            .env("LLM_API_KEY", "fixture-key")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let preview = run(&["prepare-review", "--codebase", "--path", "src/**"]);
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let prepared: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(prepared["source"], "codebase");
+    let files: Vec<&str> = prepared["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(files, ["src/app.py"]);
+    assert!(
+        prepared["chunks"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("+    return open(path).read()")
+    );
+    // A path filter needs --codebase.
+    assert!(
+        !run(&["prepare-review", "--local", "--path", "src/**"])
+            .status
+            .success()
+    );
+
+    let output = run(&[
+        "api-review",
+        "--codebase",
+        "--path",
+        "src/**",
+        "--confirm-send",
+        "--expected-snapshot",
+        prepared["snapshot_sha256"].as_str().unwrap(),
+        "--format",
+        "markdown",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert!(report.starts_with("# Cururu review report"), "{report}");
+    assert!(report.contains("1 finding(s)"), "{report}");
+    assert!(
+        report.contains("[MEDIUM] `src/app.py:2` File handle is never closed"),
+        "{report}"
+    );
+    assert!(
+        report.contains("**Suggestion:** One option is a with block."),
+        "{report}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    let body = String::from_utf8_lossy(&requests[0].body);
+    assert!(
+        body.contains("Codebase review mode"),
+        "the codebase prompt is used"
+    );
+    assert!(!body.contains("uncommitted"));
+}
