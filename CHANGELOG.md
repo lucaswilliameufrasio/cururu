@@ -40,6 +40,7 @@ All notable changes to this project will be documented in this file.
 ### Testing
 
 - Release the recorded checks lock before asserting
+
 ## [5.2.0] - 2026-11-15
 
 ### Bug Fixes
@@ -53,7 +54,6 @@ All notable changes to this project will be documented in this file.
 
 - Pin v5.1.1 OCI digest
 - Adopt Cururu v5.1.1
-- Prepare for v5.2.0
 
 ### Documentation
 
@@ -74,6 +74,7 @@ All notable changes to this project will be documented in this file.
 ### Testing
 
 - Add synthetic review-quality scenarios and a real-model runner
+
 ## [5.1.1] - 2026-11-15
 
 ### Bug Fixes
@@ -92,7 +93,6 @@ All notable changes to this project will be documented in this file.
 
 - Pin v5.1.0 OCI digest
 - Adopt Cururu v5.1.0
-- Prepare for v5.1.1
 
 ### Documentation
 
@@ -101,6 +101,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Add a ReviewBench agent adapter for the Cururu CLI
+
 ## [5.1.0] - 2026-11-13
 
 ### Bug Fixes
@@ -118,7 +119,6 @@ All notable changes to this project will be documented in this file.
 
 - Pin v5.0.1 OCI digest
 - Adopt Cururu v5.0.1
-- Prepare for v5.1.0
 
 ### Documentation
 
@@ -137,6 +137,7 @@ All notable changes to this project will be documented in this file.
 ### Testing
 
 - Cover approval, escalation, refusal and dismissal
+
 ## [5.0.1] - 2026-11-12
 
 ### Bug Fixes
@@ -154,7 +155,7 @@ All notable changes to this project will be documented in this file.
 
 - Pin v5.0.0 OCI digest
 - Adopt Cururu v5.0.0 and its approval flow
-- Prepare for v5.0.1
+
 ## [5.0.0] - 2026-11-11
 
 ### Breaking Changes
@@ -182,7 +183,6 @@ All notable changes to this project will be documented in this file.
 - Pin v4.9.0 OCI digest
 - Bump the docker-actions group across 1 directory with 2 updates
 - Install curated agent skills
-- Prepare for v5.0.0
 
 ### Documentation
 
@@ -243,6 +243,7 @@ All notable changes to this project will be documented in this file.
 ### Testing
 
 - Satisfy Rust 1.99 clippy assertions
+
 ## [4.9.0] - 2026-09-29
 
 ### Bug Fixes
@@ -253,7 +254,6 @@ All notable changes to this project will be documented in this file.
 ### Chores
 
 - Pin v4.8.0 OCI digest
-- Prepare for v4.9.0
 
 ### Documentation
 
@@ -269,6 +269,7 @@ All notable changes to this project will be documented in this file.
 ### Refactor
 
 - Preserve structured output failure reason
+
 ## [4.8.0] - 2026-09-27
 
 ### Bug Fixes
@@ -279,12 +280,12 @@ All notable changes to this project will be documented in this file.
 ### Chores
 
 - Pin v4.7.0 OCI digest
-- Prepare for v4.8.0
 - Use v4.8.0 action in workflows
 
 ### Features
 
 - Bind publishing to analyzed head SHA
+
 ## [4.7.0] - 2026-09-27
 
 ### Bug Fixes
@@ -315,7 +316,6 @@ All notable changes to this project will be documented in this file.
 
 - Pin v4.6.0 OCI digest
 - Bump taiki-e/install-action in the all-actions group
-- Prepare for v4.7.0
 
 ### Documentation
 
@@ -327,6 +327,7 @@ All notable changes to this project will be documented in this file.
 
 - Add self-hosted Cururu GitHub App and CLI
 - Include GitHub discussion in follow-up reviews
+
 ## [4.6.0] - 2026-09-17
 
 ### Bug Fixes
@@ -345,11 +346,11 @@ All notable changes to this project will be documented in this file.
 
 - Pin v4.5.0 OCI digest
 - Sync Cargo.lock with v4.5.0
-- Prepare for v4.6.0
 
 ### Documentation
 
 - Add Cururu integration guidance
+
 ## [4.5.0] - 2026-08-31
 
 ### CI / Build
@@ -371,11 +372,13 @@ All notable changes to this project will be documented in this file.
 ### Refactor
 
 - Split module by domain
+
 ## [4.4.0] - 2026-08-19
 
 ### Features
 
 - Ingest check-run annotations as evidence 
+
 ## [4.3.0] - 2026-08-19
 
 ### Chores
@@ -385,6 +388,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Strengthen finding synthesis 
+
 ## [4.2.1] - 2026-08-18
 
 ### Bug Fixes
@@ -400,6 +404,7 @@ All notable changes to this project will be documented in this file.
 - Pin v4.2.1 final OCI digest
 - Exclude non-runtime files from image context
 - Pin stable v4.2.1 OCI digest 
+
 ## [4.2.0] - 2026-08-18
 
 ### Chores
@@ -409,6 +414,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Add analyzer execution manifest 
+
 ## [4.1.0] - 2026-08-18
 
 ### Chores
@@ -418,6 +424,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Add SARIF analyzer evidence protocol
+
 ## [4.0.2] - 2026-08-18
 
 ### Chores
@@ -427,6 +434,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Broaden generic review checklist
+
 ## [4.0.1] - 2026-08-17
 
 ### Bug Fixes
@@ -437,6 +445,7 @@ All notable changes to this project will be documented in this file.
 
 - Pin v4 OCI digest
 - Release v4.0.1
+
 ## [4.0.0] - 2026-08-17
 
 ### Chores
@@ -451,6 +460,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Release Cururu v4
+
 ## [3.0.3] - 2026-08-10
 
 ### Chores
@@ -460,6 +470,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Keep branded signature only on the summary review comment
+
 ## [3.0.2] - 2026-08-10
 
 ### Chores
@@ -470,6 +481,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Add Cururu branded signature to summary and inline comments
+
 ## [3.0.1] - 2026-08-10
 
 ### Bug Fixes
@@ -480,6 +492,7 @@ All notable changes to this project will be documented in this file.
 
 - Pin v3.0.0 OCI digest in action.yml
 - Bump internal workflows to @v3
+
 ## [3.0.0] - 2026-08-10
 
 ### Breaking Changes
@@ -493,6 +506,7 @@ All notable changes to this project will be documented in this file.
 ### Documentation
 
 - Require pull-requests write permission for comment posting
+
 ## [2.0.3] - 2026-08-08
 
 ### Chores
@@ -502,6 +516,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Include GitHub error body in comment failure diagnostics
+
 ## [2.0.2] - 2026-08-08
 
 ### Bug Fixes
@@ -511,6 +526,7 @@ All notable changes to this project will be documented in this file.
 ### Chores
 
 - Pin v2.0.1 OCI digest in action.yml
+
 ## [2.0.1] - 2026-07-20
 
 ### Bug Fixes
@@ -525,6 +541,7 @@ All notable changes to this project will be documented in this file.
 ### Documentation
 
 - Update consumer example to @v2, document major tag process
+
 ## [2.0.0] - 2026-07-17
 
 ### Breaking Changes
@@ -534,6 +551,7 @@ All notable changes to this project will be documented in this file.
 ### Chores
 
 - Pin v1.2.0 OCI digest in action.yml
+
 ## [1.2.0] - 2026-07-17
 
 ### Chores
@@ -543,6 +561,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Upgrade default model to gpt-5.6-luna, add cost estimates to docs
+
 ## [1.1.0] - 2026-07-15
 
 ### Chores
@@ -552,6 +571,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Language config  via TOML + env + action input
+
 ## [1.0.5] - 2026-07-15
 
 ### Bug Fixes
@@ -565,11 +585,13 @@ All notable changes to this project will be documented in this file.
 ### Testing
 
 - 23 unit tests for config parsing 
+
 ## [1.0.3] - 2026-07-15
 
 ### Features
 
 - Multiarch amd64+arm64, image metrics in release summary
+
 ## [1.0.2] - 2026-07-15
 
 ### Chores
@@ -579,11 +601,13 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - Cargo-chef + distroless Dockerfile, fix rust-toolchain.toml to 1.97.0
+
 ## [1.0.1] - 2026-07-15
 
 ### Features
 
 - Distribute pre-built Docker image via GHCR
+
 ## [1.0.0] - 2026-07-14
 
 ### Chores
