@@ -1396,6 +1396,45 @@ impl GitHubClient {
             .map(|c| c.id))
     }
 
+    /// Open an issue and return its URL. Not retried: a lost response after
+    /// GitHub created the issue would otherwise open a duplicate.
+    pub async fn create_issue(&self, title: &str, body: &str) -> anyhow::Result<String> {
+        #[derive(Serialize)]
+        struct CreateIssue<'a> {
+            title: &'a str,
+            body: &'a str,
+        }
+        #[derive(Deserialize)]
+        struct CreatedIssue {
+            html_url: String,
+        }
+        let url = format!(
+            "{}/repos/{}/{}/issues",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo
+        );
+        let response = self
+            .client
+            .post(&url)
+            .timeout(Duration::from_secs(30))
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .bearer_auth(&self.cfg.token)
+            .json(&CreateIssue { title, body })
+            .send()
+            .await
+            .context("failed to send create issue request")?;
+        let status = response.status();
+        anyhow::ensure!(
+            status.is_success(),
+            "failed to create the GitHub issue ({status}); the workflow needs `issues: write`"
+        );
+        Ok(response
+            .json::<CreatedIssue>()
+            .await
+            .context("failed to read the created issue")?
+            .html_url)
+    }
+
     pub async fn create_issue_comment(&self, body: &str) -> anyhow::Result<()> {
         let url = format!(
             "{}/repos/{}/{}/issues/{}/comments",

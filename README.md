@@ -236,7 +236,9 @@ cururu prepare-review --codebase --path 'src/**'
 cururu api-review --codebase --path 'src/**' --confirm-send --format markdown
 ```
 
-MCP clients use `"source": "codebase"` with optional `"paths"`. The collected
+MCP clients use `"source": "codebase"` with optional `"paths"`. In GitHub
+Actions, `mode: codebase` posts the report as an issue, on demand or on a
+schedule ([example](docs/examples/cururu-codebase-review.yml)). The collected
 content is bounded by `[codebase] max_bytes` (default 1000000). See
 [codebase review](docs/codebase-review.md).
 

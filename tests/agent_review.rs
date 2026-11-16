@@ -1018,3 +1018,16 @@ async fn api_review_codebase_reviews_committed_files_and_prints_a_report() {
     );
     assert!(!body.contains("uncommitted"));
 }
+
+#[test]
+fn action_codebase_review_posts_an_issue_directly_or_after_approval() {
+    let status = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/codebase_action_smoke.py"
+        ))
+        .arg(env!("CARGO_BIN_EXE_cururu"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}

@@ -6,6 +6,7 @@ mod anthropic;
 mod app;
 mod auto_approval;
 mod codebase;
+mod codebase_action;
 mod commands;
 mod config;
 mod context;
@@ -200,6 +201,10 @@ enum Command {
     /// Publish a GitHub Action candidate from a job approved through a
     /// protected GitHub Environment.
     PublishApprovedReview,
+    /// Review the repository's committed files at the workflow's commit as
+    /// existing code and post the report as an issue (GitHub Action).
+    /// `CURURU_CODEBASE_PATHS` limits the selection with globs.
+    ReviewCodebase,
     /// Inspect a hosted review candidate and approve exactly that candidate.
     ApproveHostedReview {
         /// Pull request number (defaults to `PR_NUMBER`).
@@ -406,6 +411,15 @@ async fn main() -> anyhow::Result<()> {
             target: SetupTarget::AutoApproval { write },
         } => return setup::auto_approval(std::path::Path::new(".cururu.toml"), *write, true).await,
         Command::Status => return setup::status(std::path::Path::new(".cururu.toml")),
+        Command::ReviewCodebase => return codebase_action::review().await,
+        // A codebase report has no change request, so it is published before
+        // the change-request configuration is loaded.
+        Command::PublishApprovedReview
+            if codebase_action::is_codebase_candidate(&action_publication::candidate_path())
+                .unwrap_or(false) =>
+        {
+            return codebase_action::publish_approved_from_env().await;
+        }
         _ => {}
     }
     match &cli.command {
@@ -504,99 +518,17 @@ async fn main() -> anyhow::Result<()> {
                     "review snapshot differs from the expected snapshot; nothing was sent"
                 );
             }
-            review_input::ensure_reviewable(&prepared)?;
-            let evidence = serde_json::json!({"repository_context":prepared.repository_context, "prior_feedback":prepared.prior_feedback, "analyzer_evidence":prepared.analyzer_evidence, "suggested_changes":prepared.policy.suggested_changes});
-            let evidence_text = serde_json::to_string(&evidence)?;
-            anyhow::ensure!(
-                evidence_text.len() <= 768 * 1024,
-                "review evidence exceeds byte limit"
-            );
-            let agent: Box<dyn cururu_engine::ReviewAgent> = if matches!(
-                config.llm.provider,
-                config::LlmProvider::Anthropic
-            ) {
-                Box::new(anthropic::AnthropicAgent::new(
-                    &config.llm,
-                    prepared.review_instructions.into(),
-                    Some(
-                        serde_json::json!({"preferences":prepared.review_preferences, "evidence":evidence}),
-                    ),
-                )?)
-            } else {
-                Box::new(
-                    cururu_engine::OpenAiCompatibleAgent::new(
-                        cururu_engine::OpenAiCompatibleSettings {
-                            base_url: config.llm.base_url.clone(),
-                            api_key: config.llm.api_key.clone(),
-                            model: config.llm.model.clone(),
-                            temperature: config.llm.temperature,
-                            max_output_tokens: config.llm.max_output_tokens,
-                        },
-                        prepared.review_instructions.into(),
-                    )?
-                    .with_review_preferences(
-                        &cururu_engine::review_preferences::ReviewPreferences {
-                            language: Some(config.review.language.clone()),
-                            tone: Some(config.review.tone.clone()),
-                            technical_level: Some(config.review.technical_level.clone()),
-                            suggestion_detail: Some(config.review.suggestion_detail.clone()),
-                        },
-                    )?
-                    .with_review_context(&cururu_engine::review_context::ReviewContext {
-                        focus: config.review.policy.focus.clone(),
-                        files: vec![],
-                    })?
-                    .with_host_review_evidence(&evidence_text)?,
-                )
-            };
             eprintln!(
                 "Sending {} diff chunk(s) and configured context, prior feedback and analyzer evidence to the configured API. No review will be published.",
                 prepared.chunks.len()
             );
-            let checked =
-                review_input::review_chunks_checked(agent.as_ref(), &prepared, &prepared.chunks)
-                    .await?;
-            let unconfirmed: Vec<usize> = checked
-                .iter()
-                .zip(&prepared.chunks)
-                .filter(|(item, _)| !item.coverage_confirmed)
-                .map(|(_, chunk)| chunk.index)
-                .collect();
-            let mut coverage_unconfirmed: Vec<String> = Vec::new();
-            for chunk in prepared
-                .chunks
-                .iter()
-                .filter(|chunk| unconfirmed.contains(&chunk.index))
-            {
-                for path in &chunk.files {
-                    if !coverage_unconfirmed.contains(path) {
-                        coverage_unconfirmed.push(path.clone());
-                    }
-                }
-            }
-            if !coverage_unconfirmed.is_empty() {
-                eprintln!(
-                    "Warning: the model did not confirm reviewing {} file(s) completely; their findings were still checked.",
-                    coverage_unconfirmed.len()
-                );
-            }
-            let dropped_findings: usize = checked.iter().map(|item| item.dropped_findings).sum();
-            if dropped_findings > 0 {
-                eprintln!(
-                    "Warning: {dropped_findings} finding(s) pointed at lines outside the diff and were dropped."
-                );
-            }
-            let results: Vec<cururu_engine::ChunkResult> =
-                checked.into_iter().map(|item| item.result).collect();
-            let usage = complete_api_usage(&results);
-            let reviews = results
-                .into_iter()
-                .zip(&prepared.chunks)
-                .map(|(result, chunk)| review_input::ChunkReview {
-                    chunk_index: chunk.index,
-                    review: result.review,
-                })
-                .collect();
+            let ApiReviewRun {
+                reviews,
+                unconfirmed,
+                coverage_unconfirmed,
+                dropped_findings,
+                usage,
+            } = review_with_api(&config, &prepared).await?;
             let (_, mut current) = prepare_api_review(&target).await?;
             if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
                 review_input::attach_local_analysis(&mut current, sarif, manifest)?;
@@ -628,6 +560,7 @@ async fn main() -> anyhow::Result<()> {
                         unreviewable_paths: &current.unreviewable_paths,
                         truncated_paths: &current.truncated_paths,
                         dropped_findings,
+                        link_base: None,
                     })
                 );
                 return Ok(());
@@ -872,6 +805,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Init
         | Command::Setup { .. }
         | Command::Status
+        | Command::ReviewCodebase
         | Command::PrepareReview { .. }
         | Command::AgentReview { .. }
         | Command::ApiReview { .. }
@@ -1044,6 +978,117 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// One review of prepared input by Cururu's own call to the configured API.
+pub(crate) struct ApiReviewRun {
+    pub(crate) reviews: Vec<review_input::ChunkReview>,
+    /// Chunks whose coverage the model never reported consistently.
+    pub(crate) unconfirmed: Vec<usize>,
+    pub(crate) coverage_unconfirmed: Vec<String>,
+    pub(crate) dropped_findings: usize,
+    pub(crate) usage: Option<ApiUsage>,
+}
+
+/// Review every chunk of `prepared` with the configured provider, retrying
+/// inconsistent or cut-off chunks; the caller assembles and revalidates.
+pub(crate) async fn review_with_api(
+    config: &AppConfig,
+    prepared: &review_input::PreparedReview,
+) -> anyhow::Result<ApiReviewRun> {
+    review_input::ensure_reviewable(prepared)?;
+    let evidence = serde_json::json!({"repository_context":prepared.repository_context, "prior_feedback":prepared.prior_feedback, "analyzer_evidence":prepared.analyzer_evidence, "suggested_changes":prepared.policy.suggested_changes});
+    let evidence_text = serde_json::to_string(&evidence)?;
+    anyhow::ensure!(
+        evidence_text.len() <= 768 * 1024,
+        "review evidence exceeds byte limit"
+    );
+    let agent: Box<dyn cururu_engine::ReviewAgent> = if matches!(
+        config.llm.provider,
+        config::LlmProvider::Anthropic
+    ) {
+        Box::new(anthropic::AnthropicAgent::new(
+            &config.llm,
+            prepared.review_instructions.into(),
+            Some(
+                serde_json::json!({"preferences":prepared.review_preferences, "evidence":evidence}),
+            ),
+        )?)
+    } else {
+        Box::new(
+            cururu_engine::OpenAiCompatibleAgent::new(
+                cururu_engine::OpenAiCompatibleSettings {
+                    base_url: config.llm.base_url.clone(),
+                    api_key: config.llm.api_key.clone(),
+                    model: config.llm.model.clone(),
+                    temperature: config.llm.temperature,
+                    max_output_tokens: config.llm.max_output_tokens,
+                },
+                prepared.review_instructions.into(),
+            )?
+            .with_review_preferences(&cururu_engine::review_preferences::ReviewPreferences {
+                language: Some(config.review.language.clone()),
+                tone: Some(config.review.tone.clone()),
+                technical_level: Some(config.review.technical_level.clone()),
+                suggestion_detail: Some(config.review.suggestion_detail.clone()),
+            })?
+            .with_review_context(&cururu_engine::review_context::ReviewContext {
+                focus: config.review.policy.focus.clone(),
+                files: vec![],
+            })?
+            .with_host_review_evidence(&evidence_text)?,
+        )
+    };
+    let checked =
+        review_input::review_chunks_checked(agent.as_ref(), prepared, &prepared.chunks).await?;
+    let unconfirmed: Vec<usize> = checked
+        .iter()
+        .zip(&prepared.chunks)
+        .filter(|(item, _)| !item.coverage_confirmed)
+        .map(|(_, chunk)| chunk.index)
+        .collect();
+    let mut coverage_unconfirmed: Vec<String> = Vec::new();
+    for chunk in prepared
+        .chunks
+        .iter()
+        .filter(|chunk| unconfirmed.contains(&chunk.index))
+    {
+        for path in &chunk.files {
+            if !coverage_unconfirmed.contains(path) {
+                coverage_unconfirmed.push(path.clone());
+            }
+        }
+    }
+    if !coverage_unconfirmed.is_empty() {
+        eprintln!(
+            "Warning: the model did not confirm reviewing {} file(s) completely; their findings were still checked.",
+            coverage_unconfirmed.len()
+        );
+    }
+    let dropped_findings: usize = checked.iter().map(|item| item.dropped_findings).sum();
+    if dropped_findings > 0 {
+        eprintln!(
+            "Warning: {dropped_findings} finding(s) pointed at lines outside the diff and were dropped."
+        );
+    }
+    let results: Vec<cururu_engine::ChunkResult> =
+        checked.into_iter().map(|item| item.result).collect();
+    let usage = complete_api_usage(&results);
+    let reviews = results
+        .into_iter()
+        .zip(&prepared.chunks)
+        .map(|(result, chunk)| review_input::ChunkReview {
+            chunk_index: chunk.index,
+            review: result.review,
+        })
+        .collect();
+    Ok(ApiReviewRun {
+        reviews,
+        unconfirmed,
+        coverage_unconfirmed,
+        dropped_findings,
+        usage,
+    })
+}
+
 /// What a review reads: local tracked changes, the configured hosted PR, or
 /// the committed files of the local checkout as existing code.
 pub(crate) enum ReviewTarget {
@@ -1127,7 +1172,7 @@ fn local_review_config() -> anyhow::Result<AppConfig> {
     Ok(config)
 }
 
-async fn merge_repository_config(
+pub(crate) async fn merge_repository_config(
     config: &mut AppConfig,
     source_control: &dyn scm::ScmProvider,
 ) -> anyhow::Result<bool> {

@@ -8,9 +8,15 @@ branding:
 
 inputs:
   mode:
-    description: "prepare: review and show a candidate without commenting; publish: post an approved candidate from a job gated by a protected environment"
+    description: "prepare: review the PR and publish it, or show a candidate when publication.require_approval is on; publish: post an approved candidate from a job gated by a protected environment; codebase: review the committed files at the workflow's commit and post the report as an issue"
     required: false
     default: prepare
+  codebase_paths:
+    description: "Codebase mode: globs of committed files to review, one per line or comma separated; all files when empty"
+    required: false
+  codebase_revision:
+    description: "Codebase mode: full commit SHA to review; defaults to the workflow's commit"
+    required: false
   candidate_digest:
     description: "Publish mode: the review job's candidate_digest output"
     required: false
@@ -60,7 +66,9 @@ inputs:
 
 outputs:
   review_status:
-    description: "pending_approval, not_approvable or skipped_diff_limit in prepare mode; completed in publish mode. None of these is a code approval"
+    description: "completed when published; pending_approval, not_approvable or skipped_diff_limit in prepare mode with publication.require_approval; completed in publish mode. None of these is a code approval"
+  issue_url:
+    description: "Codebase mode: URL of the issue with the report, once published"
   auto_approval:
     description: "Opt-in auto-approval result: approved, needs_human, disabled or not_evaluated"
   auto_approval_reasons:
@@ -102,7 +110,7 @@ runs:
   using: "docker"
   image: docker://ghcr.io/lucaswilliameufrasio/cururu@sha256:91f773eec2fd2b54776b87d7e294167d7fbedf0f13560ec596c38c5c0eb5947d
   args:
-    - ${{ inputs.mode == 'publish' && 'publish-approved-review' || 'review' }}
+    - ${{ inputs.mode == 'publish' && 'publish-approved-review' || inputs.mode == 'codebase' && 'review-codebase' || 'review' }}
   env:
     GITHUB_TOKEN: ${{ inputs.github_token }}
     CURURU_SHARED_CONFIG_TOKEN: ${{ inputs.shared_config_token }}
@@ -116,5 +124,7 @@ runs:
     CURURU_PROFILE: ${{ inputs.cururu_profile }}
     CURURU_FAIL_ON: ${{ inputs.cururu_fail_on }}
     CURURU_CANDIDATE_DIGEST: ${{ inputs.candidate_digest }}
+    CURURU_CODEBASE_PATHS: ${{ inputs.codebase_paths }}
+    CURURU_CODEBASE_REVISION: ${{ inputs.codebase_revision }}
     CURURU_CANDIDATE_PATH: ${{ inputs.candidate_path }}
     CURURU_APPROVAL_ENVIRONMENT: ${{ inputs.approval_environment }}

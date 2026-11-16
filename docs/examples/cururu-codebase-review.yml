@@ -1,0 +1,85 @@
+# Example: add this file as .github/workflows/cururu-codebase-review.yml to
+# review the repository's committed files as existing code and post the report
+# as an issue. It runs on demand, and optionally on a schedule.
+#
+# Requirements:
+#   1. Add LLM_API_KEY as a repository secret.
+#   2. The selection is bounded by [codebase] max_bytes (default 1000000) in
+#      .cururu.toml; narrow it with the paths input.
+#   3. Optional: with [publication] require_approval = true, the issue is only
+#      opened after a required reviewer of the cururu-publish environment
+#      approves the publish job. Without it, the issue is opened directly.
+
+name: Cururu Codebase Review
+
+on:
+  workflow_dispatch:
+    inputs:
+      paths:
+        description: "Globs of files to review, one per line or comma separated; empty for all files"
+        required: false
+        default: ""
+  # Uncomment for a periodic review of the default branch.
+  # schedule:
+  #   - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+  issues: write
+  actions: read
+
+concurrency:
+  group: cururu-codebase-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      review_status: ${{ steps.review.outputs.review_status }}
+      candidate_digest: ${{ steps.review.outputs.candidate_digest }}
+      candidate_uploaded: ${{ steps.keep_candidate.outcome }}
+      issue_url: ${{ steps.review.outputs.issue_url }}
+    steps:
+      - name: Review codebase
+        id: review
+        uses: lucaswilliameufrasio/cururu@dcb0b3c25e6774fb67d6dea19453039e2f1ac0c6 # v5.2.0
+        with:
+          mode: codebase
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          llm_api_key: ${{ secrets.LLM_API_KEY }}
+          codebase_paths: ${{ inputs.paths || '' }}
+      - name: Keep the report for the publish job
+        id: keep_candidate
+        if: ${{ !cancelled() && steps.review.outputs.review_status == 'pending_approval' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cururu-candidate
+          path: cururu-candidate.json
+          retention-days: 7
+
+  publish:
+    needs: review
+    if: >-
+      ${{ !cancelled() &&
+          needs.review.outputs.review_status == 'pending_approval' &&
+          needs.review.outputs.candidate_uploaded == 'success' }}
+    # Required reviewers on this environment approve the exact report.
+    environment: cururu-publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cururu-candidate
+      - name: Open the approved report as an issue
+        uses: lucaswilliameufrasio/cururu@dcb0b3c25e6774fb67d6dea19453039e2f1ac0c6 # v5.2.0
+        with:
+          mode: publish
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          candidate_digest: ${{ needs.review.outputs.candidate_digest }}
