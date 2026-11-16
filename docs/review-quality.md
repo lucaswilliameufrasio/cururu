@@ -27,10 +27,14 @@ found."; it lists the files that were not fully reviewed.
 A change larger than one chunk is reviewed chunk by chunk, so a model can
 claim that something is unused or never called when its callers were sent in
 another chunk (PR #55 got such a finding). Each chunk of a multi-chunk change
-therefore ends with a bounded list (at most 25 entries, 3 per name) of where
-the names it defines appear in the other chunks, as `path:line` and the line.
+therefore ends with a list (at most 25 entries, 3 per name) of where the names
+it defines appear in the other chunks, as `path:line` and the line. Chunking
+keeps room for it (an eighth of `review.chunk_bytes`, at most 4 KB), so an
+annotated chunk stays within `chunk_bytes`; when the room is short, every name
+gets one mention before any gets a second, and a call is listed before another
+definition of the same name.
 Definitions are found without a language parser: a line that starts, after
-modifiers such as `pub` or `export`, with a keyword such as `fn`, `def`,
+modifiers such as `pub`, `pub(in path)` or `export`, with a keyword such as `fn`, `def`,
 `function`, `func`, `class`, `struct`, `enum`, `trait`, `interface` or `type`.
 Names shorter than four characters are left out. The prompt asks the model to
 check this list before claiming something is unused. It is a hint, not a
