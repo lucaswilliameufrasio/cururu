@@ -22,6 +22,21 @@ high-confidence (the policy's `minimum_confidence`, 0.65 by default, decides
 what is kept), and a review that left files out never reads as "No issues
 found."; it lists the files that were not fully reviewed.
 
+## Cross-chunk references
+
+A change larger than one chunk is reviewed chunk by chunk, so a model can
+claim that something is unused or never called when its callers were sent in
+another chunk (PR #55 got such a finding). Each chunk of a multi-chunk change
+therefore ends with a bounded list (at most 25 entries, 3 per name) of where
+the names it defines appear in the other chunks, as `path:line` and the line.
+Definitions are found without a language parser: a line that starts, after
+modifiers such as `pub` or `export`, with a keyword such as `fn`, `def`,
+`function`, `func`, `class`, `struct`, `enum`, `trait`, `interface` or `type`.
+Names shorter than four characters are left out. The prompt asks the model to
+check this list before claiming something is unused. It is a hint, not a
+call graph: methods defined without a keyword (JavaScript class methods, Go
+methods with a receiver) are not listed.
+
 ## Two kinds of evidence
 
 | Evidence | What it establishes | What it does not |

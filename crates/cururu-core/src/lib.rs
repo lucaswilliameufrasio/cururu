@@ -12,6 +12,7 @@ mod analysis_annotations;
 mod analysis_findings;
 mod analysis_paths;
 mod context;
+mod cross_refs;
 mod diff_limits;
 mod diff_ops;
 mod evaluation;
@@ -27,6 +28,7 @@ pub use analysis_annotations::annotations_to_findings;
 pub use analysis_findings::sarif_finding;
 pub use analysis_paths::normalize_analysis_path;
 pub use context::{ContextFile, ContextStore, context_path_matches};
+pub use cross_refs::annotate_cross_references;
 pub use diff_limits::{ReviewInputError, ensure_review_diff_limits};
 pub use diff_ops::{chunk_files, is_valid_anchor, truncated_paths};
 pub use evaluation::{

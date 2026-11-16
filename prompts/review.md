@@ -58,6 +58,10 @@ Analysis quality:
   scenarios that depend on behavior the diff and context do not show, such as
   retries, redelivery, concurrent callers, or a caller passing a particular
   input.
+- A chunk may end with `[cururu: names defined in this chunk also appear in
+  other chunks of this change]` and a list of those mentions. Check it before
+  claiming that something is unused, never called or not wired in: its
+  callers may have been sent in another chunk.
 - A large file can be split into parts reviewed separately, each starting with
   `[cururu: part N/M of this file; ...]`. Lines removed in one part may be
   replaced in another, so do not conclude from one part that content was
