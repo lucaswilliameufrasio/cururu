@@ -44,7 +44,7 @@ jobs:
     steps:
       - name: Review codebase
         id: review
-        uses: lucaswilliameufrasio/cururu@dcb0b3c25e6774fb67d6dea19453039e2f1ac0c6 # v5.2.0
+        uses: lucaswilliameufrasio/cururu@3bc0f62ca0bd007149ad1347dc351c974e633af7 # v6.0.0
         with:
           mode: codebase
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -78,7 +78,7 @@ jobs:
         with:
           name: cururu-candidate
       - name: Open the approved report as an issue
-        uses: lucaswilliameufrasio/cururu@dcb0b3c25e6774fb67d6dea19453039e2f1ac0c6 # v5.2.0
+        uses: lucaswilliameufrasio/cururu@3bc0f62ca0bd007149ad1347dc351c974e633af7 # v6.0.0
         with:
           mode: publish
           github_token: ${{ secrets.GITHUB_TOKEN }}
