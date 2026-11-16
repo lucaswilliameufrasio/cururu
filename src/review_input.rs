@@ -466,11 +466,12 @@ pub fn prepare(
         }
         return Err(error.into());
     }
-    let chunks = diff::chunk_files(
+    let mut chunks = diff::chunk_files(
         &files,
         config.review.chunk_bytes,
         config.review.max_diff_bytes,
     );
+    cururu_core::annotate_cross_references(&mut chunks);
     let truncated_paths = diff::truncated_paths(&files, config.review.chunk_bytes);
     let raw_hash = hex::encode(Sha256::digest(raw.as_bytes()));
     let preferences = serde_json::json!({
