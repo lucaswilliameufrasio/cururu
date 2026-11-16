@@ -62,18 +62,18 @@ async fn handle(request: Value) -> Option<Value> {
         "ping" => json!({}),
         "tools/list" => json!({"tools":[{
             "name":"prepare_review",
-            "description":"Collect bounded review input for a local tracked diff or configured GitHub PR. This can expose source code to the host; use only when requested by the user. Local excludes untracked files. Does not invoke a model or publish.",
-            "inputSchema":{"type":"object","properties":{"source":{"type":"string","enum":["local","pr"]}},"required":["source"],"additionalProperties":false},
+            "description":"Collect bounded review input for a local tracked diff, a configured GitHub PR, or the committed files of the local checkout reviewed as existing code (source `codebase`, optionally limited by `paths` globs). This can expose source code to the host; use only when requested by the user. Local excludes untracked files. Does not invoke a model or publish.",
+            "inputSchema":{"type":"object","properties":{"source":{"type":"string","enum":["local","pr","codebase"]},"paths":{"type":"array","items":{"type":"string"},"maxItems":50,"description":"Codebase only: globs of committed files to review; all files when absent."}},"required":["source"],"additionalProperties":false},
             "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}
         },{
             "name":"validate_review",
             "description":"Validate finding structure and changed-file/line anchors against a freshly collected matching effective snapshot. This does not verify correctness, approve, or publish the review.",
-            "inputSchema":{"type":"object","properties":{"source":{"type":"string","enum":["local","pr"]},"snapshot_sha256":{"type":"string"},"review":{"type":"object"}},"required":["source","snapshot_sha256","review"],"additionalProperties":false},
+            "inputSchema":{"type":"object","properties":{"source":{"type":"string","enum":["local","pr","codebase"]},"paths":{"type":"array","items":{"type":"string"},"maxItems":50,"description":"Codebase only: globs of committed files to review; all files when absent."},"snapshot_sha256":{"type":"string"},"review":{"type":"object"}},"required":["source","snapshot_sha256","review"],"additionalProperties":false},
             "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}
         },{
             "name":"assemble_review",
             "description":"Validate and combine one ordered result for every chunk of a matching current snapshot. Does not judge correctness, approve, or publish.",
-            "inputSchema":{"type":"object","properties":{"source":{"type":"string","enum":["local","pr"]},"snapshot_sha256":{"type":"string"},"reviews":{"type":"array","items":{"type":"object","properties":{"chunk_index":{"type":"integer"},"review":{"type":"object"}},"required":["chunk_index","review"],"additionalProperties":false}}},"required":["source","snapshot_sha256","reviews"],"additionalProperties":false},
+            "inputSchema":{"type":"object","properties":{"source":{"type":"string","enum":["local","pr","codebase"]},"paths":{"type":"array","items":{"type":"string"},"maxItems":50,"description":"Codebase only: globs of committed files to review; all files when absent."},"snapshot_sha256":{"type":"string"},"reviews":{"type":"array","items":{"type":"object","properties":{"chunk_index":{"type":"integer"},"review":{"type":"object"}},"required":["chunk_index","review"],"additionalProperties":false}}},"required":["source","snapshot_sha256","reviews"],"additionalProperties":false},
             "annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}
         }]}),
         "tools/call" => {
@@ -84,7 +84,8 @@ async fn handle(request: Value) -> Option<Value> {
                 .and_then(Value::as_str);
             let count = arguments
                 .and_then(Value::as_object)
-                .map_or(0, serde_json::Map::len);
+                .map_or(0, serde_json::Map::len)
+                - usize::from(arguments.and_then(|value| value.get("paths")).is_some());
             let valid_shape = (name == Some("prepare_review") && count == 1)
                 || (name == Some("validate_review")
                     && count == 3
@@ -100,12 +101,12 @@ async fn handle(request: Value) -> Option<Value> {
                         .and_then(Value::as_str)
                         .is_some()
                     && arguments.and_then(|v| v.get("reviews")).is_some());
-            if !valid_shape || !matches!(source, Some("local" | "pr")) {
+            let Some(target) = review_target(source, arguments).filter(|_| valid_shape) else {
                 return Some(
                     json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":"Invalid tool or arguments"}}),
                 );
-            }
-            match crate::prepare_review_input(source == Some("local")).await {
+            };
+            match crate::prepare_review_input(&target).await {
                 Ok(prepared) => {
                     if name == Some("assemble_review") {
                         return Some(
@@ -122,7 +123,7 @@ async fn handle(request: Value) -> Option<Value> {
                     json!({"content":[{"type":"text","text":text}],"isError":false})
                 }
                 Err(_) => {
-                    json!({"content":[{"type":"text","text":"Unable to prepare review input. Check repository access, configuration, diff limits and revision; no review was performed."}],"isError":true})
+                    json!({"content":[{"type":"text","text":"Unable to prepare review input. Check repository access, configuration, diff or codebase limits (codebase.max_bytes; narrow it with paths) and revision; no review was performed."}],"isError":true})
                 }
             }
         }
@@ -133,6 +134,25 @@ async fn handle(request: Value) -> Option<Value> {
         }
     };
     Some(json!({"jsonrpc":"2.0","id":id,"result":result}))
+}
+
+/// The review target named by a tool call. `paths` (at most 50 globs) is
+/// accepted only for a codebase review.
+fn review_target(source: Option<&str>, arguments: Option<&Value>) -> Option<crate::ReviewTarget> {
+    let paths = arguments.and_then(|value| value.get("paths"));
+    match (source?, paths) {
+        ("local", None) => Some(crate::ReviewTarget::Local),
+        ("pr", None) => Some(crate::ReviewTarget::Pr),
+        ("codebase", None) => Some(crate::ReviewTarget::Codebase(Vec::new())),
+        ("codebase", Some(value)) => value
+            .as_array()
+            .filter(|items| items.len() <= 50)?
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .map(crate::ReviewTarget::Codebase),
+        _ => None,
+    }
 }
 
 fn validate(arguments: Option<&Value>, prepared: &crate::review_input::PreparedReview) -> Value {

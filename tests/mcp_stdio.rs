@@ -204,3 +204,99 @@ fn stdio_server_prepares_local_fixture_without_non_protocol_stdout() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// MCP can prepare a codebase review of committed files, optionally limited
+/// by `paths`, and validate a review against it; `paths` is refused for other
+/// sources.
+#[test]
+fn stdio_server_prepares_and_validates_a_codebase_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .current_dir(dir.path())
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/old.py"), "x = 1\ny = 2\n").unwrap();
+    std::fs::write(dir.path().join("README.md"), "# Old project\n").unwrap();
+    git(&["add", "."]);
+    git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "fixture",
+    ]);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cururu"))
+        .arg("mcp")
+        .current_dir(dir.path())
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut call = |id: u64, name: &str, arguments: serde_json::Value| -> serde_json::Value {
+        writeln!(stdin, "{}", serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}})).unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap()
+    };
+    let prepared = call(
+        1,
+        "prepare_review",
+        serde_json::json!({"source":"codebase","paths":["src/**"]}),
+    );
+    assert_eq!(prepared["result"]["isError"], false, "{prepared}");
+    let input: serde_json::Value =
+        serde_json::from_str(prepared["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(input["source"], "codebase");
+    assert_eq!(input["files"].as_array().unwrap().len(), 1);
+    assert!(
+        input["review_instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Codebase review mode")
+    );
+    let snapshot = input["snapshot_sha256"].as_str().unwrap();
+    let review = serde_json::json!({"model":"host","files_reviewed":1,"summary":"ok","findings":[
+        {"severity":"low","path":"src/old.py","line":2,"title":"t","message":"m","suggestion":"s","confidence":0.9}]});
+    let validated = call(
+        2,
+        "validate_review",
+        serde_json::json!({"source":"codebase","paths":["src/**"],"snapshot_sha256":snapshot,"review":review}),
+    );
+    assert_eq!(validated["result"]["isError"], false, "{validated}");
+    // A line outside the selected file is still rejected.
+    let mut outside = review;
+    outside["findings"][0]["line"] = serde_json::json!(9);
+    let rejected = call(
+        4,
+        "validate_review",
+        serde_json::json!({"source":"codebase","paths":["src/**"],"snapshot_sha256":snapshot,"review":outside}),
+    );
+    assert_eq!(rejected["result"]["isError"], true, "{rejected}");
+    // `paths` belongs to codebase reviews only.
+    let refused = call(
+        3,
+        "prepare_review",
+        serde_json::json!({"source":"local","paths":["src/**"]}),
+    );
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    drop(stdin);
+    child.wait().unwrap();
+}

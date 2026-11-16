@@ -5,6 +5,7 @@ mod analysis;
 mod anthropic;
 mod app;
 mod auto_approval;
+mod codebase;
 mod commands;
 mod config;
 mod context;
@@ -217,11 +218,17 @@ enum Command {
     /// Prepare a bounded, read-only review input without invoking an agent.
     PrepareReview {
         /// Review tracked staged and unstaged changes against HEAD, not untracked files.
-        #[arg(long, conflicts_with = "pr", required_unless_present = "pr")]
+        #[arg(long, conflicts_with_all = ["pr", "codebase"], required_unless_present_any = ["pr", "codebase"])]
         local: bool,
         /// Review the configured hosted change request.
-        #[arg(long, conflicts_with = "local", required_unless_present = "local")]
+        #[arg(long, conflicts_with_all = ["local", "codebase"], required_unless_present_any = ["local", "codebase"])]
         pr: bool,
+        /// Review the committed files at HEAD as existing code, not a change.
+        #[arg(long, conflicts_with_all = ["local", "pr"])]
+        codebase: bool,
+        /// Limit a codebase review to files matching this glob (repeatable).
+        #[arg(long = "path")]
+        paths: Vec<String>,
         /// Preview an explicitly selected local SARIF file.
         #[arg(long, requires = "analysis_manifest")]
         sarif: Option<std::path::PathBuf>,
@@ -254,8 +261,17 @@ enum Command {
     /// Review local changes or a hosted PR using the configured API, without publishing.
     ApiReview {
         /// Review the configured hosted PR instead of local tracked changes.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "codebase")]
         pr: bool,
+        /// Review the committed files at HEAD as existing code, not a change.
+        #[arg(long, conflicts_with = "pr")]
+        codebase: bool,
+        /// Limit a codebase review to files matching this glob (repeatable).
+        #[arg(long = "path")]
+        paths: Vec<String>,
+        /// Output format: the JSON receipt, or a readable report of the findings.
+        #[arg(long, value_enum, default_value_t = ReportFormat::Json)]
+        format: ReportFormat,
         /// Confirm sending the review input to the configured API provider.
         #[arg(long)]
         confirm_send: bool,
@@ -444,11 +460,14 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::PrepareReview {
             local,
+            codebase,
+            paths,
             sarif,
             analysis_manifest,
             ..
         } => {
-            let mut prepared = prepare_review_input(*local).await?;
+            let target = ReviewTarget::from_flags(*local, *codebase, paths)?;
+            let mut prepared = prepare_review_input(&target).await?;
             if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
                 review_input::attach_local_analysis(&mut prepared, sarif, manifest)?;
             }
@@ -457,6 +476,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::ApiReview {
             pr,
+            codebase,
+            paths,
+            format,
             confirm_send,
             expected_snapshot,
             sarif,
@@ -466,7 +488,12 @@ async fn main() -> anyhow::Result<()> {
                 *confirm_send,
                 "sending source code requires --confirm-send; inspect prepare-review first"
             );
-            let (config, mut prepared) = prepare_api_review(*pr).await?;
+            let target = if *pr {
+                ReviewTarget::from_flags(false, false, paths)?
+            } else {
+                ReviewTarget::from_flags(true, *codebase, paths)?
+            };
+            let (config, mut prepared) = prepare_api_review(&target).await?;
             if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
                 review_input::attach_local_analysis(&mut prepared, sarif, manifest)?;
             }
@@ -570,7 +597,7 @@ async fn main() -> anyhow::Result<()> {
                     review: result.review,
                 })
                 .collect();
-            let (_, mut current) = prepare_api_review(*pr).await?;
+            let (_, mut current) = prepare_api_review(&target).await?;
             if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
                 review_input::attach_local_analysis(&mut current, sarif, manifest)?;
             }
@@ -589,6 +616,22 @@ async fn main() -> anyhow::Result<()> {
                 ignored_paths: &current.ignored_paths,
                 review: &result,
             };
+            if *format == ReportFormat::Markdown {
+                print!(
+                    "{}",
+                    output::render_report(&output::ReportInput {
+                        review: &result,
+                        scope: current.scope,
+                        revision: &current.revision,
+                        coverage_unconfirmed: &coverage_unconfirmed,
+                        ignored_paths: &current.ignored_paths,
+                        unreviewable_paths: &current.unreviewable_paths,
+                        truncated_paths: &current.truncated_paths,
+                        dropped_findings,
+                    })
+                );
+                return Ok(());
+            }
             println!(
                 "{}",
                 serde_json::to_string_pretty(&ApiReviewReceipt {
@@ -1001,31 +1044,71 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn prepare_api_review(pr: bool) -> anyhow::Result<(AppConfig, review_input::PreparedReview)> {
-    if pr {
-        let mut config = AppConfig::from_env()?;
-        let scm = github::GitHubClient::from_scm_config(&config.source_control)?;
-        merge_repository_config(&mut config, &scm).await?;
-        let prepared = review_input::prepare_agent_pr(&config, &scm).await?;
-        Ok((config, prepared))
-    } else {
-        let config = local_review_config()?;
-        let prepared =
-            review_input::prepare_local_with_context(&config, std::path::Path::new(".")).await?;
-        Ok((config, prepared))
+/// What a review reads: local tracked changes, the configured hosted PR, or
+/// the committed files of the local checkout as existing code.
+pub(crate) enum ReviewTarget {
+    Local,
+    Pr,
+    Codebase(Vec<String>),
+}
+
+impl ReviewTarget {
+    /// clap counts a boolean flag's default as present, so `requires` cannot
+    /// tie `--path` to `--codebase`; reject a path filter here instead.
+    fn from_flags(local: bool, codebase: bool, paths: &[String]) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            codebase || paths.is_empty(),
+            "--path selects files for a codebase review; add --codebase"
+        );
+        Ok(if codebase {
+            Self::Codebase(paths.to_vec())
+        } else if local {
+            Self::Local
+        } else {
+            Self::Pr
+        })
     }
 }
 
-async fn prepare_review_input(local: bool) -> anyhow::Result<review_input::PreparedReview> {
-    if local {
-        let config = local_review_config()?;
-        review_input::prepare_local_with_context(&config, std::path::Path::new(".")).await
-    } else {
-        let mut config = AppConfig::from_env()?;
-        let scm = github::GitHubClient::from_scm_config(&config.source_control)?;
-        merge_repository_config(&mut config, &scm).await?;
-        review_input::prepare_agent_pr(&config, &scm).await
+/// Output of `api-review`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum ReportFormat {
+    Json,
+    Markdown,
+}
+
+async fn prepare_api_review(
+    target: &ReviewTarget,
+) -> anyhow::Result<(AppConfig, review_input::PreparedReview)> {
+    match target {
+        ReviewTarget::Pr => {
+            let mut config = AppConfig::from_env()?;
+            let scm = github::GitHubClient::from_scm_config(&config.source_control)?;
+            merge_repository_config(&mut config, &scm).await?;
+            let prepared = review_input::prepare_agent_pr(&config, &scm).await?;
+            Ok((config, prepared))
+        }
+        ReviewTarget::Local => {
+            let config = local_review_config()?;
+            let prepared =
+                review_input::prepare_local_with_context(&config, std::path::Path::new("."))
+                    .await?;
+            Ok((config, prepared))
+        }
+        ReviewTarget::Codebase(paths) => {
+            let config = local_review_config()?;
+            let local = local_git::LocalGit::new(".");
+            let revision = scm::ScmProvider::fetch_head_sha(&local).await?;
+            let prepared = review_input::prepare_codebase(&config, &local, revision, paths).await?;
+            Ok((config, prepared))
+        }
     }
+}
+
+pub(crate) async fn prepare_review_input(
+    target: &ReviewTarget,
+) -> anyhow::Result<review_input::PreparedReview> {
+    Ok(prepare_api_review(target).await?.1)
 }
 
 fn local_review_config() -> anyhow::Result<AppConfig> {

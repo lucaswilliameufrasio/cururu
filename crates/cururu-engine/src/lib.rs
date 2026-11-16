@@ -35,6 +35,13 @@ pub fn more_output_tokens(configured: u32) -> u32 {
 
 pub const DEFAULT_REVIEW_PROMPT: &str = include_str!("../../../prompts/review.md");
 
+/// The canonical prompt plus the rules for reviewing existing code, used when
+/// the input is a whole codebase instead of a change.
+pub const CODEBASE_REVIEW_PROMPT: &str = concat!(
+    include_str!("../../../prompts/review.md"),
+    include_str!("../../../prompts/codebase.md")
+);
+
 #[derive(Debug, Clone)]
 pub struct ChunkResult {
     pub review: ReviewResult,

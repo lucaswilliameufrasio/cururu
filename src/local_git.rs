@@ -154,16 +154,24 @@ impl ScmProvider for LocalGit {
         .trim()
         .parse()
         .context("invalid git object size")?;
-        anyhow::ensure!(
-            size <= MAX_CONTEXT_FILE_BYTES,
-            "repository file is too large for context"
-        );
+        if size > MAX_CONTEXT_FILE_BYTES {
+            return Err(UnreadableFile::TooLarge.into());
+        }
         String::from_utf8(
             self.git(&["cat-file", "blob", &object], MAX_CONTEXT_FILE_BYTES)
                 .await?,
         )
-        .context("repository file is not UTF-8 text")
+        .map_err(|_| UnreadableFile::NotText.into())
     }
+}
+
+/// A committed file that exists but cannot be read as review text.
+#[derive(Debug, thiserror::Error)]
+pub enum UnreadableFile {
+    #[error("repository file is too large for context")]
+    TooLarge,
+    #[error("repository file is not UTF-8 text")]
+    NotText,
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 mod analysis;
 mod auto_approval;
+mod codebase;
 mod context;
 mod env;
 mod github;
@@ -15,6 +16,7 @@ mod tests;
 
 pub use analysis::AnalysisConfig;
 pub use auto_approval::AutoApprovalConfig;
+pub use codebase::CodebaseConfig;
 pub use context::ContextConfig;
 pub use github::GitHubConfig;
 pub use provider::{LlmConfig, LlmProvider};
@@ -84,6 +86,7 @@ pub struct AppConfig {
     pub analysis: AnalysisConfig,
     pub auto_approval: AutoApprovalConfig,
     pub publication: PublicationConfig,
+    pub codebase: CodebaseConfig,
     pub evaluator: EvaluatorConfig,
 }
 
@@ -201,6 +204,7 @@ impl AppConfig {
             analysis: AnalysisConfig::default(),
             auto_approval: AutoApprovalConfig::default(),
             publication: PublicationConfig::default(),
+            codebase: CodebaseConfig::default(),
             evaluator: EvaluatorConfig {
                 mode: evaluator_mode,
                 api_key: env::env_optional("TYPESAFE_API_KEY").unwrap_or_default(),
@@ -528,6 +532,10 @@ impl AppConfig {
         }
         if let Some(v) = parsed.publication.and_then(|p| p.require_approval) {
             self.publication.require_approval = v;
+        }
+        if let Some(v) = parsed.codebase.and_then(|c| c.max_bytes) {
+            anyhow::ensure!(v > 0, "codebase.max_bytes must be positive");
+            self.codebase.max_bytes = v;
         }
 
         Ok(())

@@ -175,6 +175,87 @@ fn render_overview(output: &ReviewOutput, out: &mut String) {
     }
 }
 
+/// What a readable `api-review` report shows.
+pub struct ReportInput<'a> {
+    pub review: &'a crate::agent::ReviewResult,
+    pub scope: &'a str,
+    pub revision: &'a str,
+    pub coverage_unconfirmed: &'a [String],
+    /// Paths excluded by `review.ignore`.
+    pub ignored_paths: &'a [String],
+    pub unreviewable_paths: &'a [String],
+    pub truncated_paths: &'a [String],
+    pub dropped_findings: usize,
+}
+
+/// A plain Markdown list of the problems found, for reading in a terminal or
+/// an agent; nothing in it is meant to be published.
+#[must_use]
+pub fn render_report(input: &ReportInput<'_>) -> String {
+    let mut out = String::from("# Cururu review report\n\n");
+    let _ = writeln!(out, "Scope: {}  ", input.scope);
+    let _ = writeln!(out, "Revision: `{}`\n", input.revision);
+    let findings = &input.review.findings;
+    if findings.is_empty() {
+        out.push_str(
+            if input.unreviewable_paths.is_empty()
+                && input.truncated_paths.is_empty()
+                && input.coverage_unconfirmed.is_empty()
+                && input.dropped_findings == 0
+            {
+                "No issues found.\n"
+            } else {
+                "No issues found in the reviewed files; see below what was not fully reviewed.\n"
+            },
+        );
+    } else {
+        let _ = writeln!(out, "{} finding(s):\n", findings.len());
+    }
+    for (index, finding) in findings.iter().enumerate() {
+        let location = finding.line.map_or_else(
+            || finding.path.clone(),
+            |line| format!("{}:{line}", finding.path),
+        );
+        let _ = writeln!(
+            out,
+            "## {}. [{}] `{location}` {}\n\n{}\n\n**Suggestion:** {}\n\n_Confidence {:.2}_\n",
+            index + 1,
+            finding.severity.to_uppercase(),
+            finding.title,
+            finding.message,
+            finding.suggestion,
+            finding.confidence
+        );
+    }
+    for (label, paths) in [
+        (
+            "Not reviewed (binary, unreadable or oversized files, submodule changes, or unsafe paths)",
+            input.unreviewable_paths,
+        ),
+        (
+            "Partially reviewed (a line longer than review.chunk_bytes was cut)",
+            input.truncated_paths,
+        ),
+        (
+            "Coverage not confirmed by the model",
+            input.coverage_unconfirmed,
+        ),
+        ("Excluded by review.ignore", input.ignored_paths),
+    ] {
+        if !paths.is_empty() {
+            let _ = writeln!(out, "**{label}:** {}\n", paths.join(", "));
+        }
+    }
+    if input.dropped_findings > 0 {
+        let _ = writeln!(
+            out,
+            "**Findings dropped:** {} placed on lines outside the input.\n",
+            input.dropped_findings
+        );
+    }
+    out
+}
+
 fn render_not_reviewed(output: &ReviewOutput, out: &mut String) {
     if output.dropped_findings > 0 {
         let _ = write!(
