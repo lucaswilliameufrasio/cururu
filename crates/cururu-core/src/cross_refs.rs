@@ -63,15 +63,10 @@ fn new_lines(text: &str) -> Vec<NewLine<'_>> {
                 .and_then(|range| range.split(',').next()?.parse().ok());
         } else if let Some(line) = next {
             match raw.as_bytes().first() {
-                Some(b'+') if !raw.starts_with("+++ ") => {
-                    lines.push(NewLine {
-                        path,
-                        line,
-                        text: &raw[1..],
-                    });
-                    next = Some(line.saturating_add(1));
-                }
-                Some(b' ') => {
+                // Added and kept lines. Inside a hunk a `+++ ` line is an
+                // added line whose content starts with `++ `; file headers
+                // only come before a hunk.
+                Some(b'+' | b' ') => {
                     lines.push(NewLine {
                         path,
                         line,
@@ -296,6 +291,20 @@ mod tests {
         assert!(!note.contains("- `text`"), "{note}");
         // `impl Display for Report` uses `Display`; it does not define it.
         assert!(!note.contains("- `Display`"), "{note}");
+    }
+
+    #[test]
+    fn added_lines_starting_with_plus_signs_keep_line_numbers() {
+        let mut chunks = vec![
+            chunk(0, "a.py", "@@ -0,0 +1 @@\n+def load_config():\n"),
+            chunk(1, "b.md", "@@ -0,0 +1,2 @@\n+++ heading\n+load_config()\n"),
+        ];
+        annotate_cross_references(&mut chunks);
+        assert!(
+            chunks[0].text.contains("- `load_config`: b.md:2"),
+            "{}",
+            chunks[0].text
+        );
     }
 
     #[test]
