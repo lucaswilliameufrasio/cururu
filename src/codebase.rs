@@ -7,6 +7,9 @@ use std::fmt::Write as _;
 
 /// Default bound on the file content collected for one codebase review.
 pub const DEFAULT_MAX_BYTES: usize = 1_000_000;
+/// Most files read for one codebase review; empty and binary files do not
+/// count toward the byte bound but still cost a read each.
+pub const MAX_FILES: usize = 5_000;
 
 /// The selection is larger than `codebase.max_bytes`.
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +32,16 @@ pub enum CodebaseFile {
     Binary {
         path: String,
     },
+    /// A path that cannot be written into a diff header safely (a control
+    /// character such as a newline, or ` b/`); left out and reported.
+    Skipped {
+        path: String,
+    },
+}
+
+/// Whether `path` can be written into a `diff --git` header unambiguously.
+fn header_safe(path: &str) -> bool {
+    !path.chars().any(char::is_control) && !path.contains(" b/")
 }
 
 /// Diff that adds every file to an empty tree. Empty files are left out:
@@ -38,6 +51,7 @@ pub fn diff_from_empty_tree(files: &[CodebaseFile]) -> String {
     let mut diff = String::new();
     for file in files {
         match file {
+            CodebaseFile::Skipped { .. } => {}
             CodebaseFile::Binary { path } => {
                 let _ = write!(
                     diff,
@@ -101,11 +115,22 @@ pub async fn collect(
         !paths.is_empty(),
         "no committed file matches the codebase selection"
     );
+    anyhow::ensure!(
+        paths.len() <= MAX_FILES,
+        "the selection has {} files, more than {MAX_FILES}; select fewer paths (for example --path 'src/**')",
+        paths.len()
+    );
     let mut total = 0usize;
     let mut files = Vec::with_capacity(paths.len());
     for path in paths {
+        if !header_safe(&path) {
+            files.push(CodebaseFile::Skipped { path });
+            continue;
+        }
         let content = scm.fetch_file_at_ref(&path, revision).await;
         let file = match content {
+            // The hosting API decodes content lossily, so U+FFFD marks bytes
+            // that were not UTF-8; such a file is reported as not reviewed.
             Ok(content) if content.contains('\0') || content.contains('\u{FFFD}') => {
                 CodebaseFile::Binary { path }
             }
@@ -154,6 +179,7 @@ mod tests {
             ("src/gen/out.rs", b"generated\n"),
             ("docs/guide.md", b"# Guide\n"),
             ("assets/logo.png", b"\x89PNG\x00\x01"),
+            ("odd\nname.txt", b"text\n"),
         ] {
             let file = dir.path().join(path);
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -178,6 +204,7 @@ mod tests {
                 .map(|file| match file {
                     CodebaseFile::Text { path, .. } => path.clone(),
                     CodebaseFile::Binary { path } => format!("{path} (binary)"),
+                    CodebaseFile::Skipped { path } => format!("{path} (skipped)"),
                 })
                 .collect()
         };
@@ -185,10 +212,15 @@ mod tests {
         let all = collect(&local, &head, &[], &ignore, 1000).await.unwrap();
         assert_eq!(
             names(&all),
-            ["assets/logo.png (binary)", "docs/guide.md", "src/lib.rs"]
+            [
+                "assets/logo.png (binary)",
+                "docs/guide.md",
+                "odd\nname.txt (skipped)",
+                "src/lib.rs"
+            ]
         );
         assert!(
-            matches!(&all[2], CodebaseFile::Text { content, .. } if content == "pub fn a() {}\n")
+            matches!(&all[3], CodebaseFile::Text { content, .. } if content == "pub fn a() {}\n")
         );
 
         let src = collect(&local, &head, &["src/**".into()], &ignore, 1000)
@@ -226,6 +258,9 @@ mod tests {
             CodebaseFile::Binary {
                 path: "logo.png".into(),
             },
+            CodebaseFile::Skipped {
+                path: "evil\ndiff --git a/x b/x".into(),
+            },
         ];
         let diff = diff_from_empty_tree(&files);
         let parsed = crate::diff::parse_unified_diff(&diff);
@@ -244,5 +279,10 @@ mod tests {
         assert!(!diff.contains("src/empty.rs"));
         assert!(diff.contains("+no newline\n\\ No newline at end of file\n"));
         assert!(diff.contains("Binary files /dev/null and b/logo.png differ"));
+        assert!(
+            !diff.contains("evil"),
+            "an unsafe path never reaches a diff header"
+        );
+        assert!(header_safe("src/a b.rs") && !header_safe("a b/c") && !header_safe("x\ny"));
     }
 }

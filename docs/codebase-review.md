@@ -20,8 +20,16 @@ selection.
   content. A larger selection fails before anything is sent and suggests
   narrowing it with `--path`. `prepare-review --codebase` shows the files and
   chunks, so the size can be checked before `--confirm-send`.
+- **At most 5000 files** are read; a larger selection fails and suggests
+  `--path`, since empty and binary files cost a read without counting toward
+  `max_bytes`.
 - **Binary files and files Cururu cannot read as text** are listed as not
-  reviewed, as in change reviews.
+  reviewed, as in change reviews. The GitHub API returns content decoded with
+  replacement characters, so a file containing U+FFFD is treated as binary
+  there; legitimate text with that character is rare and is reported, not
+  hidden.
+- **Paths that cannot be written into a diff header safely** (a newline or
+  other control character, or ` b/`) are left out and listed as not reviewed.
 
 ## Channels
 

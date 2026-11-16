@@ -403,11 +403,19 @@ pub async fn prepare_codebase(
     )
     .await?;
     let raw = crate::codebase::diff_from_empty_tree(&files);
+    let skipped: Vec<String> = files
+        .iter()
+        .filter_map(|file| match file {
+            crate::codebase::CodebaseFile::Skipped { path } => Some(path.clone()),
+            _ => None,
+        })
+        .collect();
     // The content bound is `codebase.max_bytes`, checked while collecting; the
     // change-request diff limit does not apply to existing code.
     let mut codebase_config = config.clone();
     codebase_config.review.max_diff_bytes = usize::MAX;
     let mut prepared = prepare(&codebase_config, &raw, revision, "codebase")?;
+    prepared.unreviewable_paths.extend(skipped);
     let context_configured = config.context.auto.enabled
         || !(config.context.conventions.is_empty()
             && config.context.specifications.is_empty()
