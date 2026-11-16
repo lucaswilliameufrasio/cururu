@@ -6,7 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Breaking Changes
 
-- [**breaking**] Make the per-review publication approval opt-in
+- [**breaking**] Make the per-review publication approval opt-in. Hosted
+  reviews (Action and App) are now published as soon as they complete. To keep
+  the v5 behaviour, set `[publication] require_approval = true` in the trusted
+  `.cururu.toml` (or the shared base) and keep the `cururu-publish` environment
+  with required reviewers.
 
 ### Bug Fixes
 
@@ -36,7 +40,7 @@ All notable changes to this project will be documented in this file.
 ### Testing
 
 - Release the recorded checks lock before asserting
-## [5.2.0] - 2026-11-16
+## [5.2.0] - 2026-11-15
 
 ### Bug Fixes
 
