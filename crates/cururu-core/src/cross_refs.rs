@@ -5,7 +5,7 @@
 //! common keywords, not by a parser.
 
 use crate::DiffChunk;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 
 /// Keywords that introduce a named definition in common languages.
@@ -20,7 +20,6 @@ const DEFINITION_KEYWORDS: &[&str] = &[
     "trait",
     "interface",
     "type",
-    "impl",
     "module",
     "record",
     "object",
@@ -93,6 +92,8 @@ fn new_lines(text: &str) -> Vec<NewLine<'_>> {
 const MODIFIERS: &[&str] = &[
     "pub",
     "crate",
+    "super",
+    "self",
     "export",
     "default",
     "async",
@@ -157,20 +158,35 @@ pub fn annotate_cross_references(chunks: &mut [DiffChunk]) {
     let notes: Vec<String> = {
         let parsed: Vec<Vec<NewLine<'_>>> =
             chunks.iter().map(|chunk| new_lines(&chunk.text)).collect();
+        // One pass over every line: identifier -> (chunk, line) in order.
+        let mut index: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+        for (chunk_index, lines) in parsed.iter().enumerate() {
+            for (line_index, line) in lines.iter().enumerate() {
+                let mut seen = BTreeSet::new();
+                for token in identifiers(line.text) {
+                    if token.chars().count() >= MIN_NAME_CHARS && seen.insert(token) {
+                        index
+                            .entry(token)
+                            .or_default()
+                            .push((chunk_index, line_index));
+                    }
+                }
+            }
+        }
         parsed
             .iter()
             .enumerate()
-            .map(|(index, lines)| {
+            .map(|(chunk_index, lines)| {
                 let mut entries = Vec::new();
                 for name in defined_names(lines) {
-                    let mentions = parsed
-                        .iter()
-                        .enumerate()
-                        .filter(|(other, _)| *other != index)
-                        .flat_map(|(_, other)| other.iter())
-                        .filter(|line| identifiers(line.text).any(|token| token == name))
+                    let mentions = index
+                        .get(name.as_str())
+                        .into_iter()
+                        .flatten()
+                        .filter(|(other, _)| *other != chunk_index)
                         .take(MAX_PER_NAME);
-                    for mention in mentions {
+                    for &(other, line_index) in mentions {
+                        let mention = &parsed[other][line_index];
                         entries.push(format!(
                             "- `{name}`: {}:{} `{}`",
                             mention.path,
@@ -264,19 +280,22 @@ mod tests {
             chunk(
                 0,
                 "a.rs",
-                "@@ -0,0 +1,3 @@\n+let value = json!({\"type\": \"text\"});\n+    pub(crate) async fn load_config() {}\n+export default class Widget {}\n",
+                "@@ -0,0 +1,5 @@\n+let value = json!({\"type\": \"text\"});\n+    pub(crate) async fn load_config() {}\n+export default class Widget {}\n+pub(super) fn save_config() {}\n+impl Display for Report {}\n",
             ),
             chunk(
                 1,
                 "b.rs",
-                "@@ -0,0 +1 @@\n+use(text, load_config, Widget);\n",
+                "@@ -0,0 +1 @@\n+use(text, load_config, Widget, save_config, Display);\n",
             ),
         ];
         annotate_cross_references(&mut chunks);
         let note = &chunks[0].text;
         assert!(note.contains("- `load_config`: b.rs:1"), "{note}");
         assert!(note.contains("- `Widget`: b.rs:1"), "{note}");
+        assert!(note.contains("- `save_config`: b.rs:1"), "{note}");
         assert!(!note.contains("- `text`"), "{note}");
+        // `impl Display for Report` uses `Display`; it does not define it.
+        assert!(!note.contains("- `Display`"), "{note}");
     }
 
     #[test]
