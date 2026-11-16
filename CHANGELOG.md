@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [6.0.0] - 2026-11-16
+
+### Breaking Changes
+
+- [**breaking**] Make the per-review publication approval opt-in. Hosted
+  reviews (Action and App) are now published as soon as they complete. To keep
+  the v5 behaviour, set `[publication] require_approval = true` in the trusted
+  `.cururu.toml` (or the shared base) and keep the `cururu-publish` environment
+  with required reviewers.
+
+### Bug Fixes
+
+- Retry recording a published review's usage check
+- Keep unsafe paths out of the codebase diff and bound the file count
+- Show paths excluded by review.ignore in reports
+- List review.ignore exclusions in the codebase issue
+- Keep file names from redirecting report links
+- Count characters, not bytes, against GitHub's body limit
+- Explain the glob limit of a codebase command
+
+### Chores
+
+- Pin v5.2.0 OCI digest
+- Adopt Cururu v5.2.0
+
+### Features
+
+- Review the committed codebase from the CLI and MCP
+- Review the committed codebase and post the report as an issue
+- Review the committed codebase from an issue command
+
+### Refactor
+
+- Extract the configured-API chunk review
+
+### Testing
+
+- Release the recorded checks lock before asserting
 ## [5.2.0] - 2026-11-15
 
 ### Bug Fixes
@@ -15,6 +53,7 @@ All notable changes to this project will be documented in this file.
 
 - Pin v5.1.1 OCI digest
 - Adopt Cururu v5.1.1
+- Prepare for v5.2.0
 
 ### Documentation
 
