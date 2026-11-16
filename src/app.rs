@@ -718,7 +718,8 @@ async fn process_issue_comment(state: &AppState, payload: &Value) -> anyhow::Res
     // In an issue, only codebase reviews (and approvals, above) are commands.
     if !is_pull_request {
         return match codebase::parse_command(trimmed) {
-            Some(paths) => codebase::review_command(state, payload, &login, paths).await,
+            Some(Ok(paths)) => codebase::review_command(state, payload, &login, paths).await,
+            Some(Err(count)) => codebase::too_many_paths(state, payload, &login, count).await,
             None => Ok(()),
         };
     }

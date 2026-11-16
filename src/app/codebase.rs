@@ -15,14 +15,43 @@ use tracing::{info, warn};
 
 const COMMAND: &str = "/cururu review codebase";
 
-/// The globs of a codebase review command, or `None` when `body` is not one.
-pub fn parse_command(body: &str) -> Option<Vec<String>> {
+/// Most globs one command accepts.
+const MAX_PATHS: usize = 50;
+
+/// The globs of a codebase review command (`Err` with their count when there
+/// are too many), or `None` when `body` is not one.
+pub fn parse_command(body: &str) -> Option<Result<Vec<String>, usize>> {
     let rest = body.trim().strip_prefix(COMMAND)?;
     if !(rest.is_empty() || rest.starts_with(char::is_whitespace)) {
         return None;
     }
     let paths: Vec<String> = rest.split_whitespace().map(str::to_owned).collect();
-    (paths.len() <= 50).then_some(paths)
+    Some(if paths.len() <= MAX_PATHS {
+        Ok(paths)
+    } else {
+        Err(paths.len())
+    })
+}
+
+/// Explain to a write-authorized requester that a command had too many globs.
+pub async fn too_many_paths(
+    state: &AppState,
+    payload: &Value,
+    login: &str,
+    count: usize,
+) -> anyhow::Result<()> {
+    let issue = payload["issue"]["number"]
+        .as_u64()
+        .context("issue comment has no issue number")?;
+    let (_, github, _) = github_context(state, payload, Some(issue)).await?;
+    if !github.user_can_review(login).await? {
+        return Ok(());
+    }
+    github
+        .create_issue_comment(&format!(
+            "Cururu reviews at most {MAX_PATHS} globs per `{COMMAND}` command; this one has {count}. Use broader globs, such as `src/**`."
+        ))
+        .await
 }
 
 /// Whether a stored candidate is a codebase report.
@@ -96,6 +125,8 @@ pub async fn review_command(
         )
         .await?
     {
+        // `store_candidate` reports whether the candidate is pending, so a
+        // redelivery after a failed check creation presents it again.
         info!("Cururu App codebase candidate was already handled");
         return Ok(());
     }
@@ -195,14 +226,14 @@ mod tests {
 
     #[test]
     fn the_command_takes_optional_globs() {
-        assert_eq!(parse_command("/cururu review codebase"), Some(vec![]));
+        assert_eq!(parse_command("/cururu review codebase"), Some(Ok(vec![])));
         assert_eq!(
             parse_command("  /cururu review codebase src/** docs/*.md "),
-            Some(vec!["src/**".to_owned(), "docs/*.md".to_owned()])
+            Some(Ok(vec!["src/**".to_owned(), "docs/*.md".to_owned()]))
         );
         assert_eq!(parse_command("/cururu review"), None);
         assert_eq!(parse_command("/cururu review codebases"), None);
         let many = format!("/cururu review codebase {}", "a ".repeat(51));
-        assert_eq!(parse_command(&many), None);
+        assert_eq!(parse_command(&many), Some(Err(51)));
     }
 }

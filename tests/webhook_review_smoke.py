@@ -88,6 +88,9 @@ class Fake(http.server.BaseHTTPRequestHandler):
             self.reply(200, {"model": "fixture-evaluator", "answers": {
                 "finding_0_is_defect": {"type": "noul", "noul": 0.9},
                 "finding_0_severity": {"type": "choice", "choice": "high", "confidence": 0.9}}})
+        elif self.path == "/repos/test/repo/check-runs" and state.get("fail_check_once"):
+            state["fail_check_once"] = False
+            self.reply(502, {})
         elif self.path == "/repos/test/repo/check-runs":
             state["checks"].append(json.loads(body))
             self.reply(201, {"id": 900 + len(state["checks"])})
@@ -277,11 +280,16 @@ with tempfile.TemporaryDirectory() as directory:
 
                 # With the approval on, only a notice is posted until the exact
                 # report is approved in the issue.
-                state.update(writes=[], checks=[], check_updates=[], models=0, required=True)
+                # The first check creation fails after the candidate is stored;
+                # the App's retry of the delivery presents it again.
+                state.update(writes=[], checks=[], check_updates=[], models=0, required=True, fail_check_once=True)
                 issue_comment("/cururu review codebase", "alice", "codebase-candidate")
+                # Retries of earlier PR deliveries may add PR checks meanwhile.
+                codebase_checks = [c for c in state["checks"] if c["output"]["text"].startswith("Cururu codebase review")]
+                assert len(codebase_checks) == 1 and not state["fail_check_once"], codebase_checks
                 notices = issue_writes()
                 assert len(notices) == 1 and "after approval" in notices[0] and "Cururu codebase review" not in notices[0], notices
-                check = state["checks"][0]
+                check = codebase_checks[0]
                 digest = check["external_id"]
                 assert hashlib.sha256(check["output"]["text"].encode()).hexdigest() == digest
                 assert check["actions"][0]["identifier"] == "cururu_publish", check
