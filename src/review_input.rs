@@ -466,13 +466,18 @@ pub fn prepare(
         }
         return Err(error.into());
     }
-    let mut chunks = diff::chunk_files(
-        &files,
-        config.review.chunk_bytes,
-        config.review.max_diff_bytes,
-    );
-    cururu_core::annotate_cross_references(&mut chunks);
-    let truncated_paths = diff::truncated_paths(&files, config.review.chunk_bytes);
+    // A change larger than one chunk keeps room in every chunk for its
+    // cross-reference note, so annotated chunks stay within chunk_bytes.
+    let chunk_bytes = config.review.chunk_bytes;
+    let diff_bytes: usize = files.iter().map(|file| file.patch.len() + 1).sum();
+    let reserve = if diff_bytes > chunk_bytes {
+        cururu_core::cross_reference_reserve(chunk_bytes)
+    } else {
+        0
+    };
+    let mut chunks = diff::chunk_files(&files, chunk_bytes - reserve, config.review.max_diff_bytes);
+    cururu_core::annotate_cross_references(&mut chunks, reserve);
+    let truncated_paths = diff::truncated_paths(&files, chunk_bytes - reserve);
     let raw_hash = hex::encode(Sha256::digest(raw.as_bytes()));
     let preferences = serde_json::json!({
         "language": config.review.language,
