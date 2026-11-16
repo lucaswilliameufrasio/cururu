@@ -119,3 +119,8 @@ require_current_head = true
 check_runs = false
 # Empty means all non-successful Check Runs; set names to narrow the scope.
 check_run_names = []
+
+[publication]
+# Publish each hosted review only after a separate approval naming its digest
+# (the `cururu-publish` Environment for the Action). Off by default.
+require_approval = true

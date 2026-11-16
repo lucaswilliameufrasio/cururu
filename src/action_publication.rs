@@ -84,6 +84,7 @@ pub async fn prepare(
             summary: &check_summary,
             text: &preview,
             approval_action: false,
+            conclusion: "neutral",
         })
         .await
     {

@@ -38,12 +38,14 @@ meets every rule.
 ## What it does
 
 - **Approved:** Cururu submits an `APPROVE` review bound to the head, publishes
-  its review and summary directly (the repository's opt-in replaces the
-  per-review publication approval), and reports a successful `Cururu triage`
+  its review and summary directly (when `publication.require_approval` is on,
+  the repository's auto-approval opt-in replaces that per-review approval), and
+  reports a successful `Cururu triage`
   check. It never merges and never bypasses branch protection.
 - **Needs a human:** Cururu posts one short notice, in the configured language,
-  listing the reasons and no code. The full review follows the regular
-  publication approval. The `Cururu triage` check is neutral.
+  listing the reasons and no code. The full review is published as usual:
+  directly, or after the separate approval when `publication.require_approval`
+  is on. The `Cururu triage` check is neutral.
 - **New commits:** Cururu dismisses its own earlier approval and decides again.
 - **Approval refused by GitHub:** for example when GitHub Actions may not
   approve pull requests. The decision becomes "needs human review" and the

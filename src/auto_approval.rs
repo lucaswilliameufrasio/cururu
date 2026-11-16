@@ -702,6 +702,12 @@ pub async fn publish_approved(
         crate::hosted_publication::publish_candidate(candidate, source_control, None).await
     };
     let Err(error) = published.await else {
+        crate::hosted_publication::record_published(
+            candidate,
+            source_control,
+            "Published after Cururu's auto-approval.",
+        )
+        .await;
         report_check(source_control, decision, &output.language).await;
         return Ok(());
     };

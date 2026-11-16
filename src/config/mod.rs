@@ -4,6 +4,7 @@ mod context;
 mod env;
 mod github;
 mod provider;
+mod publication;
 mod review;
 mod schema;
 mod scm;
@@ -17,6 +18,7 @@ pub use auto_approval::AutoApprovalConfig;
 pub use context::ContextConfig;
 pub use github::GitHubConfig;
 pub use provider::{LlmConfig, LlmProvider};
+pub use publication::PublicationConfig;
 pub use review::{CommentMode, FailOn, ReviewConfig, ReviewPolicy, Severity};
 pub use scm::ScmConfig;
 pub use summary::SummaryConfig;
@@ -81,6 +83,7 @@ pub struct AppConfig {
     pub summary: SummaryConfig,
     pub analysis: AnalysisConfig,
     pub auto_approval: AutoApprovalConfig,
+    pub publication: PublicationConfig,
     pub evaluator: EvaluatorConfig,
 }
 
@@ -197,6 +200,7 @@ impl AppConfig {
             summary: SummaryConfig::default(),
             analysis: AnalysisConfig::default(),
             auto_approval: AutoApprovalConfig::default(),
+            publication: PublicationConfig::default(),
             evaluator: EvaluatorConfig {
                 mode: evaluator_mode,
                 api_key: env::env_optional("TYPESAFE_API_KEY").unwrap_or_default(),
@@ -521,6 +525,9 @@ impl AppConfig {
 
         if let Some(approval) = parsed.auto_approval {
             self.merge_auto_approval(approval)?;
+        }
+        if let Some(v) = parsed.publication.and_then(|p| p.require_approval) {
+            self.publication.require_approval = v;
         }
 
         Ok(())

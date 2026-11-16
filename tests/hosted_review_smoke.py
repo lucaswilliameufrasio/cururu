@@ -8,6 +8,8 @@ import sys
 import tempfile
 import threading
 
+# These scenarios exercise the opt-in per-publication approval.
+APPROVAL = "[publication]\nrequire_approval = true\n"
 head = "a" * 40
 state = {"mode": "stable", "changed": False, "models": 0, "posts": [], "checks": [], "head": head, "protected": True, "approvals": []}
 
@@ -36,10 +38,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200, {"object": {"sha": head}})
         elif self.path.startswith("/repos/test/repo/contents/.cururu.toml?"):
             if state["mode"] in ("shared_stable", "shared_change", "shared_error"):
-                self.reply(200, "version = 1\n[config]\nbase = 'test/shared'\nbase_ref = '" + head + "'\nbase_path = 'base.toml'\n")
+                self.reply(200, "version = 1\n[config]\nbase = 'test/shared'\nbase_ref = '" + head + "'\nbase_path = 'base.toml'\n" + APPROVAL)
                 return
             policy = "true" if state["mode"] == "policy_change" and state["changed"] else "false"
-            self.reply(200, "version = 1\n[analysis]\nenabled = true\ncheck_runs = true\n[policy]\nsuggested_changes = " + policy + "\n")
+            self.reply(200, "version = 1\n[analysis]\nenabled = true\ncheck_runs = true\n[policy]\nsuggested_changes = " + policy + "\n" + APPROVAL)
         elif self.path.startswith("/repos/test/shared/contents/base.toml?"):
             assert self.headers.get("Authorization") == "Bearer fixture-shared-token"
             if state["mode"] == "shared_error" and state["changed"]:

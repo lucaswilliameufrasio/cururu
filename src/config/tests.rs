@@ -42,6 +42,7 @@ fn base_config() -> AppConfig {
         summary: SummaryConfig::default(),
         analysis: AnalysisConfig::default(),
         auto_approval: crate::config::AutoApprovalConfig::default(),
+        publication: crate::config::PublicationConfig::default(),
         evaluator: EvaluatorConfig {
             mode: None,
             api_key: String::new(),
@@ -773,4 +774,19 @@ fn auto_approval_is_opt_in_and_validated() {
     ] {
         assert!(base_config().merge_toml_str(invalid).is_err(), "{invalid}");
     }
+}
+
+#[test]
+fn publication_approval_is_opt_in() {
+    let mut cfg = base_config();
+    assert!(!cfg.publication.require_approval);
+    cfg.merge_toml_str("version = 1\n[publication]\nrequire_approval = true\n")
+        .unwrap();
+    assert!(cfg.publication.require_approval);
+    assert!(
+        base_config()
+            .merge_toml_str("version = 1\n[publication]\nrequire_aproval = true\n")
+            .is_err(),
+        "a misspelled key must not silently leave publication unprotected"
+    );
 }
