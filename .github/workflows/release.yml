@@ -343,6 +343,10 @@ jobs:
         run: |
           # Remove the granular manifests
           rm -f artifacts/*-dist-manifest.json
+          # Attach the manifest written by this job directly: an artifact
+          # uploaded a step earlier may not be listed yet by the download
+          # (v6.1.0 was released without it).
+          cp dist-manifest.json artifacts/dist-manifest.json
       - name: Create GitHub Release
         env:
           PRERELEASE_FLAG: "${{ fromJson(steps.host.outputs.manifest).announcement_is_prerelease && '--prerelease' || '' }}"
