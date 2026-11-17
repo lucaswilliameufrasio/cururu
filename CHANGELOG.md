@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [6.2.0] - 2026-11-17
+
+### Bug Fixes
+
+- *(release)* Attach dist-manifest.json without an artifact round trip
+- *(config)* Reject any base_ref component ending in .lock
+
+### Chores
+
+- Pin v6.1.0 OCI digest
+- *(workflows)* Adopt Cururu v6.1.0
+
+### Features
+
+- *(config)* Accept a branch or tag as the shared base_ref
+- *(config)* Accept any Git branch name as base_ref and recommend a SHA
+
 ## [6.1.0] - 2026-11-17
 
 ### Bug Fixes
