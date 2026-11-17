@@ -29,6 +29,24 @@ fn url_encode(value: &str) -> String {
         .replace(' ', "%20")
 }
 
+/// Percent-encode every byte of one URL path segment except RFC 3986
+/// unreserved characters, so any Git ref component (`#`, `%`, `+`, `@`,
+/// non-ASCII) reaches the API unchanged.
+fn encode_path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
+}
+
 #[derive(Debug, Clone)]
 pub struct GitHubClient {
     client: reqwest::Client,
@@ -574,7 +592,7 @@ impl GitHubClient {
             .context("repository must be owner/repository")?;
         let encoded_reference = reference
             .split('/')
-            .map(url_encode)
+            .map(encode_path_segment)
             .collect::<Vec<_>>()
             .join("/");
         let url = format!(
@@ -1889,6 +1907,22 @@ mod tests {
         assert_eq!(
             client
                 .resolve_repository_ref("acme/standards", "release/v1")
+                .await
+                .unwrap(),
+            sha
+        );
+        // Characters Git allows in branch names reach the API percent-encoded.
+        Mock::given(method("GET"))
+            .and(path(
+                "/repos/acme/standards/commits/feature%23123/a%C3%A7%C3%A3o%2Bx%25y",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string(sha))
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_eq!(
+            client
+                .resolve_repository_ref("acme/standards", "feature#123/ação+x%y")
                 .await
                 .unwrap(),
             sha

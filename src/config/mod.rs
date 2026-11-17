@@ -44,7 +44,7 @@ impl SharedBaseConfig {
         let kind = if self.is_pinned() {
             "pinned commit"
         } else {
-            "branch or tag, resolved on each run"
+            "branch or tag, resolved on each run; a full commit SHA is recommended"
         };
         format!("{} ({kind})", self.reference)
     }
@@ -55,22 +55,24 @@ pub fn is_full_commit_sha(value: &str) -> bool {
     matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// A branch or tag name safe to place in a source-control API path: Git
-/// ref-name rules, restricted to a conservative character set.
+/// Any branch or tag name Git accepts (`git check-ref-format --branch`
+/// rules), short (`main`) or full (`refs/heads/main`). Callers percent-encode
+/// it before placing it in an API path.
+// Git compares `.lock` case-sensitively; this is not a file extension check.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn is_valid_ref_name(value: &str) -> bool {
-    value.len() <= 255
-        && !value.is_empty()
-        && !value.starts_with(['-', '/', '.'])
+    let forbidden_byte = |byte: u8| byte < 0x20 || byte == 0x7f || b" ~^:?*[\\".contains(&byte);
+    !value.is_empty()
+        && value != "@"
+        && !value.starts_with(['-', '/'])
         && !value.ends_with(['/', '.'])
-        && !value
-            .split('/')
-            .any(|component| component.to_ascii_lowercase().ends_with(".lock"))
         && !value.contains("..")
         && !value.contains("//")
-        && !value.contains("/.")
+        && !value.contains("@{")
+        && !value.bytes().any(forbidden_byte)
         && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"-_./".contains(&byte))
+            .split('/')
+            .all(|component| !component.starts_with('.') && !component.ends_with(".lock"))
 }
 
 #[derive(Clone)]

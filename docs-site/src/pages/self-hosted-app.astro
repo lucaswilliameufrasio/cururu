@@ -36,8 +36,8 @@ const description = "Install and operate Cururu's GitHub App on your own infrast
       </section>
 
       <section class="guide-section split">
-        <div><p class="eyebrow">02 / PRIVATE BASE CONFIG</p><h2>Access follows your installation.</h2><p>Install your App on both consumer and shared-config repositories. An all-repositories installation can read new bases in that organization without per-repository changes. Selective installations require an admin to add each repository. For a base in another organization, install your App there too; Cururu uses that installation's read token for the shared config fetch.</p><p class="note">Point `base_ref` in the trusted consumer `.cururu.toml` at a branch or tag (resolved to one commit per run; protect it) or at a full commit SHA to adopt changes explicitly.</p></div>
-        <pre><code>{"[config]\nbase = 'acme/engineering-standards'\nbase_ref = 'main'\nbase_path = 'configs/cururu/base.toml'"}</code></pre>
+        <div><p class="eyebrow">02 / PRIVATE BASE CONFIG</p><h2>Access follows your installation.</h2><p>Install your App on both consumer and shared-config repositories. An all-repositories installation can read new bases in that organization without per-repository changes. Selective installations require an admin to add each repository. For a base in another organization, install your App there too; Cururu uses that installation's read token for the shared config fetch.</p><p class="note">Pin `base_ref` in the trusted consumer `.cururu.toml` to a full commit SHA (recommended). Any branch or tag is also accepted when an organization must follow `main`; it is resolved to one commit per run, so protect that branch.</p></div>
+        <pre><code>{"[config]\nbase = 'acme/engineering-standards'\nbase_ref = '0123456789abcdef0123456789abcdef01234567'\nbase_path = 'configs/cururu/base.toml'"}</code></pre>
       </section>
 
       <section class="guide-section">
