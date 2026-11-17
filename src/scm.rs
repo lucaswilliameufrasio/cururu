@@ -115,6 +115,14 @@ pub trait ScmProvider: Send + Sync {
     ) -> anyhow::Result<String> {
         anyhow::bail!("SCM adapter does not support shared configuration files")
     }
+    /// Resolve a branch, tag, or commit in another repository to its commit.
+    async fn resolve_repository_ref(
+        &self,
+        _repository: &str,
+        _reference: &str,
+    ) -> anyhow::Result<String> {
+        anyhow::bail!("SCM adapter does not support shared configuration references")
+    }
     fn is_cururu_review_comment(&self, _comment: &ReviewComment, _login: Option<&str>) -> bool {
         false
     }

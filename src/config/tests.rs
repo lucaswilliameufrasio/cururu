@@ -169,23 +169,62 @@ fn parses_pinned_shared_base_source() {
     .unwrap()
     .unwrap();
     assert_eq!(config.repository, "acme/standards");
-    assert_eq!(config.commit, sha);
+    assert_eq!(config.reference, sha);
+    assert!(config.is_pinned());
     assert_eq!(config.path, "configs/cururu/base.toml");
 }
 
 #[test]
-fn rejects_incomplete_or_unpinned_shared_base_source() {
+fn parses_branch_and_tag_shared_base_sources() {
+    for reference in ["main", "release/v1", "refs/heads/main", "v1.2.0"] {
+        let config = AppConfig::shared_base_from_toml(&format!(
+            "version = 1\n[config]\nbase = \"acme/standards\"\nbase_ref = \"{reference}\"\nbase_path = \"base.toml\"\n"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(config.reference, reference);
+        assert!(!config.is_pinned());
+    }
+}
+
+#[test]
+fn rejects_shared_base_refs_unsafe_in_an_api_path() {
+    for reference in [
+        "",
+        "-main",
+        "/main",
+        "main/",
+        "a..b",
+        "a//b",
+        "main.lock",
+        "release.lock/main",
+        "main?x=1",
+        "a b",
+        "@{1}",
+        "../x",
+        ".hidden",
+        "a/.b",
+        "main#x",
+        "%2e%2e",
+    ] {
+        let err = AppConfig::shared_base_from_toml(&format!(
+            "version = 1\n[config]\nbase = \"acme/standards\"\nbase_ref = \"{reference}\"\nbase_path = \"base.toml\"\n"
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("branch, or a tag"),
+            "{reference:?}: {err}"
+        );
+    }
+}
+
+#[test]
+fn rejects_incomplete_shared_base_source() {
     let err = AppConfig::shared_base_from_toml(
         "version = 1\n[config]\nbase = \"acme/standards\"\nbase_path = \"base.toml\"\n",
     )
     .unwrap_err();
     assert!(err.to_string().contains("base_ref"));
-
-    let err = AppConfig::shared_base_from_toml(
-        "version = 1\n[config]\nbase = \"acme/standards\"\nbase_ref = \"main\"\nbase_path = \"base.toml\"\n",
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("40-character commit SHA"));
 }
 
 #[test]

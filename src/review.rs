@@ -157,7 +157,7 @@ async fn ensure_trusted_config_unchanged(
             .fetch_repository_file_at_ref(
                 &shared.source.repository,
                 &shared.source.path,
-                &shared.source.commit,
+                &shared.commit,
             )
             .await
             .map_err(|_| anyhow::anyhow!("failed to revalidate trusted shared configuration"))?;

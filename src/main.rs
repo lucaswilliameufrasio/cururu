@@ -719,11 +719,14 @@ async fn main() -> anyhow::Result<()> {
                     let shared_github: Box<dyn scm::ScmProvider> = Box::new(
                         github::GitHubClient::from_scm_config(&shared_github_config)?,
                     );
+                    let shared_commit = shared_github
+                        .resolve_repository_ref(&shared.repository, &shared.reference)
+                        .await?;
                     let shared_raw = shared_github
                         .fetch_repository_file_at_ref(
                             &shared.repository,
                             &shared.path,
-                            &shared.commit,
+                            &shared_commit,
                         )
                         .await?;
                     if AppConfig::shared_base_from_toml(&shared_raw)?.is_some() {
@@ -734,7 +737,8 @@ async fn main() -> anyhow::Result<()> {
                         .context("invalid shared base configuration")?;
                     config.merge_toml_str(&AppConfig::compose_toml(&shared_raw, &local_raw)?)?;
                     println!(
-                        "Merged shared configuration from the configured source-control base."
+                        "Merged shared configuration from {}:{} at {} (commit {shared_commit}).",
+                        shared.repository, shared.path, shared.reference
                     );
                 } else {
                     config.merge_toml_str(&local_raw)?;
@@ -1207,8 +1211,14 @@ async fn merge_repository_config_with_shared_token(
         let shared_github: std::sync::Arc<dyn scm::ScmProvider> = std::sync::Arc::new(
             github::GitHubClient::from_scm_config(&shared_github_config)?,
         );
+        // Resolve a branch or tag once: everything after this, including the
+        // pre-publication revalidation, reads this one commit.
+        let shared_commit = shared_github
+            .resolve_repository_ref(&shared.repository, &shared.reference)
+            .await
+            .context("failed to resolve shared config base_ref; verify source-control access")?;
         let shared_raw = shared_github
-            .fetch_repository_file_at_ref(&shared.repository, &shared.path, &shared.commit)
+            .fetch_repository_file_at_ref(&shared.repository, &shared.path, &shared_commit)
             .await
             .context("failed to load shared config; verify source-control access")?;
         if AppConfig::shared_base_from_toml(&shared_raw)?.is_some() {
@@ -1223,6 +1233,7 @@ async fn merge_repository_config_with_shared_token(
         config.merge_toml_str(&effective)?;
         config.shared_config_snapshot = Some(config::SharedConfigSnapshot {
             source: shared,
+            commit: shared_commit,
             hash: review::trusted_config_hash(&shared_raw),
             client: shared_github,
         });

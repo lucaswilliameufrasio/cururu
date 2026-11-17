@@ -113,7 +113,10 @@ Summary comments also carry a revision marker.
 ## Trust boundaries
 
 - Trusted base-revision configuration is used for `.cururu.toml` and repository
-  context; shared configuration remains pinned to a full commit identifier.
+  context. Shared configuration is selected only by that trusted file, either
+  pinned to a full commit identifier or by a branch or tag that is resolved to
+  one commit per run; every later read and the pre-publication revalidation
+  use that resolved commit.
 - Change-request diffs, comments, analyzer messages and fetched code are
   untrusted data, never instructions. Cururu does not execute the diff.
 - LLM output is untrusted until deserialized, normalized and policy-validated.
@@ -130,7 +133,7 @@ analysis and TOML schema. Precedence, most to least specific:
 
 1. Environment variables and workflow inputs.
 2. Local `.cururu.toml` from the trusted base revision.
-3. Shared configuration pinned to a full commit identifier, when declared.
+3. Shared configuration at its pinned commit or resolved branch/tag, when declared.
 4. Profile defaults (`balanced`, `strict`, `security`, `minimal`).
 
 Local scalars override shared scalars. Review ignore patterns, focus rules,

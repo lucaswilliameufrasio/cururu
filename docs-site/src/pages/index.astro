@@ -40,7 +40,7 @@ const description = "Self-service AI code review for GitHub. Use the GitHub Acti
 
       <section class="principles" id="principles" aria-label="Product principles">
         <article><span class="index">01 / OWNERSHIP</span><h2>Your infrastructure.</h2><p>Start with GitHub Actions, or run the installable GitHub App with a PostgreSQL or SQLite queue on infrastructure you control.</p></article>
-        <article><span class="index">02 / CONTEXT</span><h2>Your rules stay yours.</h2><p>Keep repository-specific architecture and context while sharing stable review defaults from a pinned base config.</p></article>
+        <article><span class="index">02 / CONTEXT</span><h2>Your rules stay yours.</h2><p>Keep repository-specific architecture and context while sharing review defaults from one base config.</p></article>
         <article><span class="index">03 / CLARITY</span><h2>Suggestions with reasons.</h2><p>Set the tone, technical audience, and how much explanation each recommendation should include.</p></article>
       </section>
 
@@ -55,7 +55,7 @@ const description = "Self-service AI code review for GitHub. Use the GitHub Acti
       </section>
 
       <section class="shared">
-        <div class="shared-icon">↗</div><div><p class="eyebrow">SHARED CONFIGURATION</p><h2>One baseline. Local judgment stays local.</h2><p>Point each repository at a pinned commit SHA in a shared config repository. Scalars can be overridden locally; shared focus and context rules can be extended. Private sources work when the GitHub token can read both repositories.</p><a class="text-link" href="https://github.com/lucaswilliameufrasio/cururu#shared-configuration">Read the configuration guide →</a></div>
+        <div class="shared-icon">↗</div><div><p class="eyebrow">SHARED CONFIGURATION</p><h2>One baseline. Local judgment stays local.</h2><p>Point each repository at a branch, tag, or pinned commit SHA in a shared config repository. Scalars can be overridden locally; shared focus and context rules can be extended. Private sources work when the GitHub token can read both repositories.</p><a class="text-link" href="https://github.com/lucaswilliameufrasio/cururu#shared-configuration">Read the configuration guide →</a></div>
       </section>
 
       <section class="app-roadmap"><span class="roadmap-tag">SHOWCASE / INTENTIONALLY VULNERABLE</span><h2>See Cururu review a real demo.</h2><p>The showcase repository contains deliberate security and reliability vulnerabilities so you can inspect Cururu's findings and workflow. Use it only in a disposable, controlled environment; never deploy or run it with sensitive data.</p><a class="text-link" href="https://github.com/lucaswilliameufrasio/cururu-demo">Explore the cururu-demo showcase →</a></section>

@@ -380,7 +380,7 @@ version = 1
 
 [config]
 base = "acme/engineering-standards"
-base_ref = "0123456789abcdef0123456789abcdef01234567" # full commit SHA
+base_ref = "main" # branch, tag, or full commit SHA
 base_path = "configs/cururu/base.toml"
 
 [review]
@@ -391,8 +391,27 @@ focus = ["payments", "domain rules"]
 ```
 
 The local `.cururu.toml` is read from the trusted base commit of the pull
-request. The shared source is selected only by that trusted file and must use a
-full commit SHA; the shared file cannot recursively select another base.
+request. The shared source is selected only by that trusted file; the shared
+file cannot recursively select another base.
+
+`base_ref` accepts a branch (`main`, `release/v1`, `refs/heads/main`), a tag
+(`v1`), or a full commit SHA:
+
+- **Branch or tag**: each run resolves it to one commit and reads only that
+  commit, including the check that the configuration did not change before
+  publication. A change merged into the base reaches every consuming
+  repository on its next review, with no edit in each repository. Whoever can
+  push to that branch or move that tag controls the review configuration of
+  every consumer, so protect it (branch protection or tag rulesets, required
+  reviews). With `[publication] require_approval`, the publication step loads the
+  configuration again and resolves the branch or tag anew; if the shared
+  configuration content changed since the candidate was made, publication is
+  refused and a fresh review is needed.
+- **Full commit SHA**: the base never changes until each consumer updates the
+  pin. Use it when a repository must adopt shared changes explicitly.
+
+`cururu status` shows which mode is in use and `cururu print-config` prints
+the commit a branch or tag resolved to.
 Scalars in the local file override the base. Review ignore patterns, policy
 focus, context paths, and automatic-context include/exclude patterns append
 unique local entries after base entries. Other arrays, including allowed
