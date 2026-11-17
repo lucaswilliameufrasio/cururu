@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [6.1.0] - 2026-11-17
+
+### Bug Fixes
+
+- *(release)* Stop the changelog generator from rewriting past releases
+- *(review)* Index identifiers once and tighten definition detection
+- *(review)* Count added lines that start with ++ in cross-chunk references
+- *(review)* Close the known gaps of cross-chunk references
+
+### Chores
+
+- Pin v6.0.0 OCI digest
+- *(workflows)* Adopt Cururu v6.0.0
+
+### Documentation
+
+- *(changelog)* Remove release commits and restore spacing in past entries
+
+### Features
+
+- *(review)* List where each chunk's definitions are used in other chunks
+
+### Performance
+
+- *(review)* Classify cross-reference mentions in one bounded pass
+
 ## [6.0.0] - 2026-11-16
 
 ### Breaking Changes
