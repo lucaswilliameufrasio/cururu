@@ -344,10 +344,11 @@ pub fn status(path: &Path) -> anyhow::Result<()> {
             path.display()
         ),
         (Some(_), Some(shared)) => println!(
-            "  Configuration: {} extending {}:{} (shared values not loaded here; use `cururu print-config`)",
+            "  Configuration: {} extending {}:{} at {} (shared values not loaded here; use `cururu print-config`)",
             path.display(),
             shared.repository,
-            shared.path
+            shared.path,
+            shared.describe_reference()
         ),
         (Some(_), None) => println!("  Configuration: {}", path.display()),
     }

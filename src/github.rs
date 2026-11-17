@@ -559,6 +559,55 @@ impl GitHubClient {
             .context("failed to read shared config")
     }
 
+    /// Resolve `reference` (commit SHA, branch, or tag) in `repository` to a
+    /// full commit SHA. A full SHA is returned unchanged without a request.
+    pub async fn resolve_repository_ref(
+        &self,
+        repository: &str,
+        reference: &str,
+    ) -> anyhow::Result<String> {
+        if crate::config::is_full_commit_sha(reference) {
+            return Ok(reference.to_ascii_lowercase());
+        }
+        let (owner, repo) = repository
+            .split_once('/')
+            .context("repository must be owner/repository")?;
+        let encoded_reference = reference
+            .split('/')
+            .map(url_encode)
+            .collect::<Vec<_>>()
+            .join("/");
+        let url = format!(
+            "{}/repos/{owner}/{repo}/commits/{encoded_reference}",
+            self.cfg.api_url
+        );
+        let sha = retry_with_backoff(
+            || async {
+                self.client
+                    .get(&url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github.sha")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()
+                    .context("shared config reference API error; verify that base_ref exists and the GitHub token can read the base repository")?
+                    .text()
+                    .await
+                    .context("failed to read shared config reference")
+            },
+            3,
+        )
+        .await?;
+        let sha = sha.trim().to_ascii_lowercase();
+        anyhow::ensure!(
+            crate::config::is_full_commit_sha(&sha),
+            "shared config reference did not resolve to a commit SHA"
+        );
+        Ok(sha)
+    }
+
     pub async fn list_repository_paths_at_revision(
         &self,
         sha: &str,
@@ -1728,6 +1777,14 @@ impl ScmProvider for GitHubClient {
         Self::fetch_repository_file_at_ref(self, repository, path, revision).await
     }
 
+    async fn resolve_repository_ref(
+        &self,
+        repository: &str,
+        reference: &str,
+    ) -> anyhow::Result<String> {
+        Self::resolve_repository_ref(self, repository, reference).await
+    }
+
     fn is_cururu_review_comment(&self, comment: &ReviewComment, login: Option<&str>) -> bool {
         Self::comment_is_cururu(comment, login)
     }
@@ -1806,6 +1863,73 @@ mod tests {
         assert!(serde_json::from_str::<CheckRunList>(r#"{"check_runs":[]}"#).is_ok());
         assert!(serde_json::from_str::<CheckRunList>("{}").is_err());
         assert!(serde_json::from_str::<CheckRunList>(r#"{"check_runs":null}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn shared_base_branch_resolves_to_its_commit() {
+        let sha = "89abcdef0123456789abcdef0123456789abcdef";
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/standards/commits/release/v1"))
+            .and(header("Accept", "application/vnd.github.sha"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!("{sha}\n")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "fixture".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://example.invalid".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            client
+                .resolve_repository_ref("acme/standards", "release/v1")
+                .await
+                .unwrap(),
+            sha
+        );
+        // A full SHA is already pinned: no request is made for it.
+        let pinned = "0123456789ABCDEF0123456789abcdef01234567";
+        assert_eq!(
+            client
+                .resolve_repository_ref("acme/standards", pinned)
+                .await
+                .unwrap(),
+            pinned.to_ascii_lowercase()
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_base_reference_must_resolve_to_a_sha() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/acme/standards/commits/main"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>not a sha</html>"))
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "fixture".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://example.invalid".into(),
+        })
+        .unwrap();
+        assert!(
+            client
+                .resolve_repository_ref("acme/standards", "main")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("did not resolve to a commit SHA")
+        );
     }
 
     #[tokio::test]

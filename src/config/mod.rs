@@ -28,13 +28,55 @@ pub use summary::SummaryConfig;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedBaseConfig {
     pub repository: String,
-    pub commit: String,
+    /// `base_ref` as written: a full commit SHA, a branch, or a tag.
+    pub reference: String,
     pub path: String,
+}
+
+impl SharedBaseConfig {
+    /// Whether `base_ref` already names one immutable commit.
+    pub fn is_pinned(&self) -> bool {
+        is_full_commit_sha(&self.reference)
+    }
+
+    /// `base_ref` with how it is read, for status output.
+    pub fn describe_reference(&self) -> String {
+        let kind = if self.is_pinned() {
+            "pinned commit"
+        } else {
+            "branch or tag, resolved on each run"
+        };
+        format!("{} ({kind})", self.reference)
+    }
+}
+
+/// A full hexadecimal commit object name (SHA-1 or SHA-256).
+pub fn is_full_commit_sha(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// A branch or tag name safe to place in a source-control API path: Git
+/// ref-name rules, restricted to a conservative character set.
+fn is_valid_ref_name(value: &str) -> bool {
+    value.len() <= 255
+        && !value.is_empty()
+        && !value.starts_with(['-', '/', '.'])
+        && !value.ends_with(['/', '.'])
+        && !value.to_ascii_lowercase().ends_with(".lock")
+        && !value.contains("..")
+        && !value.contains("//")
+        && !value.contains("/.")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_./".contains(&byte))
 }
 
 #[derive(Clone)]
 pub struct SharedConfigSnapshot {
     pub source: SharedBaseConfig,
+    /// The commit `source.reference` resolved to when the review started;
+    /// later checks read this commit, never the moving reference.
+    pub commit: String,
     pub hash: String,
     pub client: std::sync::Arc<dyn crate::scm::ScmProvider>,
 }
@@ -44,6 +86,7 @@ impl std::fmt::Debug for SharedConfigSnapshot {
         formatter
             .debug_struct("SharedConfigSnapshot")
             .field("source", &self.source)
+            .field("commit", &self.commit)
             .field("hash", &self.hash)
             .field("client", &"[redacted]")
             .finish()
@@ -223,7 +266,7 @@ impl AppConfig {
         let Some(source) = parsed.config else {
             return Ok(None);
         };
-        let (Some(repository), Some(commit), Some(path)) =
+        let (Some(repository), Some(reference), Some(path)) =
             (source.base, source.base_ref, source.base_path)
         else {
             bail!("[config] must define base, base_ref, and base_path together");
@@ -242,8 +285,10 @@ impl AppConfig {
         if !valid_component(owner) || !valid_component(repo) || repository_parts.next().is_some() {
             bail!("[config].base must be an owner/repository pair");
         }
-        if commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
-            bail!("[config].base_ref must be a full 40-character commit SHA");
+        if !is_full_commit_sha(&reference) && !is_valid_ref_name(&reference) {
+            bail!(
+                "[config].base_ref must be a full commit SHA, a branch, or a tag (for example \"main\" or \"v1\")"
+            );
         }
         let path = std::path::Path::new(&path);
         if path.as_os_str().is_empty()
@@ -259,7 +304,7 @@ impl AppConfig {
         }
         Ok(Some(SharedBaseConfig {
             repository,
-            commit,
+            reference,
             path: path.to_string_lossy().into_owned(),
         }))
     }
