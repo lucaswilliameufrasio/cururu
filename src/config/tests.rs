@@ -176,7 +176,18 @@ fn parses_pinned_shared_base_source() {
 
 #[test]
 fn parses_branch_and_tag_shared_base_sources() {
-    for reference in ["main", "release/v1", "refs/heads/main", "v1.2.0"] {
+    for reference in [
+        "main",
+        "release/v1",
+        "refs/heads/main",
+        "v1.2.0",
+        "feature#123",
+        "user@team/fix+retry",
+        "%2e%2e",
+        "x/-dash-inside",
+        "configuração/estável",
+        "MAIN.LOCK",
+    ] {
         let config = AppConfig::shared_base_from_toml(&format!(
             "version = 1\n[config]\nbase = \"acme/standards\"\nbase_ref = \"{reference}\"\nbase_path = \"base.toml\"\n"
         ))
@@ -200,12 +211,19 @@ fn rejects_shared_base_refs_unsafe_in_an_api_path() {
         "release.lock/main",
         "main?x=1",
         "a b",
-        "@{1}",
+        "a\tb",
+        "@",
+        "main@{1}",
+        "a~1",
+        "a^b",
+        "a:b",
+        "a*",
+        "a[b",
+        "a\\\\b",
         "../x",
         ".hidden",
         "a/.b",
-        "main#x",
-        "%2e%2e",
+        "main.",
     ] {
         let err = AppConfig::shared_base_from_toml(&format!(
             "version = 1\n[config]\nbase = \"acme/standards\"\nbase_ref = \"{reference}\"\nbase_path = \"base.toml\"\n"

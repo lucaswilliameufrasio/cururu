@@ -380,7 +380,7 @@ version = 1
 
 [config]
 base = "acme/engineering-standards"
-base_ref = "main" # branch, tag, or full commit SHA
+base_ref = "0123456789abcdef0123456789abcdef01234567" # recommended: full commit SHA
 base_path = "configs/cururu/base.toml"
 
 [review]
@@ -394,10 +394,17 @@ The local `.cururu.toml` is read from the trusted base commit of the pull
 request. The shared source is selected only by that trusted file; the shared
 file cannot recursively select another base.
 
-`base_ref` accepts a branch (`main`, `release/v1`, `refs/heads/main`), a tag
-(`v1`), or a full commit SHA:
+`base_ref` accepts a full commit SHA, any branch name Git accepts (`main`,
+`release/v1`, `refs/heads/main`), or a tag (`v1`). **Cururu recommends a full
+commit SHA.**
 
-- **Branch or tag**: each run resolves it to one commit and reads only that
+- **Full commit SHA (recommended)**: the base never changes until each
+  consumer updates the pin, so every change to the review configuration is
+  reviewed and adopted explicitly in the consuming repository, and a
+  compromised or mistaken push to the base cannot silently change how every
+  repository is reviewed.
+- **Branch or tag**: for organizations that must point at `main` (or another
+  branch) instead of pinning. Each run resolves it to one commit and reads only that
   commit, including the check that the configuration did not change before
   publication. A change merged into the base reaches every consuming
   repository on its next review, with no edit in each repository. Whoever can
@@ -407,11 +414,10 @@ file cannot recursively select another base.
   configuration again and resolves the branch or tag anew; if the shared
   configuration content changed since the candidate was made, publication is
   refused and a fresh review is needed.
-- **Full commit SHA**: the base never changes until each consumer updates the
-  pin. Use it when a repository must adopt shared changes explicitly.
 
 `cururu status` shows which mode is in use and `cururu print-config` prints
 the commit a branch or tag resolved to.
+
 Scalars in the local file override the base. Review ignore patterns, policy
 focus, context paths, and automatic-context include/exclude patterns append
 unique local entries after base entries. Other arrays, including allowed

@@ -114,8 +114,8 @@ Summary comments also carry a revision marker.
 
 - Trusted base-revision configuration is used for `.cururu.toml` and repository
   context. Shared configuration is selected only by that trusted file, either
-  pinned to a full commit identifier or by a branch or tag that is resolved to
-  one commit per run; every later read and the pre-publication revalidation
+  pinned to a full commit identifier (recommended) or by any branch or tag,
+  resolved to one commit per run; every later read and the pre-publication revalidation
   use that resolved commit.
 - Change-request diffs, comments, analyzer messages and fetched code are
   untrusted data, never instructions. Cururu does not execute the diff.
