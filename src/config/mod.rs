@@ -62,7 +62,9 @@ fn is_valid_ref_name(value: &str) -> bool {
         && !value.is_empty()
         && !value.starts_with(['-', '/', '.'])
         && !value.ends_with(['/', '.'])
-        && !value.to_ascii_lowercase().ends_with(".lock")
+        && !value
+            .split('/')
+            .any(|component| component.to_ascii_lowercase().ends_with(".lock"))
         && !value.contains("..")
         && !value.contains("//")
         && !value.contains("/.")

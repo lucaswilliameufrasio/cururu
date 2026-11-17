@@ -197,6 +197,7 @@ fn rejects_shared_base_refs_unsafe_in_an_api_path() {
         "a..b",
         "a//b",
         "main.lock",
+        "release.lock/main",
         "main?x=1",
         "a b",
         "@{1}",

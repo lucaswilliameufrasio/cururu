@@ -403,8 +403,10 @@ file cannot recursively select another base.
   repository on its next review, with no edit in each repository. Whoever can
   push to that branch or move that tag controls the review configuration of
   every consumer, so protect it (branch protection or tag rulesets, required
-  reviews). With `[publication] require_approval`, a candidate made before the
-  base changed is refused at publication and needs a fresh review.
+  reviews). With `[publication] require_approval`, the publication step loads the
+  configuration again and resolves the branch or tag anew; if the shared
+  configuration content changed since the candidate was made, publication is
+  refused and a fresh review is needed.
 - **Full commit SHA**: the base never changes until each consumer updates the
   pin. Use it when a repository must adopt shared changes explicitly.
 
