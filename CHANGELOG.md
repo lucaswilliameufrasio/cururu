@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [6.2.1] - 2026-11-18
+
+### Bug Fixes
+
+- *(github)* Read PR discussion after the latest Cururu summary
+
+### Chores
+
+- Pin v6.2.0 OCI digest
+- *(workflows)* Adopt Cururu v6.2.0
+
+### Testing
+
+- *(github)* A later Cururu notice does not replace the summary anchor
+
 ## [6.2.0] - 2026-11-17
 
 ### Bug Fixes
