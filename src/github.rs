@@ -2079,6 +2079,42 @@ mod tests {
         assert_eq!(bodies, ["/cururu review"]);
     }
 
+    #[tokio::test]
+    async fn a_later_cururu_notice_is_not_taken_for_the_summary() {
+        let server = MockServer::start().await;
+        let comments = serde_json::json!([
+            {"id":1,"body":output::marker(),"user":{"login":"cururu[bot]","type":"Bot"}},
+            {"id":2,"body":"human reply","user":{"login":"human","type":"User"}},
+            {"id":3,"body":"<!-- cururu:diff-limit:v1 --> notice","user":{"login":"cururu[bot]","type":"Bot"}},
+        ]);
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(comments))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "fixture".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://example.invalid".into(),
+        })
+        .unwrap();
+        let feedback = client
+            .fetch_issue_comment_feedback(Some("cururu[bot]"))
+            .await
+            .unwrap()
+            .unwrap();
+        let bodies: Vec<_> = feedback.comments.iter().map(|c| c.body.as_str()).collect();
+        assert_eq!(
+            bodies,
+            ["human reply", "<!-- cururu:diff-limit:v1 --> notice"]
+        );
+    }
+
     #[test]
     fn feedback_byte_and_location_limits_reject_instead_of_truncating() {
         let mut feedback = vec![PriorReviewFeedback {
