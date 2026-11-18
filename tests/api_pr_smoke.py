@@ -50,6 +50,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers["Content-Length"]))
+        if self.path == "/graphql":
+            # Review thread resolution is a read-only GraphQL query.
+            self.reply(200, {"data": {"repository": {"pullRequest": {"reviewThreads": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}})
+            return
         if self.path != "/chat/completions":
             state["other_posts"] += 1
             self.reply(404, {})
@@ -90,9 +95,11 @@ with tempfile.TemporaryDirectory() as directory:
     assert run("api-review", "--pr", "--confirm-send", "--expected-snapshot", "stale").returncode != 0
     assert state["api_calls"] == 0
     state["excess_feedback"] = True
-    rejected = run("api-review", "--pr", "--confirm-send")
-    assert rejected.returncode != 0 and "comment limit" in rejected.stderr, rejected.stderr
-    assert state["api_calls"] == 0 and state["other_posts"] == 0
+    # Oversized prior feedback is cut with a warning instead of failing the review.
+    cut = run("api-review", "--pr", "--confirm-send")
+    assert cut.returncode == 0 and "prior review feedback was cut" in cut.stderr, cut.stderr
+    assert state["api_calls"] == 1 and state["other_posts"] == 0
+    state["api_calls"] = 0
     state["excess_feedback"] = False
     state["malformed_checks"] = True
     malformed = run("api-review", "--pr", "--confirm-send")

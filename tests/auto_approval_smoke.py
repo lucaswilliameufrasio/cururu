@@ -75,6 +75,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self.body()
+        if self.path == "/graphql":
+            # Review thread resolution is a read-only GraphQL query.
+            self.reply(200, {"data": {"repository": {"pullRequest": {"reviewThreads": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}})
+            return
         if self.path == "/chat/completions":
             review = {"model": "fixture", "files_reviewed": 1, "summary": "Reviewed the change.", "findings": state["findings"]}
             content = json.dumps(review)[:20] if state["finish"] == "length" else json.dumps(review)

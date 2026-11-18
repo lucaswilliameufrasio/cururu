@@ -20,6 +20,7 @@ mod local_git;
 mod mcp;
 mod mcp_install;
 mod output;
+mod prior_feedback;
 mod provider;
 mod quality;
 mod repository;

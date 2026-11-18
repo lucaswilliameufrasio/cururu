@@ -69,7 +69,11 @@ class Fake(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
-        if self.path == "/app/installations/1/access_tokens":
+        if self.path == "/graphql":
+            # Review thread resolution is a read-only GraphQL query.
+            self.reply(200, {"data": {"repository": {"pullRequest": {"reviewThreads": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}})
+        elif self.path == "/app/installations/1/access_tokens":
             self.reply(201, {"token": "synthetic-token"})
         elif self.path == "/chat/completions":
             state["models"] += 1
