@@ -736,6 +736,14 @@ fails the review when the configured manifest is missing. The
 [cururu-demo](https://github.com/lucaswilliameufrasio/cururu-demo) workflows
 show this split.
 
+That evidence is produced by the pull request: its code runs in the analyzer
+job, and on `pull_request` a PR can even change the analyzer workflow, so it
+can forge the manifest or SARIF (the head check only rejects stale evidence).
+Cururu treats analyzer output as untrusted data and uses its status only as a
+veto for [auto-approval](docs/auto-approval.md): a forged `passed` removes that
+veto but cannot approve a PR by itself. Do not treat analyzer status as proof
+that a PR is safe.
+
 ## Local development
 
 ```bash
