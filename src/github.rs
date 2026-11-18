@@ -1000,19 +1000,21 @@ impl GitHubClient {
         const MAX_COMMENT_CHARS: usize = 2_000;
 
         let comments = self.list_issue_comments().await?;
-        let Some(summary) = comments.iter().find(|comment| {
-            Self::issue_comment_is_cururu(comment, own_login)
-                && comment
-                    .body
-                    .as_deref()
-                    .is_some_and(|body| body.contains(output::marker()))
-        }) else {
+        // Each run posts its own summary: start after the most recent one, so
+        // earlier summaries never pull later ones in as discussion.
+        let Some(summary) = comments
+            .iter()
+            .filter(|comment| Self::issue_comment_is_cururu(comment, own_login))
+            .max_by_key(|comment| comment.id)
+        else {
             return Ok(None);
         };
         let summary_login = summary.user.as_ref().map(|user| user.login.as_str());
         let mut replies: Vec<_> = comments
             .iter()
             .filter(|comment| comment.id > summary.id)
+            // A summary posted concurrently is Cururu output, not discussion.
+            .filter(|comment| !Self::issue_comment_is_cururu(comment, own_login))
             .filter_map(|comment| {
                 let user = comment.user.as_ref()?;
                 let is_cururu =
@@ -2038,6 +2040,79 @@ mod tests {
                 assert_eq!(feedback.comments[0].body.chars().count(), chars);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn pr_conversation_starts_after_the_latest_summary() {
+        // Each v6 run posts its own summary; an older summary must not pull the
+        // newer (long) summaries in as discussion and block the review.
+        let server = MockServer::start().await;
+        let long_summary = format!("{}{}", output::marker(), "x".repeat(8_000));
+        let comments = serde_json::json!([
+            {"id":1,"body":long_summary,"user":{"login":"cururu[bot]","type":"Bot"}},
+            {"id":2,"body":"old reply","user":{"login":"human","type":"User"}},
+            {"id":3,"body":long_summary,"user":{"login":"cururu[bot]","type":"Bot"}},
+            {"id":4,"body":"/cururu review","user":{"login":"human","type":"User"}},
+        ]);
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(comments))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "fixture".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://example.invalid".into(),
+        })
+        .unwrap();
+        let feedback = client
+            .fetch_issue_comment_feedback(Some("cururu[bot]"))
+            .await
+            .unwrap()
+            .unwrap();
+        let bodies: Vec<_> = feedback.comments.iter().map(|c| c.body.as_str()).collect();
+        assert_eq!(bodies, ["/cururu review"]);
+    }
+
+    #[tokio::test]
+    async fn a_later_cururu_notice_is_not_taken_for_the_summary() {
+        let server = MockServer::start().await;
+        let comments = serde_json::json!([
+            {"id":1,"body":output::marker(),"user":{"login":"cururu[bot]","type":"Bot"}},
+            {"id":2,"body":"human reply","user":{"login":"human","type":"User"}},
+            {"id":3,"body":"<!-- cururu:diff-limit:v1 --> notice","user":{"login":"cururu[bot]","type":"Bot"}},
+        ]);
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(comments))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = GitHubClient::new(&GitHubConfig {
+            token: "fixture".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://example.invalid".into(),
+        })
+        .unwrap();
+        let feedback = client
+            .fetch_issue_comment_feedback(Some("cururu[bot]"))
+            .await
+            .unwrap()
+            .unwrap();
+        let bodies: Vec<_> = feedback.comments.iter().map(|c| c.body.as_str()).collect();
+        assert_eq!(
+            bodies,
+            ["human reply", "<!-- cururu:diff-limit:v1 --> notice"]
+        );
     }
 
     #[test]
