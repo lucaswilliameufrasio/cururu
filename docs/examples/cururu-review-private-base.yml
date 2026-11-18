@@ -5,6 +5,9 @@
 # require_approval = true` in the trusted configuration, create a
 # `cururu-publish` environment with required reviewers; the publish job waits
 # for its approval. Without it, reviews are published as soon as they complete.
+# Public repositories: from December 2, 2026 GitHub blocks pull_request_target
+# unless an Actions event policy allows it. See "Allow pull_request_target on
+# public repositories" in the README.
 name: Cururu PR Review
 
 on:
