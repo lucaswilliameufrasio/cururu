@@ -32,21 +32,27 @@ pub struct FeedbackCuts {
     /// Thread replies and conversation comments beyond their count limit or
     /// the byte budget.
     pub dropped_comments: usize,
-    /// Bodies or locations cut at their character limit.
+    /// Comment bodies cut at their character limit.
     pub truncated_comments: usize,
+    /// Location labels cut at their character limit.
+    pub truncated_locations: usize,
 }
 
 impl FeedbackCuts {
     pub const fn any(&self) -> bool {
-        self.dropped_threads > 0 || self.dropped_comments > 0 || self.truncated_comments > 0
+        self.dropped_threads > 0
+            || self.dropped_comments > 0
+            || self.truncated_comments > 0
+            || self.truncated_locations > 0
     }
 
     pub fn summary(&self) -> String {
         format!(
-            "prior review feedback was cut to fit its limits: {} thread(s) and {} comment(s) dropped, {} comment(s) truncated, {} resolved thread(s) skipped",
+            "prior review feedback was cut to fit its limits: {} thread(s) and {} comment(s) dropped, {} comment(s) and {} location(s) truncated, {} resolved thread(s) skipped",
             self.dropped_threads,
             self.dropped_comments,
             self.truncated_comments,
+            self.truncated_locations,
             self.resolved_threads
         )
     }
@@ -89,7 +95,7 @@ fn bounded_comment(comment: PriorReviewComment, cuts: &mut FeedbackCuts) -> Prio
 fn bounded_location(location: &str, cuts: &mut FeedbackCuts) -> String {
     let (location, truncated) = truncate_chars(location, MAX_LOCATION_CHARS);
     if truncated {
-        cuts.truncated_comments += 1;
+        cuts.truncated_locations += 1;
     }
     location
 }
@@ -302,7 +308,12 @@ mod tests {
         assert!(long.comments[0].body.ends_with(TRUNCATION_MARK));
         assert_eq!(cuts.dropped_threads, 7);
         assert_eq!(cuts.dropped_comments, 5);
-        assert_eq!(cuts.truncated_comments, 2);
+        assert_eq!(cuts.truncated_comments, 1);
+        assert_eq!(cuts.truncated_locations, 1);
+        assert!(
+            cuts.summary()
+                .contains("1 comment(s) and 1 location(s) truncated")
+        );
     }
 
     #[test]

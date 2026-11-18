@@ -918,18 +918,8 @@ impl GitHubClient {
 
         let comments = self.list_review_comments().await?;
         let own_login = self.current_login().await;
-        let resolved = match self.resolved_review_thread_roots().await {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "could not read review thread resolution; keeping resolved threads in prior feedback"
-                );
-                std::collections::HashSet::new()
-            }
-        };
         let mut cuts = FeedbackCuts::default();
-        let threads: Vec<InlineThread> = comments
+        let candidates: Vec<InlineThread> = comments
             .iter()
             .filter(|comment| {
                 comment.in_reply_to_id.is_none()
@@ -958,10 +948,6 @@ impl GitHubClient {
                 if replies.is_empty() {
                     return None;
                 }
-                if resolved.contains(&root.id) {
-                    cuts.resolved_threads += 1;
-                    return None;
-                }
                 replies.sort_by_key(|(id, _)| *id);
                 let line = root
                     .line
@@ -975,6 +961,31 @@ impl GitHubClient {
                     },
                     replies: replies.into_iter().map(|(_, reply)| reply).collect(),
                 })
+            })
+            .collect();
+        // Only ask GraphQL for resolution when some thread could be sent.
+        let resolved = if candidates.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            match self.resolved_review_thread_roots().await {
+                Ok(resolved) => resolved,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "could not read review thread resolution; keeping resolved threads in prior feedback"
+                    );
+                    std::collections::HashSet::new()
+                }
+            }
+        };
+        let threads: Vec<InlineThread> = candidates
+            .into_iter()
+            .filter(|thread| {
+                let open = !resolved.contains(&thread.root_id);
+                if !open {
+                    cuts.resolved_threads += 1;
+                }
+                open
             })
             .collect();
 
@@ -2348,6 +2359,30 @@ mod tests {
         // ~15 KB of threads is cut to the budget instead of failing.
         assert!(total_bytes(&feedback) <= crate::prior_feedback::MAX_FEEDBACK_BYTES);
         assert_eq!(feedback.last().unwrap().location, "src/17.rs (line 1)");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn no_graphql_query_without_answered_cururu_threads() {
+        let server = MockServer::start().await;
+        // A Cururu finding without replies is not sent, so resolution is not needed.
+        mount_feedback(
+            &server,
+            review_threads(3, 0, "unused"),
+            serde_json::json!([]),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let feedback = feedback_client(&server)
+            .fetch_prior_review_feedback()
+            .await
+            .unwrap();
+        assert_eq!(feedback, Vec::new());
         server.verify().await;
     }
 
