@@ -726,6 +726,16 @@ workflows like Cururu's that never check out, build, or run PR code with
 secrets or a write token; see GitHub's
 [guide to `pull_request_target`](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
 
+Analyzer evidence (`[analysis]`) usually means building the PR, so run the
+analyzers in a separate `pull_request` workflow without secrets and a
+read-only token, upload the manifest as an artifact, and have the Cururu
+review job download it as data for the PR head (with `actions: read`) instead
+of building inside the `pull_request_target` workflow. When no finished run
+exists for the head, write a manifest with the tools as `not_run`: Cururu
+fails the review when the configured manifest is missing. The
+[cururu-demo](https://github.com/lucaswilliameufrasio/cururu-demo) workflows
+show this split.
+
 ## Local development
 
 ```bash
