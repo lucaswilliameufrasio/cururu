@@ -82,7 +82,7 @@ jobs:
       - name: Review PR
         id: review
         if: steps.llm_key.outputs.skip == 'false'
-        uses: lucaswilliameufrasio/cururu@ff6bb565ae52460a212c0b30cc89d0e1d4d24ec5 # v6.2.0
+        uses: lucaswilliameufrasio/cururu@01f174fc3dc5e8124485a2a9bb9f929af2dbc1d1 # v6.2.1
         with:
           llm_api_key: ${{ secrets.LLM_API_KEY }}
           expected_head_sha: ${{ github.event.pull_request.head.sha || '' }}
@@ -119,7 +119,7 @@ jobs:
         with:
           name: cururu-candidate
       - name: Publish approved review
-        uses: lucaswilliameufrasio/cururu@ff6bb565ae52460a212c0b30cc89d0e1d4d24ec5 # v6.2.0
+        uses: lucaswilliameufrasio/cururu@01f174fc3dc5e8124485a2a9bb9f929af2dbc1d1 # v6.2.1
         with:
           mode: publish
           github_token: ${{ secrets.GITHUB_TOKEN }}
