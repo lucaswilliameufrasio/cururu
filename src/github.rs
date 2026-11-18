@@ -909,16 +909,27 @@ impl GitHubClient {
         anyhow::bail!("review comment history exceeds the supported pagination limit")
     }
 
-    /// Collect bounded human and Cururu replies to prior findings. Historical
-    /// comments are discussion data, not instructions to the reviewer.
+    /// Collect human and Cururu replies to prior findings, skipping resolved
+    /// threads, and cut them to the prior-feedback limits. Historical comments
+    /// are discussion data, not instructions to the reviewer. Size limits cut
+    /// the input deterministically and never fail the review.
     pub async fn fetch_prior_review_feedback(&self) -> anyhow::Result<Vec<PriorReviewFeedback>> {
-        const MAX_THREADS: usize = 20;
-        const MAX_REPLIES_PER_THREAD: usize = 10;
-        const MAX_COMMENT_CHARS: usize = 2_000;
+        use crate::prior_feedback::{FeedbackCuts, InlineThread};
 
         let comments = self.list_review_comments().await?;
         let own_login = self.current_login().await;
-        let mut roots: Vec<_> = comments
+        let resolved = match self.resolved_review_thread_roots().await {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "could not read review thread resolution; keeping resolved threads in prior feedback"
+                );
+                std::collections::HashSet::new()
+            }
+        };
+        let mut cuts = FeedbackCuts::default();
+        let threads: Vec<InlineThread> = comments
             .iter()
             .filter(|comment| {
                 comment.in_reply_to_id.is_none()
@@ -926,79 +937,141 @@ impl GitHubClient {
             })
             .filter_map(|root| {
                 let root_body = root.body.as_deref()?.trim();
-                let replies: Vec<_> = comments
+                let root_login = &root.user.as_ref()?.login;
+                let mut replies: Vec<_> = comments
                     .iter()
                     .filter(|reply| reply.in_reply_to_id == Some(root.id))
                     .filter_map(|reply| {
                         let user = reply.user.as_ref()?;
-                        let is_cururu = user.login.eq_ignore_ascii_case(&root.user.as_ref()?.login);
-                        (user.kind != "Bot" || is_cururu).then(|| PriorReviewComment {
-                            author: user.login.clone(),
-                            body: reply.body.as_deref().unwrap_or_default().to_owned(),
+                        let is_cururu = user.login.eq_ignore_ascii_case(root_login);
+                        (user.kind != "Bot" || is_cururu).then(|| {
+                            (
+                                reply.id,
+                                PriorReviewComment {
+                                    author: user.login.clone(),
+                                    body: reply.body.as_deref().unwrap_or_default().to_owned(),
+                                },
+                            )
                         })
                     })
                     .collect();
-                (!replies.is_empty()).then(|| {
-                    let line = root
-                        .line
-                        .map_or_else(|| "file".to_string(), |n| format!("line {n}"));
-                    let mut discussion = Vec::with_capacity(replies.len() + 1);
-                    discussion.push(PriorReviewComment {
-                        author: root
-                            .user
-                            .as_ref()
-                            .map_or_else(|| "Cururu".into(), |u| u.login.clone()),
+                if replies.is_empty() {
+                    return None;
+                }
+                if resolved.contains(&root.id) {
+                    cuts.resolved_threads += 1;
+                    return None;
+                }
+                replies.sort_by_key(|(id, _)| *id);
+                let line = root
+                    .line
+                    .map_or_else(|| "file".to_string(), |n| format!("line {n}"));
+                Some(InlineThread {
+                    root_id: root.id,
+                    location: format!("{} ({line})", root.path),
+                    root: PriorReviewComment {
+                        author: root_login.clone(),
                         body: root_body.to_owned(),
-                    });
-                    discussion.extend(replies);
-                    (
-                        root.id,
-                        PriorReviewFeedback {
-                            location: format!("{} ({line})", root.path),
-                            comments: discussion,
-                        },
-                    )
+                    },
+                    replies: replies.into_iter().map(|(_, reply)| reply).collect(),
                 })
             })
             .collect();
-        anyhow::ensure!(
-            roots.len() <= MAX_THREADS,
-            "prior review feedback exceeds thread limit"
-        );
-        for (_, thread) in &roots {
-            anyhow::ensure!(
-                thread.comments.len() <= MAX_REPLIES_PER_THREAD + 1,
-                "prior review feedback exceeds replies per thread limit"
-            );
-            anyhow::ensure!(
-                thread
-                    .comments
-                    .iter()
-                    .all(|comment| comment.body.chars().count() <= MAX_COMMENT_CHARS),
-                "prior review feedback exceeds comment character limit"
-            );
-        }
-        roots.sort_by_key(|(id, _)| std::cmp::Reverse(*id));
-        let mut feedback: Vec<_> = roots.into_iter().map(|(_, feedback)| feedback).collect();
-        feedback.reverse();
 
-        if let Some(issue_feedback) = self
+        let conversation = self
             .fetch_issue_comment_feedback(own_login.as_deref())
-            .await?
-        {
-            feedback.push(issue_feedback);
+            .await?;
+        let (feedback, cuts) = crate::prior_feedback::bound_feedback(threads, conversation, cuts);
+        if cuts.resolved_threads > 0 {
+            tracing::info!(
+                resolved = cuts.resolved_threads,
+                "skipped resolved review threads in prior feedback"
+            );
         }
-        validate_review_feedback_bounds(&feedback, 12_000)?;
+        if cuts.any() {
+            // Logged to stderr: stdout carries machine-readable output in
+            // some commands (for example `api-review`).
+            tracing::warn!("{}", cuts.summary());
+        }
+        crate::prior_feedback::validate_bounds(&feedback)?;
         Ok(feedback)
+    }
+
+    /// Root comment ids of resolved review threads, from GraphQL: the REST
+    /// review comments API does not report resolution.
+    async fn resolved_review_thread_roots(&self) -> anyhow::Result<std::collections::HashSet<u64>> {
+        const MAX_PAGES: usize = 10;
+        const QUERY: &str = "query($owner: String!, $repo: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { reviewThreads(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { isResolved comments(first: 1) { nodes { databaseId } } } } } } }";
+        let url = graphql_url(&self.cfg.api_url);
+        let mut resolved = std::collections::HashSet::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let body = serde_json::json!({
+                "query": QUERY,
+                "variables": {
+                    "owner": self.cfg.owner,
+                    "repo": self.cfg.repo,
+                    "number": self.cfg.pr_number,
+                    "cursor": cursor,
+                },
+            });
+            let response: serde_json::Value = self
+                .client
+                .post(&url)
+                .timeout(Duration::from_secs(15))
+                .bearer_auth(&self.cfg.token)
+                .json(&body)
+                .send()
+                .await
+                .context("failed to query review threads")?
+                .error_for_status()
+                .context("review threads GraphQL API error")?
+                .json()
+                .await
+                .context("failed to parse review threads response")?;
+            anyhow::ensure!(
+                response
+                    .get("errors")
+                    .is_none_or(serde_json::Value::is_null),
+                "review threads GraphQL query returned errors"
+            );
+            let threads = response
+                .pointer("/data/repository/pullRequest/reviewThreads")
+                .context("review threads missing from GraphQL response")?;
+            for node in threads
+                .get("nodes")
+                .and_then(serde_json::Value::as_array)
+                .context("review thread nodes missing from GraphQL response")?
+            {
+                if node.get("isResolved").and_then(serde_json::Value::as_bool) == Some(true)
+                    && let Some(id) = node
+                        .pointer("/comments/nodes/0/databaseId")
+                        .and_then(serde_json::Value::as_u64)
+                {
+                    resolved.insert(id);
+                }
+            }
+            let page = threads.get("pageInfo");
+            if page
+                .and_then(|page| page.get("hasNextPage"))
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            {
+                return Ok(resolved);
+            }
+            cursor = page
+                .and_then(|page| page.get("endCursor"))
+                .and_then(serde_json::Value::as_str)
+                .map(String::from);
+            anyhow::ensure!(cursor.is_some(), "review threads page cursor missing");
+        }
+        anyhow::bail!("review threads exceed the supported pagination limit")
     }
 
     async fn fetch_issue_comment_feedback(
         &self,
         own_login: Option<&str>,
     ) -> anyhow::Result<Option<PriorReviewFeedback>> {
-        const MAX_COMMENTS: usize = 10;
-        const MAX_COMMENT_CHARS: usize = 2_000;
-
         let comments = self.list_issue_comments().await?;
         // Each run posts its own summary: start after the most recent one, so
         // earlier summaries never pull later ones in as discussion.
@@ -1030,25 +1103,10 @@ impl GitHubClient {
                 })
             })
             .collect();
-        anyhow::ensure!(
-            replies.len() <= MAX_COMMENTS,
-            "prior PR discussion exceeds comment limit"
-        );
-        anyhow::ensure!(
-            replies
-                .iter()
-                .all(|(_, comment)| comment.body.chars().count() <= MAX_COMMENT_CHARS),
-            "prior PR discussion exceeds comment character limit"
-        );
+        // Count and length limits are applied by `prior_feedback::bound_feedback`,
+        // which keeps the latest comments instead of failing.
         replies.sort_by_key(|(id, _)| *id);
-        let replies: Vec<_> = replies
-            .into_iter()
-            .rev()
-            .map(|(_, comment)| comment)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
+        let replies: Vec<_> = replies.into_iter().map(|(_, comment)| comment).collect();
         if replies.is_empty() {
             return Ok(None);
         }
@@ -1822,27 +1880,15 @@ async fn read_response_prefix(response: &mut reqwest::Response, max_bytes: usize
     body
 }
 
-fn validate_review_feedback_bounds(
-    feedback: &[PriorReviewFeedback],
-    max_bytes: usize,
-) -> anyhow::Result<()> {
-    let mut total = 0usize;
-    for thread in feedback {
-        anyhow::ensure!(
-            thread.location.chars().count() <= 512,
-            "prior feedback location exceeds character limit"
-        );
-        total = total
-            .checked_add(thread.location.len())
-            .context("prior feedback exceeds byte limit")?;
-        for comment in &thread.comments {
-            total = total
-                .checked_add(comment.body.len())
-                .context("prior feedback exceeds byte limit")?;
-        }
-    }
-    anyhow::ensure!(total <= max_bytes, "prior feedback exceeds byte limit");
-    Ok(())
+/// GraphQL endpoint for a REST API base: `https://api.github.com` ->
+/// `https://api.github.com/graphql`; GitHub Enterprise Server
+/// `https://host/api/v3` -> `https://host/api/graphql`.
+fn graphql_url(api_url: &str) -> String {
+    let base = api_url.trim_end_matches('/');
+    base.strip_suffix("/api/v3").map_or_else(
+        || format!("{base}/graphql"),
+        |host| format!("{host}/api/graphql"),
+    )
 }
 
 fn normalize_finding_content(body: &str) -> String {
@@ -2001,13 +2047,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pr_conversation_limits_reject_excess_without_truncating() {
-        for (count, chars, expected) in [
-            (10, 1, true),
-            (11, 1, false),
-            (1, 2000, true),
-            (1, 2001, false),
-        ] {
+    async fn pr_conversation_is_collected_whole_and_cut_later() {
+        for (count, chars) in [(10, 1), (11, 1), (1, 2000), (1, 2001)] {
             let server = MockServer::start().await;
             let mut comments = vec![
                 serde_json::json!({"id":1,"body":output::marker(),"user":{"login":"cururu[bot]","type":"Bot"}}),
@@ -2034,11 +2075,14 @@ mod tests {
             let result = client
                 .fetch_issue_comment_feedback(Some("cururu[bot]"))
                 .await;
-            assert_eq!(result.is_ok(), expected, "count={count} chars={chars}");
-            if let Ok(Some(feedback)) = result {
-                assert_eq!(feedback.comments.len(), count);
-                assert_eq!(feedback.comments[0].body.chars().count(), chars);
-            }
+            // Count and length limits are applied by prior_feedback::bound_feedback.
+            let feedback = result.unwrap().unwrap();
+            assert_eq!(
+                feedback.comments.len(),
+                count,
+                "count={count} chars={chars}"
+            );
+            assert_eq!(feedback.comments[0].body.chars().count(), chars);
         }
     }
 
@@ -2115,67 +2159,204 @@ mod tests {
         );
     }
 
-    #[test]
-    fn feedback_byte_and_location_limits_reject_instead_of_truncating() {
-        let mut feedback = vec![PriorReviewFeedback {
-            location: "a".into(),
-            comments: vec![PriorReviewComment {
-                author: "fixture".into(),
-                body: "é".repeat(6),
-            }],
-        }];
-        assert!(validate_review_feedback_bounds(&feedback, 13).is_ok());
-        assert!(validate_review_feedback_bounds(&feedback, 12).is_err());
-        feedback[0].location = "x".repeat(513);
-        assert!(validate_review_feedback_bounds(&feedback, 10_000).is_err());
+    fn feedback_client(server: &MockServer) -> GitHubClient {
+        GitHubClient::new(&GitHubConfig {
+            token: "fixture".into(),
+            repository: "owner/repo".into(),
+            owner: "owner".into(),
+            repo: "repo".into(),
+            pr_number: 1,
+            api_url: server.uri(),
+            server_url: "https://example.invalid".into(),
+        })
+        .unwrap()
+    }
+
+    /// Cururu threads with `replies` human replies each, root ids
+    /// `1000 + thread * 100`, newest thread last.
+    fn review_threads(threads: u64, replies: u64, body: &str) -> Vec<serde_json::Value> {
+        let mut comments = Vec::new();
+        for thread in 0..threads {
+            let root_id = 1000 + thread * 100;
+            comments.push(serde_json::json!({"id":root_id,"body":format!("<!-- cururu:finding --> finding {thread}"),"user":{"login":"cururu[bot]","type":"Bot"},"path":format!("src/{thread}.rs"),"line":1}));
+            for reply in 0..replies {
+                comments.push(serde_json::json!({"id":root_id + reply + 1,"in_reply_to_id":root_id,"body":format!("{reply}:{body}"),"user":{"login":"user","type":"User"},"path":format!("src/{thread}.rs"),"line":1}));
+            }
+        }
+        comments
+    }
+
+    async fn mount_feedback(
+        server: &MockServer,
+        review_comments: Vec<serde_json::Value>,
+        issue_comments: serde_json::Value,
+    ) {
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(review_comments))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues/1/comments"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(issue_comments))
+            .mount(server)
+            .await;
+    }
+
+    async fn mount_review_threads(server: &MockServer, resolved_roots: &[u64], open_roots: &[u64]) {
+        let nodes: Vec<_> = resolved_roots
+            .iter()
+            .map(|id| (id, true))
+            .chain(open_roots.iter().map(|id| (id, false)))
+            .map(|(id, resolved)| serde_json::json!({"isResolved":resolved,"comments":{"nodes":[{"databaseId":id}]}}))
+            .collect();
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data":{"repository":{"pullRequest":{"reviewThreads":{
+                    "pageInfo":{"hasNextPage":false,"endCursor":null},
+                    "nodes":nodes
+                }}}}
+            })))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    fn total_bytes(feedback: &[PriorReviewFeedback]) -> usize {
+        feedback
+            .iter()
+            .map(crate::prior_feedback::feedback_bytes)
+            .sum()
     }
 
     #[tokio::test]
-    async fn feedback_rejects_oversized_threads_replies_and_comments() {
-        for (threads, replies, chars, expected_ok) in [
-            (1, 1, 2000, true),
-            (1, 1, 2001, false),
-            (1, 11, 1, false),
-            (21, 1, 1, false),
-        ] {
+    async fn resolved_threads_are_left_out_of_prior_feedback() {
+        // NEJCPM/backoffice-web#202: 18 answered and resolved Cururu threads,
+        // about 15 KB, failed every review with "prior feedback exceeds byte limit".
+        let server = MockServer::start().await;
+        let comments = review_threads(18, 1, &"x".repeat(800));
+        let roots: Vec<u64> = (0..18).map(|thread| 1000 + thread * 100).collect();
+        mount_feedback(&server, comments, serde_json::json!([])).await;
+        mount_review_threads(&server, &roots, &[]).await;
+        let feedback = feedback_client(&server)
+            .fetch_prior_review_feedback()
+            .await
+            .unwrap();
+        assert!(feedback.is_empty(), "{feedback:?}");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn open_threads_fit_the_budget_keeping_the_newest_and_the_conversation() {
+        let server = MockServer::start().await;
+        let comments = review_threads(18, 1, &"y".repeat(800));
+        let issue_comments = serde_json::json!([
+            {"id":1,"body":output::marker(),"user":{"login":"cururu[bot]","type":"Bot"}},
+            {"id":2,"body":"Please also cover the retry path.","user":{"login":"human","type":"User"}},
+        ]);
+        mount_feedback(&server, comments, issue_comments).await;
+        let open: Vec<u64> = (0..18).map(|thread| 1000 + thread * 100).collect();
+        mount_review_threads(&server, &[], &open).await;
+        let feedback = feedback_client(&server)
+            .fetch_prior_review_feedback()
+            .await
+            .unwrap();
+        assert!(total_bytes(&feedback) <= crate::prior_feedback::MAX_FEEDBACK_BYTES);
+        let conversation = feedback.last().unwrap();
+        assert_eq!(
+            conversation.comments[0].body,
+            "Please also cover the retry path."
+        );
+        let threads = &feedback[..feedback.len() - 1];
+        assert!(threads.len() < 18);
+        // The newest thread is kept and threads stay oldest first.
+        assert_eq!(threads.last().unwrap().location, "src/17.rs (line 1)");
+        let first_kept = 18 - threads.len();
+        assert_eq!(threads[0].location, format!("src/{first_kept}.rs (line 1)"));
+    }
+
+    #[tokio::test]
+    async fn thread_reply_and_comment_limits_cut_instead_of_failing() {
+        for (threads, replies, chars) in [(25, 1, 10), (1, 15, 10), (1, 1, 2_500)] {
             let server = MockServer::start().await;
-            let mut comments = Vec::new();
-            for thread in 0..threads {
-                let root_id = 1000 + thread * 100;
-                comments.push(serde_json::json!({"id":root_id,"body":"<!-- cururu:finding --> fixture","user":{"login":"cururu[bot]","type":"Bot"},"path":"a","line":1}));
-                for reply in 0..replies {
-                    comments.push(serde_json::json!({"id":root_id + reply + 1,"in_reply_to_id":root_id,"body":"x".repeat(chars),"user":{"login":"user","type":"User"},"path":"a","line":1}));
+            let body = "ã".repeat(chars);
+            mount_feedback(
+                &server,
+                review_threads(threads, replies, &body),
+                serde_json::json!([]),
+            )
+            .await;
+            let feedback = feedback_client(&server)
+                .fetch_prior_review_feedback()
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("threads={threads} replies={replies} chars={chars}: {error}")
+                });
+            assert!(feedback.len() <= crate::prior_feedback::MAX_THREADS);
+            for entry in &feedback {
+                assert!(entry.comments.len() <= crate::prior_feedback::MAX_REPLIES_PER_THREAD + 1);
+                for comment in &entry.comments {
+                    assert!(
+                        comment.body.chars().count() <= crate::prior_feedback::MAX_COMMENT_CHARS
+                    );
                 }
             }
-            Mock::given(method("GET"))
-                .and(path("/repos/owner/repo/pulls/1/comments"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(comments))
-                .mount(&server)
-                .await;
-            Mock::given(method("GET"))
-                .and(path("/repos/owner/repo/issues/1/comments"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(Vec::<serde_json::Value>::new()),
-                )
-                .mount(&server)
-                .await;
-            let client = GitHubClient::new(&GitHubConfig {
-                token: "fixture".into(),
-                repository: "owner/repo".into(),
-                owner: "owner".into(),
-                repo: "repo".into(),
-                pr_number: 1,
-                api_url: server.uri(),
-                server_url: "https://example.invalid".into(),
-            })
-            .unwrap();
-            let result = client.fetch_prior_review_feedback().await;
-            assert_eq!(
-                result.is_ok(),
-                expected_ok,
-                "threads={threads} replies={replies} chars={chars}"
-            );
+            if chars > crate::prior_feedback::MAX_COMMENT_CHARS {
+                assert!(
+                    feedback[0].comments[1]
+                        .body
+                        .ends_with(crate::prior_feedback::TRUNCATION_MARK)
+                );
+            }
+            if replies > crate::prior_feedback::MAX_REPLIES_PER_THREAD as u64 {
+                // The latest replies are kept.
+                assert!(feedback[0].comments.last().unwrap().body.starts_with("14:"));
+                assert!(feedback[0].comments[1].body.starts_with("5:"));
+            }
+            if threads > crate::prior_feedback::MAX_THREADS as u64 {
+                assert_eq!(feedback.len(), crate::prior_feedback::MAX_THREADS);
+                assert_eq!(feedback.last().unwrap().location, "src/24.rs (line 1)");
+            }
         }
+    }
+
+    #[tokio::test]
+    async fn graphql_failure_keeps_every_thread_and_still_cuts() {
+        let server = MockServer::start().await;
+        mount_feedback(
+            &server,
+            review_threads(18, 1, &"z".repeat(800)),
+            serde_json::json!([]),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .respond_with(ResponseTemplate::new(502))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let feedback = feedback_client(&server)
+            .fetch_prior_review_feedback()
+            .await
+            .unwrap();
+        // Without resolution data resolved threads are not filtered, so the
+        // ~15 KB of threads is cut to the budget instead of failing.
+        assert!(total_bytes(&feedback) <= crate::prior_feedback::MAX_FEEDBACK_BYTES);
+        assert_eq!(feedback.last().unwrap().location, "src/17.rs (line 1)");
+        server.verify().await;
+    }
+
+    #[test]
+    fn graphql_endpoint_follows_the_rest_api_base() {
+        assert_eq!(
+            graphql_url("https://api.github.com"),
+            "https://api.github.com/graphql"
+        );
+        assert_eq!(
+            graphql_url("https://ghe.example/api/v3/"),
+            "https://ghe.example/api/graphql"
+        );
     }
 
     #[tokio::test]

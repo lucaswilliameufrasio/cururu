@@ -46,6 +46,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_data(404, {})
 
     def do_POST(self):
+        if self.path == "/graphql":
+            # Review thread resolution is a read-only GraphQL query.
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_data(200, {"data": {"repository": {"pullRequest": {"reviewThreads": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}})
+            return
         posts.append((self.path, self.rfile.read(int(self.headers["Content-Length"]))))
         self.send_data(201, {})
 

@@ -74,6 +74,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers["Content-Length"]))
+        if self.path == "/graphql":
+            # Review thread resolution is a read-only GraphQL query.
+            self.reply(200, {"data": {"repository": {"pullRequest": {"reviewThreads": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}})
+            return
         if self.path == "/chat/completions":
             state["models"] += 1
             state["changed"] = True

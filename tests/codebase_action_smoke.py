@@ -60,6 +60,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+        if self.path == "/graphql":
+            # Review thread resolution is a read-only GraphQL query.
+            self.reply(200, {"data": {"repository": {"pullRequest": {"reviewThreads": {
+                "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}}}})
+            return
         if self.path == "/chat/completions":
             state["model_requests"].append(body)
             chunk = "\n".join(message["content"] for message in body["messages"] if isinstance(message.get("content"), str))
