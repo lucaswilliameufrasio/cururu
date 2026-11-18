@@ -10,6 +10,9 @@
 #      and the `publish` job is skipped.
 #   3. Optionally add .cururu.toml at the repository root.
 #   4. Keep only one Cururu review workflow active for the repository.
+#   5. Public repositories: from December 2, 2026 GitHub blocks
+#      pull_request_target unless an Actions event policy allows it. See
+#      "Allow pull_request_target on public repositories" in the README.
 #
 # With the approval on, the review job comments nothing: it shows the exact
 # candidate in the job summary and in a "Cururu review" check. A required

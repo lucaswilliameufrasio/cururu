@@ -689,6 +689,43 @@ The example workflow uses `pull_request_target` so the action runs in the
 repository context, not the fork. Cururu reads the diff and context files
 through the GitHub API and never executes code from the PR branch.
 
+### Allow `pull_request_target` on public repositories
+
+From December 2, 2026, GitHub blocks `pull_request_target` by default on
+public repositories that have no Actions event policy for it (until then it
+only reports, in evaluate mode). Cururu needs the event to review pull requests
+from forks with the LLM key, so allow it explicitly, scoped to the Cururu
+workflow only:
+
+```bash
+gh api -X POST -H "X-GitHub-Api-Version: 2026-03-10" \
+  repos/OWNER/REPO/actions/policies --input - <<'JSON'
+{
+  "name": "Allow Cururu review triggers",
+  "enforcement": "active",
+  "conditions": {
+    "workflow_path": {
+      "include": [".github/workflows/cururu-review.yml"],
+      "exclude": []
+    }
+  },
+  "rules": [{
+    "type": "restrict_action_events",
+    "parameters": { "allowed_events": ["pull_request_target", "issue_comment"] }
+  }]
+}
+JSON
+```
+
+`allowed_events` is an allow-list for the workflows the policy targets: keep
+it limited to the Cururu workflow and list every event that workflow uses. An
+organization can create the same rule once with
+`POST /orgs/ORG/actions/policies` and `conditions.repository_name` (or
+`repository_property`) selecting the repositories. Only allow the event for
+workflows like Cururu's that never check out, build, or run PR code with
+secrets or a write token; see GitHub's
+[guide to `pull_request_target`](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
+
 ## Local development
 
 ```bash
