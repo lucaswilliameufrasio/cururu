@@ -90,13 +90,14 @@ fn bounded_location(location: &str, cuts: &mut FeedbackCuts) -> String {
     location
 }
 
-/// Bytes counted against [`MAX_FEEDBACK_BYTES`].
+/// Bytes counted against [`MAX_FEEDBACK_BYTES`]: the location and each
+/// comment's author and body, as sent to the model.
 pub fn feedback_bytes(feedback: &PriorReviewFeedback) -> usize {
     feedback.location.len()
         + feedback
             .comments
             .iter()
-            .map(|comment| comment.body.len())
+            .map(|comment| comment.author.len() + comment.body.len())
             .sum::<usize>()
 }
 
@@ -312,6 +313,44 @@ mod tests {
         let kept = &feedback[0].comments;
         assert!(kept.last().unwrap().body.starts_with("11"));
         assert_eq!(cuts.dropped_comments, 12 - kept.len());
+    }
+
+    #[test]
+    fn authors_count_against_the_budget() {
+        let long_author = "a".repeat(39);
+        let threads: Vec<_> = (1..=20)
+            .map(|id| InlineThread {
+                root_id: id,
+                location: format!("src/{id}.rs (line 1)"),
+                root: PriorReviewComment {
+                    author: long_author.clone(),
+                    body: "f".repeat(300),
+                },
+                replies: (0..10)
+                    .map(|_| PriorReviewComment {
+                        author: long_author.clone(),
+                        body: "r".repeat(20),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let (feedback, cuts) = bound_feedback(threads, None, FeedbackCuts::default());
+        validate_bounds(&feedback).unwrap();
+        let rendered: usize = feedback
+            .iter()
+            .map(|entry| {
+                entry.location.len()
+                    + entry
+                        .comments
+                        .iter()
+                        .map(|c| c.author.len() + c.body.len())
+                        .sum::<usize>()
+            })
+            .sum();
+        assert!(rendered <= MAX_FEEDBACK_BYTES, "{rendered}");
+        // Bodies and locations alone (~10.4 KB) fit all 20 threads; the
+        // 39-byte authors (~8.6 KB more) do not, so threads must be dropped.
+        assert!(cuts.dropped_threads > 0);
     }
 
     #[test]

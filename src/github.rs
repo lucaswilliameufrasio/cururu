@@ -1921,7 +1921,7 @@ mod tests {
     use super::*;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{body_json, header, method, path, query_param},
+        matchers::{body_json, body_partial_json, header, method, path, query_param},
     };
 
     #[test]
@@ -2212,6 +2212,10 @@ mod tests {
             .collect();
         Mock::given(method("POST"))
             .and(path("/graphql"))
+            .and(header("Authorization", "Bearer fixture"))
+            .and(body_partial_json(serde_json::json!({
+                "variables":{"owner":"owner","repo":"repo","number":1,"cursor":null}
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "data":{"repository":{"pullRequest":{"reviewThreads":{
                     "pageInfo":{"hasNextPage":false,"endCursor":null},
