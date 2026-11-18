@@ -68,8 +68,12 @@ pub fn truncate_chars(value: &str, max_chars: usize) -> (String, bool) {
     if value.chars().count() <= max_chars {
         return (value.to_owned(), false);
     }
-    let keep = max_chars.saturating_sub(TRUNCATION_MARK.chars().count());
-    let mut cut: String = value.chars().take(keep).collect();
+    let mark_chars = TRUNCATION_MARK.chars().count();
+    if max_chars < mark_chars {
+        // No room for the mark: keep the limit, without it.
+        return (value.chars().take(max_chars).collect(), true);
+    }
+    let mut cut: String = value.chars().take(max_chars - mark_chars).collect();
     cut.push_str(TRUNCATION_MARK);
     (cut, true)
 }
@@ -242,6 +246,8 @@ mod tests {
                 .all(|c| c == 'é')
         );
         assert_eq!(truncate_chars("ação", 4), ("ação".to_owned(), false));
+        // A limit smaller than the mark still holds, without the mark.
+        assert_eq!(truncate_chars("ação longa", 3), ("açã".to_owned(), true));
     }
 
     #[test]
