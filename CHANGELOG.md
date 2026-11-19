@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [6.2.2] - 2026-11-19
+
+### Bug Fixes
+
+- *(github)* Cut prior review feedback instead of failing the review
+- *(github)* Count comment authors in the prior feedback budget
+- *(github)* Keep truncate_chars within limits smaller than the mark
+- *(github)* Query thread resolution only when a thread could be sent
+
+### Chores
+
+- Pin v6.2.1 OCI digest
+- *(workflows)* Adopt Cururu v6.2.1
+
+### Documentation
+
+- Explain allowing pull_request_target for the Cururu workflow
+- Run analyzers outside the pull_request_target workflow
+- Analyzer evidence from PR builds is forgeable by the PR
+
 ## [6.2.1] - 2026-11-18
 
 ### Bug Fixes
