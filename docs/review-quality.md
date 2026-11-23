@@ -48,7 +48,7 @@ methods with a receiver) are not listed.
 | `canonical_review_prompt_carries_the_comment_quality_rules` | The prompt carries each rule. | That a model follows it. |
 | `cost_is_rendered_even_when_token_usage_is_disabled` (its partial-coverage asserts) | A partial review is not rendered as a clean one. | Anything about the model's own summary. |
 | `tests/review_quality/run.py --check` (run by `review_quality_scenarios_reach_the_model_intact`) | Each synthetic scenario builds, and its diff, context and prior feedback reach the model; skipped and truncated files are reported. A loopback fake answers as the model. | Review quality. |
-| `tests/review_quality/run.py --send OUT` | Real answers from the configured model for each scenario, written with the scenario's expectations for a human or model judge. | A general quality score: six small synthetic cases, one model, one run. |
+| `tests/review_quality/run.py --send OUT` | Real answers from the configured model for each scenario, written with the scenario's expectations for a human or model judge. | A general quality score: seven small synthetic cases, one model, one run. |
 
 Deterministic tests are never evidence of review quality. Only a real run,
 judged against the expectations, says anything about it, and only for the
@@ -56,7 +56,7 @@ model, configuration and scenarios used.
 
 ## Scenarios
 
-`tests/review_quality/scenarios.json` holds six synthetic changes:
+`tests/review_quality/scenarios.json` holds seven synthetic changes:
 
 | Scenario | Expectation in short |
 | --- | --- |
@@ -65,6 +65,7 @@ model, configuration and scenarios used.
 | `pre-existing-versus-regression` | String-built SQL that predates the change is labelled as pre-existing. |
 | `deploy-partial-failure` | Old workers read a renamed column; no assumed rollback or guaranteed reordering. |
 | `resolved-prior-comment` | A timeout already fixed after earlier feedback is not reported again. |
+| `resolved-decision-kept` | A broad `except` the author answered as intentional and resolved is not reported again on the same code. In `--check`, the fake model repeats the finding and Cururu must drop it as `suppressed_as_decided`. |
 | `incomplete-review` | Truncated and binary files are reported, and nothing claims full coverage. |
 
 ## Running a real evaluation

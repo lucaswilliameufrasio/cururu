@@ -88,8 +88,8 @@ paths); a truncated tree or failure to read a file known to exist stops the revi
 The adapter also includes prior review feedback as untrusted evidence, with a
 bounded size and snapshot binding. Inspect `prepare-review --pr` before sending:
 feedback can contain names and comments. When feedback exceeds limits on threads,
-replies, individual comment length, location length, or total bytes, collection
-fails instead of silently dropping or shortening it. When analysis and check runs are enabled,
+replies, individual comment length, location length, or total bytes, it is cut
+deterministically and the cut is logged (see [Prior review feedback](#prior-review-feedback)). When analysis and check runs are enabled,
 matching check-run annotations are bounded, snapshot-bound and sent as untrusted
 evidence. `prepare-review` accepts explicitly chosen local `--sarif FILE
 --analysis-manifest FILE`; the manifest must identify the reviewed HEAD, and
@@ -482,6 +482,7 @@ context files). Estimated cost per review through OpenRouter pricing:
 | `technical_level` | Intended reader: `beginner`, `intermediate` (default), or `expert` |
 | `suggestion_detail` | Recommendation context: `concise`, `standard`, or `detailed` (default) |
 | `comment_mode` | `inline` (default) or `summary` |
+| `prior_feedback_resolved` | Resolved review threads sent as prior feedback: `with_human_reply` (default) or `none` |
 
 `suggestion_detail = "detailed"` asks Cururu to explain the context, why a fix
 addresses the finding, and a concrete safe action. It should acknowledge when the
@@ -495,6 +496,43 @@ systematically considers security boundaries, authentication and authorization,
 injection, secrets, error handling, concurrency, resource limits, external
 calls, compatibility, migrations, observability, and tests. It only reports a
 category when the changed code provides concrete evidence of a problem.
+
+### Prior review feedback
+
+Each review reads the replies to earlier Cururu findings and the PR
+conversation after the latest Cururu summary, and sends them to the model as
+untrusted data, never as instructions:
+
+- **Open threads** with a reply are sent whole (the finding and its latest
+  replies).
+- **Resolved threads with a human reply** are sent as recorded decisions, in
+  compact form: the finding's severity and title, its location and the latest
+  reply written by a person (not a bot and not Cururu), marked `"resolved":
+  true`. Resolving a thread after answering "not applicable" or "kept because…"
+  (as repositories that require conversation resolution before merge do) no
+  longer makes the next review lose that answer and raise the same finding again.
+  The model is told not to repeat it in the same file for the same cause unless
+  the diff changed that code in a way that invalidates the reply or there is
+  new evidence, and then to say why the decision no longer holds.
+- **Resolved threads without a human reply** (only Cururu or other bots
+  replied) are left out.
+
+As a deterministic safeguard, after the model answers Cururu drops a new
+finding with the same file and the same title (ignoring case, spacing and a
+final period) as a recorded decision whose code GitHub does not mark as
+outdated, and logs it as `suppressed_as_decided`. A changed title or changed
+code reaches the model's judgment instead.
+
+Limits cut the feedback instead of failing the review: at most 20 threads,
+open ones first and then decisions, newest first; 10 replies per thread; 10
+conversation comments; 2,000 characters per comment; and 12,000 bytes in all,
+filled with the conversation, then open threads, then decisions, so decisions
+are cut first, oldest first. The log reports how many decisions were sent, cut
+or skipped. If GitHub's thread resolution cannot be read, every thread is sent
+as open.
+
+Set `[review].prior_feedback_resolved = "none"` to leave every resolved thread
+out, as before 6.3.0.
 
 ### Comment modes
 
