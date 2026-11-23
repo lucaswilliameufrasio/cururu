@@ -21,7 +21,9 @@ pub use context::ContextConfig;
 pub use github::GitHubConfig;
 pub use provider::{LlmConfig, LlmProvider};
 pub use publication::PublicationConfig;
-pub use review::{CommentMode, FailOn, ReviewConfig, ReviewPolicy, Severity};
+pub use review::{
+    CommentMode, FailOn, PriorFeedbackResolved, ReviewConfig, ReviewPolicy, Severity,
+};
 pub use scm::ScmConfig;
 pub use summary::SummaryConfig;
 
@@ -244,6 +246,7 @@ impl AppConfig {
                 suggestion_detail: "detailed".into(),
                 comment_mode: CommentMode::Inline,
                 recommendations: false,
+                prior_feedback_resolved: PriorFeedbackResolved::default(),
                 policy,
             },
             context: ContextConfig::default(),
@@ -446,6 +449,16 @@ impl AppConfig {
             }
             if let Some(recommendations) = tr.recommendations {
                 self.review.recommendations = recommendations;
+            }
+            if let Some(resolved) = tr.prior_feedback_resolved {
+                validate_choice(
+                    "review.prior_feedback_resolved",
+                    &resolved,
+                    PriorFeedbackResolved::NAMES,
+                )?;
+                self.review.prior_feedback_resolved =
+                    PriorFeedbackResolved::from_name(&resolved)
+                        .context("validated prior_feedback_resolved")?;
             }
 
             if env::env_optional("CURURU_PROFILE").is_none()

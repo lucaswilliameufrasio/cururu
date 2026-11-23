@@ -23,6 +23,12 @@ pub struct ReviewComment {
     pub line: Option<u32>,
     #[allow(dead_code)]
     pub subject_type: Option<String>,
+    /// The diff hunk the comment was written on.
+    #[serde(default)]
+    pub diff_hunk: Option<String>,
+    /// The commented line when the comment was written.
+    #[serde(default)]
+    pub original_line: Option<u32>,
 }
 
 /// Source-control capabilities required by Cururu's core. Concrete adapters
@@ -44,7 +50,11 @@ pub trait ScmProvider: Send + Sync {
         let _ = revision;
         anyhow::bail!("SCM adapter does not support repository tree access")
     }
-    async fn fetch_prior_review_feedback(&self) -> anyhow::Result<Vec<PriorReviewFeedback>> {
+    async fn fetch_prior_review_feedback(
+        &self,
+        resolved_policy: crate::config::PriorFeedbackResolved,
+    ) -> anyhow::Result<Vec<PriorReviewFeedback>> {
+        let _ = resolved_policy;
         Ok(Vec::new())
     }
     async fn list_finding_annotations(
@@ -242,7 +252,11 @@ mod tests {
     async fn basic_adapter_can_omit_optional_capabilities() {
         let adapter = MinimalScm;
         assert_eq!(
-            adapter.fetch_prior_review_feedback().await.unwrap().len(),
+            adapter
+                .fetch_prior_review_feedback(crate::config::PriorFeedbackResolved::default())
+                .await
+                .unwrap()
+                .len(),
             0
         );
         assert_eq!(

@@ -95,6 +95,41 @@
       ]
     },
     {
+      "name": "resolved-decision-kept",
+      "goal": "A finding the author answered as not applicable and resolved is not reported again on the same unchanged code.",
+      "context": [],
+      "base": {
+        "worker/loop.py": "import logging\n\nfrom worker.queue import next_message, handle\n\nlog = logging.getLogger(__name__)\n\n\ndef run():\n    while True:\n        message = next_message()\n        handle(message)\n"
+      },
+      "head": {
+        "worker/loop.py": "import logging\n\nfrom worker.queue import next_message, handle\n\nlog = logging.getLogger(__name__)\n\n\ndef run():\n    while True:\n        message = next_message()\n        try:\n            handle(message)\n        except Exception:\n            log.exception(\"failed to handle message %s\", message.id)\n"
+      },
+      "prior_feedback": [
+        {
+          "path": "worker/loop.py",
+          "line": 13,
+          "resolved": true,
+          "finding": "**MEDIUM**: Catching every Exception hides programming errors\n\nThe loop catches Exception and continues, so a bug such as a KeyError in handle() is only logged and the worker keeps running instead of failing fast.",
+          "reply": "Not applicable here: this loop must never stop. Each failure is logged with log.exception and the message is not acknowledged, so the queue redelivers it and moves it to the dead-letter queue after 5 attempts. Keeping it as is."
+        }
+      ],
+      "fake_findings": [
+        {
+          "severity": "medium",
+          "path": "worker/loop.py",
+          "line": 13,
+          "title": "Catching every exception hides programming errors",
+          "message": "fixture: repeats the decided finding",
+          "suggestion": "fixture",
+          "confidence": 0.9
+        }
+      ],
+      "expectations": [
+        "Does not report the broad except Exception again, in any wording; the author recorded why it is kept and the code did not change.",
+        "If it mentions the except block at all, it cites new evidence in the diff and says why the earlier decision no longer holds."
+      ]
+    },
+    {
       "name": "incomplete-review",
       "goal": "When part of the change cannot be reviewed, nothing claims the review was complete.",
       "context": [],

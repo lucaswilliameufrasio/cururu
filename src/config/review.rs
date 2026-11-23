@@ -18,6 +18,33 @@ impl CommentMode {
     }
 }
 
+/// Which resolved review threads enter the prior feedback sent to the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PriorFeedbackResolved {
+    /// Resolved threads with at least one human reply, as recorded decisions.
+    /// The PR author's replies count: the decision is theirs and on record.
+    #[default]
+    WithHumanReply,
+    /// Like `WithHumanReply`, but only replies from people other than the PR
+    /// author count, so an author cannot record a decision alone.
+    WithReviewerReply,
+    /// No resolved thread (the behavior before 6.3.0).
+    None,
+}
+
+impl PriorFeedbackResolved {
+    pub const NAMES: &'static [&'static str] = &["with_human_reply", "with_reviewer_reply", "none"];
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "with_human_reply" => Some(Self::WithHumanReply),
+            "with_reviewer_reply" => Some(Self::WithReviewerReply),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ReviewConfig {
     pub max_diff_bytes: usize,
@@ -29,6 +56,7 @@ pub struct ReviewConfig {
     pub suggestion_detail: String,
     pub comment_mode: CommentMode,
     pub recommendations: bool,
+    pub prior_feedback_resolved: PriorFeedbackResolved,
     pub policy: ReviewPolicy,
 }
 

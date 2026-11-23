@@ -1042,8 +1042,13 @@ pub(crate) async fn review_with_api(
             .with_host_review_evidence(&evidence_text)?,
         )
     };
-    let checked =
-        review_input::review_chunks_checked(agent.as_ref(), prepared, &prepared.chunks).await?;
+    let checked = review_input::review_chunks_checked(
+        agent.as_ref(),
+        prepared,
+        &prepared.chunks,
+        &prepared.prior_feedback,
+    )
+    .await?;
     let unconfirmed: Vec<usize> = checked
         .iter()
         .zip(&prepared.chunks)

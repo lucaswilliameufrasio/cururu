@@ -12,7 +12,7 @@ name: Cururu PR Review
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, closed]
   issue_comment:
     types: [created]
 
@@ -31,7 +31,7 @@ jobs:
     if: >-
       github.actor != 'dependabot[bot]' &&
       (
-        (github.event_name == 'pull_request_target' && github.event.pull_request.draft == false) ||
+        (github.event_name == 'pull_request_target' && github.event.action != 'closed' && github.event.pull_request.draft == false) ||
         (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
       )
     runs-on: ubuntu-latest
@@ -61,6 +61,21 @@ jobs:
             esac
           fi
           echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  discard-pending:
+    # A closed or merged PR has nothing left to publish. Joining the review
+    # group cancels a review or publication still waiting for approval, which
+    # would otherwise stay pending until GitHub drops it after 30 days.
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
+    concurrency:
+      group: cururu-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Discard pending Cururu work for the closed PR
+        run: echo "Cancelled any Cururu review or publication still pending for this PR."
 
   review:
     needs: gate

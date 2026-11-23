@@ -14,6 +14,32 @@ pub struct ReviewCommentDraft {
 pub struct PriorReviewFeedback {
     pub location: String,
     pub comments: Vec<PriorReviewComment>,
+    /// True for a resolved thread kept because a person replied to it: a
+    /// decision recorded by the author or a reviewer, sent in compact form
+    /// (the finding's title line and the latest human reply).
+    #[serde(default)]
+    pub resolved: bool,
+    /// The finding a resolved thread decided, for deterministic matching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided: Option<DecidedFinding>,
+}
+
+/// The finding of a resolved review thread with a human reply.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct DecidedFinding {
+    pub path: String,
+    /// The thread's line on the current diff, when it is anchored to one.
+    #[serde(default)]
+    pub line: Option<u32>,
+    /// The finding's title, without its severity.
+    pub title: String,
+    /// The commented code when the thread was written, to check that it is
+    /// still the same before treating a new finding as a repetition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<CodeAnchor>,
+    /// True when the commented code changed after the thread (the host marks
+    /// the thread outdated), so the decision may no longer apply.
+    pub code_changed: bool,
 }
 
 /// A single comment included in prior review feedback.
@@ -21,6 +47,14 @@ pub struct PriorReviewFeedback {
 pub struct PriorReviewComment {
     pub author: String,
     pub body: String,
+}
+
+/// The last lines of the code a review thread commented on, ending at its
+/// line: how many lines and the SHA-256 of their text joined by newlines.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct CodeAnchor {
+    pub lines: u32,
+    pub sha256: String,
 }
 
 /// A tool-produced annotation associated with a source location.
@@ -36,7 +70,10 @@ pub struct FindingAnnotation {
 
 #[cfg(test)]
 mod tests {
-    use super::{FindingAnnotation, PriorReviewComment, PriorReviewFeedback, ReviewCommentDraft};
+    use super::{
+        CodeAnchor, DecidedFinding, FindingAnnotation, PriorReviewComment, PriorReviewFeedback,
+        ReviewCommentDraft,
+    };
 
     #[test]
     fn scm_review_values_round_trip_through_json() {
@@ -52,6 +89,17 @@ mod tests {
                     author: "reviewer".into(),
                     body: "Please add a test".into(),
                 }],
+                resolved: true,
+                decided: Some(DecidedFinding {
+                    path: "src/lib.rs".into(),
+                    line: Some(8),
+                    title: "Missing test".into(),
+                    anchor: Some(CodeAnchor {
+                        lines: 2,
+                        sha256: "00".repeat(32),
+                    }),
+                    code_changed: false,
+                }),
             },
             FindingAnnotation {
                 path: "src/lib.rs".into(),
@@ -64,6 +112,10 @@ mod tests {
         );
 
         let json = serde_json::to_string(&values).unwrap();
+        // Feedback written before `resolved` and `decided` still reads.
+        let legacy: PriorReviewFeedback =
+            serde_json::from_str(r#"{"location":"a","comments":[]}"#).unwrap();
+        assert!(!legacy.resolved && legacy.decided.is_none());
         assert_eq!(
             serde_json::from_str::<(ReviewCommentDraft, PriorReviewFeedback, FindingAnnotation,)>(
                 &json

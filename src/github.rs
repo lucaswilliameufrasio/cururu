@@ -1,4 +1,4 @@
-use crate::config::{GitHubConfig, ScmConfig};
+use crate::config::{GitHubConfig, PriorFeedbackResolved, ScmConfig};
 use crate::output;
 use crate::repository::{RepositoryIdentity, validate_github_adapter};
 use crate::retry::retry_with_backoff;
@@ -58,6 +58,8 @@ struct PullRequest {
     #[allow(dead_code)]
     head: PullRef,
     base: PullRef,
+    #[serde(default)]
+    user: Option<ScmIdentity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -183,6 +185,20 @@ struct GitHubCheckAnnotation {
     #[serde(rename = "raw_details")]
     #[serde(default)]
     pub raw_details: Option<String>,
+}
+
+/// A Cururu finding thread with replies, before its resolution is known.
+struct AnsweredThread {
+    thread: crate::prior_feedback::InlineThread,
+    /// Replies written by people, oldest first.
+    human_replies: Vec<PriorReviewComment>,
+}
+
+/// A review thread's state from GraphQL.
+#[derive(Debug, Clone, Copy)]
+struct ReviewThreadState {
+    resolved: bool,
+    outdated: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -772,6 +788,35 @@ impl GitHubClient {
         Ok(pr.head.sha)
     }
 
+    /// Login of the pull request's author.
+    async fn fetch_pr_author(&self) -> anyhow::Result<String> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        let pr: PullRequest = retry_with_backoff(
+            || async {
+                self.client
+                    .get(&url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<PullRequest>()
+                    .await
+                    .context("failed to fetch PR author")
+            },
+            3,
+        )
+        .await?;
+        pr.user
+            .map(|user| user.login)
+            .context("PR author missing from the API response")
+    }
+
     /// List check-run annotations for a commit SHA, optionally filtered to the
     /// configured check run names. Used to ingest analyzer evidence that is
     /// reported through GitHub Check Runs instead of a SARIF artifact.
@@ -909,94 +954,104 @@ impl GitHubClient {
         anyhow::bail!("review comment history exceeds the supported pagination limit")
     }
 
-    /// Collect human and Cururu replies to prior findings, skipping resolved
-    /// threads, and cut them to the prior-feedback limits. Historical comments
-    /// are discussion data, not instructions to the reviewer. Size limits cut
-    /// the input deterministically and never fail the review.
-    pub async fn fetch_prior_review_feedback(&self) -> anyhow::Result<Vec<PriorReviewFeedback>> {
-        use crate::prior_feedback::{FeedbackCuts, InlineThread};
+    /// Collect human and Cururu replies to prior findings and cut them to the
+    /// prior-feedback limits. A resolved thread enters as a recorded decision
+    /// only when a person replied to it and `resolved_policy` allows it;
+    /// other resolved threads are skipped. Historical comments are discussion
+    /// data, not instructions to the reviewer. Size limits cut the input
+    /// deterministically and never fail the review.
+    pub async fn fetch_prior_review_feedback(
+        &self,
+        resolved_policy: PriorFeedbackResolved,
+    ) -> anyhow::Result<Vec<PriorReviewFeedback>> {
+        use crate::prior_feedback::{FeedbackCuts, InlineThread, Resolution};
 
         let comments = self.list_review_comments().await?;
         let own_login = self.current_login().await;
         let mut cuts = FeedbackCuts::default();
-        let candidates: Vec<InlineThread> = comments
-            .iter()
-            .filter(|comment| {
-                comment.in_reply_to_id.is_none()
-                    && Self::comment_is_cururu(comment, own_login.as_deref())
-            })
-            .filter_map(|root| {
-                let root_body = root.body.as_deref()?.trim();
-                let root_login = &root.user.as_ref()?.login;
-                let mut replies: Vec<_> = comments
-                    .iter()
-                    .filter(|reply| reply.in_reply_to_id == Some(root.id))
-                    .filter_map(|reply| {
-                        let user = reply.user.as_ref()?;
-                        let is_cururu = user.login.eq_ignore_ascii_case(root_login);
-                        (user.kind != "Bot" || is_cururu).then(|| {
-                            (
-                                reply.id,
-                                PriorReviewComment {
-                                    author: user.login.clone(),
-                                    body: reply.body.as_deref().unwrap_or_default().to_owned(),
-                                },
-                            )
-                        })
-                    })
-                    .collect();
-                if replies.is_empty() {
-                    return None;
-                }
-                replies.sort_by_key(|(id, _)| *id);
-                let line = root
-                    .line
-                    .map_or_else(|| "file".to_string(), |n| format!("line {n}"));
-                Some(InlineThread {
-                    root_id: root.id,
-                    location: format!("{} ({line})", root.path),
-                    root: PriorReviewComment {
-                        author: root_login.clone(),
-                        body: root_body.to_owned(),
-                    },
-                    replies: replies.into_iter().map(|(_, reply)| reply).collect(),
-                })
-            })
-            .collect();
+        let candidates = Self::answered_threads(&comments, own_login.as_deref());
         // Only ask GraphQL for resolution when some thread could be sent.
-        let resolved = if candidates.is_empty() {
-            std::collections::HashSet::new()
+        let states = if candidates.is_empty() {
+            std::collections::HashMap::new()
         } else {
-            match self.resolved_review_thread_roots().await {
-                Ok(resolved) => resolved,
+            match self.review_thread_states().await {
+                Ok(states) => states,
                 Err(error) => {
                     tracing::warn!(
                         %error,
-                        "could not read review thread resolution; keeping resolved threads in prior feedback"
+                        "could not read review thread resolution; sending every thread as open"
                     );
-                    std::collections::HashSet::new()
+                    std::collections::HashMap::new()
                 }
             }
         };
-        let threads: Vec<InlineThread> = candidates
-            .into_iter()
-            .filter(|thread| {
-                let open = !resolved.contains(&thread.root_id);
-                if !open {
-                    cuts.resolved_threads += 1;
+        // With `with_reviewer_reply`, the PR author's replies do not count.
+        // If the author cannot be read, no reply counts (fail closed).
+        let excluded_author = if resolved_policy == PriorFeedbackResolved::WithReviewerReply
+            && candidates.iter().any(|candidate| {
+                !candidate.human_replies.is_empty()
+                    && states
+                        .get(&candidate.thread.root_id)
+                        .is_some_and(|state| state.resolved)
+            }) {
+            match self.fetch_pr_author().await {
+                Ok(author) => Some(author),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "could not read the PR author; resolved threads are not sent as decisions"
+                    );
+                    None
                 }
-                open
-            })
-            .collect();
+            }
+        } else {
+            None
+        };
+        let mut threads: Vec<InlineThread> = Vec::with_capacity(candidates.len());
+        for AnsweredThread {
+            mut thread,
+            mut human_replies,
+        } in candidates
+        {
+            let Some(state) = states.get(&thread.root_id).filter(|state| state.resolved) else {
+                threads.push(thread);
+                continue;
+            };
+            if resolved_policy == PriorFeedbackResolved::WithReviewerReply {
+                match &excluded_author {
+                    Some(author) => {
+                        human_replies.retain(|reply| !reply.author.eq_ignore_ascii_case(author));
+                    }
+                    None => human_replies.clear(),
+                }
+            }
+            match resolved_policy {
+                PriorFeedbackResolved::WithHumanReply
+                | PriorFeedbackResolved::WithReviewerReply
+                    if !human_replies.is_empty() =>
+                {
+                    thread.replies = Vec::new();
+                    thread.resolution = Some(Resolution {
+                        human_replies,
+                        outdated: state.outdated,
+                    });
+                    threads.push(thread);
+                }
+                _ => cuts.resolved_threads += 1,
+            }
+        }
 
         let conversation = self
             .fetch_issue_comment_feedback(own_login.as_deref())
             .await?;
         let (feedback, cuts) = crate::prior_feedback::bound_feedback(threads, conversation, cuts);
-        if cuts.resolved_threads > 0 {
+        if cuts.resolved_threads > 0 || cuts.resolved_kept > 0 || cuts.dropped_resolved_threads > 0
+        {
             tracing::info!(
-                resolved = cuts.resolved_threads,
-                "skipped resolved review threads in prior feedback"
+                resolved_kept = cuts.resolved_kept,
+                resolved_dropped = cuts.dropped_resolved_threads,
+                resolved_skipped = cuts.resolved_threads,
+                "resolved review threads in prior feedback"
             );
         }
         if cuts.any() {
@@ -1008,13 +1063,85 @@ impl GitHubClient {
         Ok(feedback)
     }
 
-    /// Root comment ids of resolved review threads, from GraphQL: the REST
-    /// review comments API does not report resolution.
-    async fn resolved_review_thread_roots(&self) -> anyhow::Result<std::collections::HashSet<u64>> {
+    /// Cururu findings with at least one reply from a person or from Cururu
+    /// itself (other bots are ignored), with the replies people wrote.
+    fn answered_threads(
+        comments: &[ReviewComment],
+        own_login: Option<&str>,
+    ) -> Vec<AnsweredThread> {
+        use crate::prior_feedback::InlineThread;
+
+        comments
+            .iter()
+            .filter(|comment| {
+                comment.in_reply_to_id.is_none() && Self::comment_is_cururu(comment, own_login)
+            })
+            .filter_map(|root| {
+                let root_body = root.body.as_deref()?.trim();
+                let root_login = &root.user.as_ref()?.login;
+                // (id, reply, written by a person)
+                let mut replies: Vec<_> = comments
+                    .iter()
+                    .filter(|reply| reply.in_reply_to_id == Some(root.id))
+                    .filter_map(|reply| {
+                        let user = reply.user.as_ref()?;
+                        let is_cururu = user.login.eq_ignore_ascii_case(root_login);
+                        let is_bot = user.kind == "Bot";
+                        (!is_bot || is_cururu).then(|| {
+                            (
+                                reply.id,
+                                PriorReviewComment {
+                                    author: user.login.clone(),
+                                    body: reply.body.as_deref().unwrap_or_default().to_owned(),
+                                },
+                                !is_bot && !is_cururu,
+                            )
+                        })
+                    })
+                    .collect();
+                if replies.is_empty() {
+                    return None;
+                }
+                replies.sort_by_key(|(id, _, _)| *id);
+                let human_replies = replies
+                    .iter()
+                    .filter(|(_, _, human)| *human)
+                    .map(|(_, reply, _)| reply.clone())
+                    .collect();
+                let line = root
+                    .line
+                    .map_or_else(|| "file".to_string(), |n| format!("line {n}"));
+                Some(AnsweredThread {
+                    thread: InlineThread {
+                        root_id: root.id,
+                        path: root.path.clone(),
+                        line: root.line,
+                        anchor: root.diff_hunk.as_deref().and_then(|hunk| {
+                            crate::prior_feedback::anchor_from_hunk(hunk, root.original_line)
+                        }),
+                        location: format!("{} ({line})", root.path),
+                        root: PriorReviewComment {
+                            author: root_login.clone(),
+                            body: root_body.to_owned(),
+                        },
+                        replies: replies.into_iter().map(|(_, reply, _)| reply).collect(),
+                        resolution: None,
+                    },
+                    human_replies,
+                })
+            })
+            .collect()
+    }
+
+    /// Resolution and outdated state of each review thread, by root comment
+    /// id, from GraphQL: the REST review comments API reports neither.
+    async fn review_thread_states(
+        &self,
+    ) -> anyhow::Result<std::collections::HashMap<u64, ReviewThreadState>> {
         const MAX_PAGES: usize = 10;
-        const QUERY: &str = "query($owner: String!, $repo: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { reviewThreads(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { isResolved comments(first: 1) { nodes { databaseId } } } } } } }";
+        const QUERY: &str = "query($owner: String!, $repo: String!, $number: Int!, $cursor: String) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { reviewThreads(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { isResolved isOutdated comments(first: 1) { nodes { databaseId } } } } } } }";
         let url = graphql_url(&self.cfg.api_url);
-        let mut resolved = std::collections::HashSet::new();
+        let mut states = std::collections::HashMap::new();
         let mut cursor: Option<String> = None;
         for _ in 0..MAX_PAGES {
             let body = serde_json::json!({
@@ -1054,12 +1181,19 @@ impl GitHubClient {
                 .and_then(serde_json::Value::as_array)
                 .context("review thread nodes missing from GraphQL response")?
             {
-                if node.get("isResolved").and_then(serde_json::Value::as_bool) == Some(true)
-                    && let Some(id) = node
-                        .pointer("/comments/nodes/0/databaseId")
-                        .and_then(serde_json::Value::as_u64)
+                let flag =
+                    |name: &str| node.get(name).and_then(serde_json::Value::as_bool) == Some(true);
+                if let Some(id) = node
+                    .pointer("/comments/nodes/0/databaseId")
+                    .and_then(serde_json::Value::as_u64)
                 {
-                    resolved.insert(id);
+                    states.insert(
+                        id,
+                        ReviewThreadState {
+                            resolved: flag("isResolved"),
+                            outdated: flag("isOutdated"),
+                        },
+                    );
                 }
             }
             let page = threads.get("pageInfo");
@@ -1068,7 +1202,7 @@ impl GitHubClient {
                 .and_then(serde_json::Value::as_bool)
                 != Some(true)
             {
-                return Ok(resolved);
+                return Ok(states);
             }
             cursor = page
                 .and_then(|page| page.get("endCursor"))
@@ -1124,6 +1258,8 @@ impl GitHubClient {
         Ok(Some(PriorReviewFeedback {
             location: "PR conversation after the previous Cururu summary".into(),
             comments: replies,
+            resolved: false,
+            decided: None,
         }))
     }
 
@@ -1777,8 +1913,11 @@ impl ScmProvider for GitHubClient {
         Self::list_repository_paths_at_revision(self, revision).await
     }
 
-    async fn fetch_prior_review_feedback(&self) -> anyhow::Result<Vec<PriorReviewFeedback>> {
-        Self::fetch_prior_review_feedback(self).await
+    async fn fetch_prior_review_feedback(
+        &self,
+        resolved_policy: PriorFeedbackResolved,
+    ) -> anyhow::Result<Vec<PriorReviewFeedback>> {
+        Self::fetch_prior_review_feedback(self, resolved_policy).await
     }
 
     async fn list_finding_annotations(
@@ -2217,9 +2356,17 @@ mod tests {
     async fn mount_review_threads(server: &MockServer, resolved_roots: &[u64], open_roots: &[u64]) {
         let nodes: Vec<_> = resolved_roots
             .iter()
-            .map(|id| (id, true))
-            .chain(open_roots.iter().map(|id| (id, false)))
-            .map(|(id, resolved)| serde_json::json!({"isResolved":resolved,"comments":{"nodes":[{"databaseId":id}]}}))
+            .map(|id| (*id, true, false))
+            .chain(open_roots.iter().map(|id| (*id, false, false)))
+            .collect();
+        mount_thread_states(server, &nodes).await;
+    }
+
+    /// GraphQL review threads as (root id, resolved, outdated).
+    async fn mount_thread_states(server: &MockServer, states: &[(u64, bool, bool)]) {
+        let nodes: Vec<_> = states
+            .iter()
+            .map(|(id, resolved, outdated)| serde_json::json!({"isResolved":resolved,"isOutdated":outdated,"comments":{"nodes":[{"databaseId":id}]}}))
             .collect();
         Mock::given(method("POST"))
             .and(path("/graphql"))
@@ -2246,16 +2393,200 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolved_threads_are_left_out_of_prior_feedback() {
-        // NEJCPM/backoffice-web#202: 18 answered and resolved Cururu threads,
-        // about 15 KB, failed every review with "prior feedback exceeds byte limit".
+    async fn resolved_threads_are_left_out_when_configured_none() {
+        // The behavior before 6.3.0: no resolved thread reaches the model.
         let server = MockServer::start().await;
         let comments = review_threads(18, 1, &"x".repeat(800));
         let roots: Vec<u64> = (0..18).map(|thread| 1000 + thread * 100).collect();
         mount_feedback(&server, comments, serde_json::json!([])).await;
         mount_review_threads(&server, &roots, &[]).await;
         let feedback = feedback_client(&server)
-            .fetch_prior_review_feedback()
+            .fetch_prior_review_feedback(PriorFeedbackResolved::None)
+            .await
+            .unwrap();
+        assert!(feedback.is_empty(), "{feedback:?}");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn many_answered_resolved_threads_are_cut_to_the_budget() {
+        // 18 answered and resolved threads (~15 KB) once failed every review
+        // with "prior feedback exceeds byte limit"; as decisions they are cut,
+        // keeping the newest.
+        let server = MockServer::start().await;
+        let comments = review_threads(18, 1, &"x".repeat(800));
+        let roots: Vec<u64> = (0..18).map(|thread| 1000 + thread * 100).collect();
+        mount_feedback(&server, comments, serde_json::json!([])).await;
+        mount_review_threads(&server, &roots, &[]).await;
+        let feedback = feedback_client(&server)
+            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
+            .await
+            .unwrap();
+        assert!(total_bytes(&feedback) <= crate::prior_feedback::MAX_FEEDBACK_BYTES);
+        assert!(!feedback.is_empty() && feedback.len() < 18);
+        assert!(feedback.iter().all(|entry| entry.resolved));
+        assert_eq!(feedback.last().unwrap().location, "src/17.rs (line 1)");
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn only_resolved_threads_with_a_human_reply_enter_as_decisions() {
+        let server = MockServer::start().await;
+        let root = |id: u64, path: &str| serde_json::json!({"id":id,"body":"<!-- cururu:finding -->\n\n**MEDIUM**: Broad except hides errors\n\nDetails.","user":{"login":"cururu[bot]","type":"Bot"},"path":path,"line":4,"diff_hunk":"@@ -1,2 +1,4 @@\n a\n+b\n c\n+d"});
+        let reply = |id: u64, root: u64, body: &str, login: &str, kind: &str| serde_json::json!({"id":id,"in_reply_to_id":root,"body":body,"user":{"login":login,"type":kind},"path":"x","line":4});
+        let comments = vec![
+            // 1: resolved; a full explanation, Cururu, then a short closing reply.
+            root(1, "worker/loop.py"),
+            reply(
+                2,
+                1,
+                "No aplica: la cola reintenta el mensaje y lo envía a la DLQ tras 5 intentos.",
+                "author",
+                "User",
+            ),
+            reply(3, 1, "Understood.", "cururu[bot]", "Bot"),
+            reply(4, 1, "Resolving.", "author", "User"),
+            // 10: resolved, only Cururu replied.
+            root(10, "a.py"),
+            reply(11, 10, "Still applies.", "cururu[bot]", "Bot"),
+            // 20: resolved, only another bot replied.
+            root(20, "b.py"),
+            reply(21, 20, "Automated note.", "dependabot[bot]", "Bot"),
+            // 30: resolved with a human reply, code changed since.
+            root(30, "c.py"),
+            reply(31, 30, "Kept on purpose.", "author", "User"),
+            // 40: open.
+            root(40, "d.py"),
+            reply(41, 40, "Will fix.", "author", "User"),
+        ];
+        mount_feedback(&server, comments, serde_json::json!([])).await;
+        mount_thread_states(
+            &server,
+            &[
+                (1, true, false),
+                (10, true, false),
+                (20, true, false),
+                (30, true, true),
+                (40, false, false),
+            ],
+        )
+        .await;
+        let feedback = feedback_client(&server)
+            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
+            .await
+            .unwrap();
+        let locations: Vec<_> = feedback.iter().map(|e| e.location.as_str()).collect();
+        assert_eq!(
+            locations,
+            ["worker/loop.py (line 4)", "c.py (line 4)", "d.py (line 4)"]
+        );
+        let decision = &feedback[0];
+        assert!(decision.resolved);
+        assert_eq!(
+            decision.comments,
+            vec![
+                PriorReviewComment {
+                    author: "cururu[bot]".into(),
+                    body: "**MEDIUM**: Broad except hides errors".into(),
+                },
+                // Every human reply, so the explanation is not lost to the
+                // closing one; Cururu's reply is left out.
+                PriorReviewComment {
+                    author: "author".into(),
+                    body: "No aplica: la cola reintenta el mensaje y lo envía a la DLQ tras 5 intentos."
+                        .into(),
+                },
+                PriorReviewComment {
+                    author: "author".into(),
+                    body: "Resolving.".into(),
+                },
+            ]
+        );
+        let decided = decision.decided.as_ref().unwrap();
+        assert_eq!(decided.path, "worker/loop.py");
+        assert_eq!(decided.title, "Broad except hides errors");
+        assert_eq!(decided.line, Some(4));
+        assert_eq!(
+            decided.anchor,
+            crate::prior_feedback::anchor_from_hunk("@@ -1,2 +1,4 @@\n a\n+b\n c\n+d", None)
+        );
+        assert_eq!(decided.anchor.as_ref().unwrap().lines, 4);
+        assert!(!decided.code_changed);
+        assert!(feedback[1].decided.as_ref().unwrap().code_changed);
+        let open = &feedback[2];
+        assert!(!open.resolved && open.decided.is_none());
+        assert_eq!(open.comments.len(), 2);
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn with_reviewer_reply_ignores_the_pr_authors_replies() {
+        for author_readable in [true, false] {
+            let server = MockServer::start().await;
+            let root = |id: u64| serde_json::json!({"id":id,"body":"<!-- cururu:finding -->\n\n**HIGH**: Finding","user":{"login":"cururu[bot]","type":"Bot"},"path":format!("src/{id}.rs"),"line":2,"diff_hunk":"@@ -1 +1,2 @@\n a\n+b"});
+            let reply = |id: u64, root: u64, body: &str, login: &str| serde_json::json!({"id":id,"in_reply_to_id":root,"body":body,"user":{"login":login,"type":"User"},"path":"x","line":2});
+            let comments = vec![
+                // 1: only the PR author answered.
+                root(1),
+                reply(2, 1, "Kept on purpose.", "Author"),
+                // 10: the author and a reviewer answered.
+                root(10),
+                reply(11, 10, "Kept on purpose.", "author"),
+                reply(12, 10, "Agreed, the queue retries it.", "reviewer"),
+            ];
+            mount_feedback(&server, comments, serde_json::json!([])).await;
+            mount_thread_states(&server, &[(1, true, false), (10, true, false)]).await;
+            let pr = Mock::given(method("GET")).and(path("/repos/owner/repo/pulls/1"));
+            let pr = if author_readable {
+                pr.respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "head":{"sha":"h","ref":"h"},"base":{"sha":"b","ref":"main"},
+                    "user":{"login":"author","type":"User"}
+                })))
+            } else {
+                pr.respond_with(ResponseTemplate::new(404))
+            };
+            pr.mount(&server).await;
+            let feedback = feedback_client(&server)
+                .fetch_prior_review_feedback(PriorFeedbackResolved::WithReviewerReply)
+                .await
+                .unwrap();
+            if author_readable {
+                assert_eq!(feedback.len(), 1, "{feedback:?}");
+                assert_eq!(feedback[0].location, "src/10.rs (line 2)");
+                let bodies: Vec<_> = feedback[0]
+                    .comments
+                    .iter()
+                    .map(|c| c.body.as_str())
+                    .collect();
+                assert_eq!(
+                    bodies,
+                    ["**HIGH**: Finding", "Agreed, the queue retries it."]
+                );
+            } else {
+                // Fail closed: without the author, no reply counts.
+                assert!(feedback.is_empty(), "{feedback:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn with_reviewer_reply_reads_the_author_only_for_an_eligible_decision() {
+        let server = MockServer::start().await;
+        // A resolved thread only Cururu answered cannot become a decision.
+        let comments = vec![
+            serde_json::json!({"id":1,"body":"<!-- cururu:finding -->\n\n**HIGH**: Finding","user":{"login":"cururu[bot]","type":"Bot"},"path":"a.rs","line":2}),
+            serde_json::json!({"id":2,"in_reply_to_id":1,"body":"Still applies.","user":{"login":"cururu[bot]","type":"Bot"},"path":"a.rs","line":2}),
+        ];
+        mount_feedback(&server, comments, serde_json::json!([])).await;
+        mount_thread_states(&server, &[(1, true, false)]).await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let feedback = feedback_client(&server)
+            .fetch_prior_review_feedback(PriorFeedbackResolved::WithReviewerReply)
             .await
             .unwrap();
         assert!(feedback.is_empty(), "{feedback:?}");
@@ -2274,7 +2605,7 @@ mod tests {
         let open: Vec<u64> = (0..18).map(|thread| 1000 + thread * 100).collect();
         mount_review_threads(&server, &[], &open).await;
         let feedback = feedback_client(&server)
-            .fetch_prior_review_feedback()
+            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
             .await
             .unwrap();
         assert!(total_bytes(&feedback) <= crate::prior_feedback::MAX_FEEDBACK_BYTES);
@@ -2303,7 +2634,7 @@ mod tests {
             )
             .await;
             let feedback = feedback_client(&server)
-                .fetch_prior_review_feedback()
+                .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
                 .await
                 .unwrap_or_else(|error| {
                     panic!("threads={threads} replies={replies} chars={chars}: {error}")
@@ -2352,7 +2683,7 @@ mod tests {
             .mount(&server)
             .await;
         let feedback = feedback_client(&server)
-            .fetch_prior_review_feedback()
+            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
             .await
             .unwrap();
         // Without resolution data resolved threads are not filtered, so the
@@ -2379,7 +2710,7 @@ mod tests {
             .mount(&server)
             .await;
         let feedback = feedback_client(&server)
-            .fetch_prior_review_feedback()
+            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
             .await
             .unwrap();
         assert_eq!(feedback, Vec::new());
@@ -3153,7 +3484,10 @@ mod tests {
         })
         .unwrap();
 
-        let feedback = client.fetch_prior_review_feedback().await.unwrap();
+        let feedback = client
+            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
+            .await
+            .unwrap();
         let serialized = serde_json::to_string(&feedback).unwrap();
         assert!(serialized.contains("Possible duplicate write"));
         assert!(serialized.contains("intentionally idempotent"));
@@ -3217,6 +3551,8 @@ mod tests {
             path: "a.rs".into(),
             line: None,
             subject_type: None,
+            diff_hunk: None,
+            original_line: None,
         }
     }
 
