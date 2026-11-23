@@ -5,7 +5,10 @@ Every scenario is served by a loopback GitHub fake; nothing is published.
   --check       Deterministic. A loopback fake model answers, and the run only
                 proves that each scenario builds and that its diff, context and
                 prior feedback reach the model, and that Cururu reports skipped
-                or partial files. It says nothing about review quality.
+                or partial files. A scenario's `fake_findings` are what the fake
+                model answers, to check Cururu's own filters (a finding that
+                repeats a resolved decision is dropped). It says nothing about
+                review quality.
   --send OUT    Sends each scenario to the provider configured through the
                 usual environment (CURURU_PROVIDER, LLM_BASE_URL, LLM_API_KEY,
                 LLM_MODEL, ...) and writes OUT/<scenario>.json with the receipt
@@ -65,6 +68,20 @@ def prior_comments(scenario):
     return comments
 
 
+def review_threads(scenario):
+    """GraphQL review threads: each prior finding's root and resolution."""
+    nodes = [{"isResolved": bool(item.get("resolved")), "isOutdated": False,
+              "comments": {"nodes": [{"databaseId": 100 + 2 * index}]}}
+             for index, item in enumerate(scenario.get("prior_feedback", []))]
+    return {"data": {"repository": {"pullRequest": {"reviewThreads": {
+        "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}}}
+
+
+def model_inputs(requests):
+    """The text of every message sent to the model, decoded."""
+    return "\n".join(message["content"] for body in requests for message in json.loads(body)["messages"])
+
+
 def config_toml(scenario):
     paths = json.dumps(scenario.get("context", []))
     return f"version = 1\n\n[context]\nadditional = {paths}\n"
@@ -73,6 +90,7 @@ def config_toml(scenario):
 class Fake(http.server.BaseHTTPRequestHandler):
     scenario = None
     requests = []
+    chunk_files = []
 
     def log_message(self, *args):
         pass
@@ -116,19 +134,24 @@ class Fake(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        if self.path == "/graphql":
+            self.reply(200, review_threads(Fake.scenario))
+            return
         if self.path != "/chat/completions":
             self.reply(404, {})
             return
         Fake.requests.append(body.decode())
         # Report the files of this chunk, so Cururu's coverage check passes.
-        chunk = json.loads(body)["messages"][-1]["content"]
+        chunk = model_inputs([body])
         files = {line.split(" b/", 1)[1] for line in chunk.splitlines() if line.startswith("diff --git a/")}
-        review = {"model": "fixture", "files_reviewed": len(files), "summary": "fixture", "findings": []}
+        Fake.chunk_files.append(sorted(files))
+        findings = [f for f in Fake.scenario.get("fake_findings", []) if f["path"] in files]
+        review = {"model": "fixture", "files_reviewed": len(files), "summary": "fixture", "findings": findings}
         self.reply(200, {"choices": [{"message": {"content": json.dumps(review)}, "finish_reason": "stop"}]})
 
 
 def run_scenario(binary, scenario, model_env, workdir):
-    Fake.scenario, Fake.requests = scenario, []
+    Fake.scenario, Fake.requests, Fake.chunk_files = scenario, [], []
     env = {"PATH": os.environ.get("PATH", ""), "HOME": workdir, "CURURU_REPOSITORY": "test/repo",
            "CURURU_CHANGE_REQUEST_NUMBER": "1", "CURURU_SCM_TOKEN": "fixture-scm",
            "CURURU_SCM_API_URL": model_env["scm_url"], "CURURU_SCM_SERVER_URL": "https://example.invalid"}
@@ -139,6 +162,7 @@ def run_scenario(binary, scenario, model_env, workdir):
                             capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
         raise SystemExit(f"{scenario['name']}: api-review failed: {result.stderr.strip()}")
+    Fake.stderr = result.stderr
     return json.loads(result.stdout)
 
 
@@ -154,6 +178,13 @@ def check(scenario, receipt):
         assert json.dumps(first_line)[1:-1] in sent, f"{name}: context {path} missing from the model input"
     for item in scenario.get("prior_feedback", []):
         assert json.dumps(item["reply"])[1:-1] in sent, f"{name}: prior feedback missing from the model input"
+    if any(item.get("resolved") for item in scenario.get("prior_feedback", [])):
+        assert '"resolved":true' in model_inputs(Fake.requests), f"{name}: resolved decision not marked"
+    if name == "resolved-decision-kept":
+        # The fake model repeats the decided finding; Cururu drops it.
+        assert Fake.chunk_files == [["worker/loop.py"]], Fake.chunk_files
+        assert receipt["review"]["findings"] == [], receipt
+        assert "suppressed_as_decided" in Fake.stderr, f"{name}: suppression not logged"
     if name == "incomplete-review":
         assert receipt.get("truncated_paths") == ["data/fixtures.json"], receipt
         assert receipt.get("unreviewable_paths") == ["assets/logo.png"], receipt
