@@ -58,22 +58,24 @@ def scenario_diff(scenario):
 
 
 def diff_hunk(scenario, path, line):
-    """The hunk GitHub stores on a review comment: from its header to the
-    commented new-side line."""
+    """The whole hunk holding the commented new-side line. GitHub's
+    `diff_hunk` ends at that line; sending the whole hunk, with context after
+    it, checks that Cururu walks to `original_line` instead of assuming so."""
     diff = file_diff(path, scenario["base"].get(path), expand(scenario["head"][path]))
-    hunk, number = [], None
+    hunks, number, found = [], None, False
     for text in diff.splitlines():
         if text.startswith("@@"):
-            hunk, number = [text], int(text.split("+")[1].split(",")[0].split(" ")[0])
+            if found:
+                break
+            hunks, number = [text], int(text.split("+")[1].split(",")[0].split(" ")[0])
             continue
         if number is None:
             continue
-        hunk.append(text)
+        hunks.append(text)
         if not text.startswith("-"):
-            if number == line:
-                return "\n".join(hunk)
+            found = found or number == line
             number += 1
-    return None
+    return "\n".join(hunks) if found else None
 
 
 def prior_comments(scenario):
@@ -82,6 +84,7 @@ def prior_comments(scenario):
         root = 100 + 2 * index
         comments.append({"id": root, "in_reply_to_id": None, "path": item["path"], "line": item["line"],
                          "diff_hunk": diff_hunk(scenario, item["path"], item["line"]),
+                         "original_line": item["line"],
                          "body": "<!-- cururu:finding -->\n\n" + item["finding"], "user": {"login": LOGIN, "type": "Bot"}})
         comments.append({"id": root + 1, "in_reply_to_id": root, "path": item["path"], "line": item["line"],
                          "body": item["reply"], "user": {"login": "author", "type": "User"}})

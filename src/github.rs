@@ -988,8 +988,12 @@ impl GitHubClient {
         // With `with_reviewer_reply`, the PR author's replies do not count.
         // If the author cannot be read, no reply counts (fail closed).
         let excluded_author = if resolved_policy == PriorFeedbackResolved::WithReviewerReply
-            && states.values().any(|state| state.resolved)
-        {
+            && candidates.iter().any(|candidate| {
+                !candidate.human_replies.is_empty()
+                    && states
+                        .get(&candidate.thread.root_id)
+                        .is_some_and(|state| state.resolved)
+            }) {
             match self.fetch_pr_author().await {
                 Ok(author) => Some(author),
                 Err(error) => {
@@ -1112,10 +1116,9 @@ impl GitHubClient {
                         root_id: root.id,
                         path: root.path.clone(),
                         line: root.line,
-                        anchor: root
-                            .diff_hunk
-                            .as_deref()
-                            .and_then(crate::prior_feedback::anchor_from_hunk),
+                        anchor: root.diff_hunk.as_deref().and_then(|hunk| {
+                            crate::prior_feedback::anchor_from_hunk(hunk, root.original_line)
+                        }),
                         location: format!("{} ({line})", root.path),
                         root: PriorReviewComment {
                             author: root_login.clone(),
@@ -2505,7 +2508,7 @@ mod tests {
         assert_eq!(decided.line, Some(4));
         assert_eq!(
             decided.anchor,
-            crate::prior_feedback::anchor_from_hunk("@@ -1,2 +1,4 @@\n a\n+b\n c\n+d")
+            crate::prior_feedback::anchor_from_hunk("@@ -1,2 +1,4 @@\n a\n+b\n c\n+d", None)
         );
         assert_eq!(decided.anchor.as_ref().unwrap().lines, 4);
         assert!(!decided.code_changed);
@@ -2564,6 +2567,30 @@ mod tests {
                 assert!(feedback.is_empty(), "{feedback:?}");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn with_reviewer_reply_reads_the_author_only_for_an_eligible_decision() {
+        let server = MockServer::start().await;
+        // A resolved thread only Cururu answered cannot become a decision.
+        let comments = vec![
+            serde_json::json!({"id":1,"body":"<!-- cururu:finding -->\n\n**HIGH**: Finding","user":{"login":"cururu[bot]","type":"Bot"},"path":"a.rs","line":2}),
+            serde_json::json!({"id":2,"in_reply_to_id":1,"body":"Still applies.","user":{"login":"cururu[bot]","type":"Bot"},"path":"a.rs","line":2}),
+        ];
+        mount_feedback(&server, comments, serde_json::json!([])).await;
+        mount_thread_states(&server, &[(1, true, false)]).await;
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/pulls/1"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let feedback = feedback_client(&server)
+            .fetch_prior_review_feedback(PriorFeedbackResolved::WithReviewerReply)
+            .await
+            .unwrap();
+        assert!(feedback.is_empty(), "{feedback:?}");
+        server.verify().await;
     }
 
     #[tokio::test]
@@ -3525,6 +3552,7 @@ mod tests {
             line: None,
             subject_type: None,
             diff_hunk: None,
+            original_line: None,
         }
     }
 

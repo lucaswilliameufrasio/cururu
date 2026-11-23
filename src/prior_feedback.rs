@@ -193,13 +193,38 @@ fn anchor_of(lines: &[&str]) -> CodeAnchor {
 /// commented line: that line and up to [`ANCHOR_LINES`] - 1 new-side lines
 /// before it. None for a comment on a removed (left-side) line or an empty
 /// hunk.
-pub fn anchor_from_hunk(hunk: &str) -> Option<CodeAnchor> {
-    let body: Vec<&str> = hunk
-        .lines()
-        .skip_while(|line| !line.starts_with("@@"))
-        .skip(1)
-        .filter(|line| !line.starts_with('\\'))
-        .collect();
+///
+/// With `original_line` (the commented line when the comment was written, on
+/// the hunk's new side) the hunk is walked to that line, so context lines
+/// after it are ignored; without it the hunk must end at the commented line,
+/// as GitHub's `diff_hunk` does.
+pub fn anchor_from_hunk(hunk: &str, original_line: Option<u32>) -> Option<CodeAnchor> {
+    let mut body: Vec<&str> = Vec::new();
+    let mut next: Option<u32> = None;
+    for line in hunk.lines() {
+        if let Some(header) = line.strip_prefix("@@ ") {
+            body.clear();
+            next = header
+                .split_whitespace()
+                .find_map(|part| part.strip_prefix('+'))
+                .and_then(|range| range.split(',').next())
+                .and_then(|start| start.parse().ok());
+            continue;
+        }
+        if next.is_none() || line.starts_with('\\') {
+            continue;
+        }
+        body.push(line);
+        if !line.starts_with('-') {
+            if original_line.is_some() && next == original_line {
+                break;
+            }
+            next = next.map(|number| number + 1);
+        }
+    }
+    if original_line.is_some_and(|line| next != Some(line)) {
+        return None;
+    }
     if body.last().is_none_or(|line| line.starts_with('-')) {
         return None;
     }
@@ -565,7 +590,7 @@ mod tests {
     /// anchored on `l2`..`l5` as written then.
     fn decided(root_id: u64, reply: &str) -> InlineThread {
         InlineThread {
-            anchor: anchor_from_hunk("@@ -0,0 +1,5 @@\n+l1\n+l2\n+l3\n+l4\n+l5"),
+            anchor: anchor_from_hunk("@@ -0,0 +1,5 @@\n+l1\n+l2\n+l3\n+l4\n+l5", None),
             root: comment(&format!(
                 "<!-- cururu:finding -->\n\n**MEDIUM**: Finding {root_id}\n\nLong explanation that is not sent."
             )),
@@ -774,7 +799,7 @@ mod tests {
             Some(DecidedFinding {
                 path: "src/7.rs".into(),
                 line: Some(5),
-                anchor: anchor_from_hunk("@@ -0,0 +1,5 @@\n+l1\n+l2\n+l3\n+l4\n+l5"),
+                anchor: anchor_from_hunk("@@ -0,0 +1,5 @@\n+l1\n+l2\n+l3\n+l4\n+l5", None),
                 title: "Finding 7".into(),
                 code_changed: false,
             })
@@ -964,11 +989,18 @@ mod tests {
     fn anchors_come_from_the_new_side_of_the_hunk() {
         let hunk = "@@ -1,4 +1,5 @@\n a\n-b\n+B\n c\n+d\n e";
         // e, d, c, B (removed b is not part of the new side).
-        let anchor = anchor_from_hunk(hunk).unwrap();
+        let anchor = anchor_from_hunk(hunk, None).unwrap();
         assert_eq!(anchor.lines, 4);
         assert_eq!(anchor, anchor_of(&["B", "c", "d", "e"]));
-        assert_eq!(anchor_from_hunk("@@ -1,2 +1,1 @@\n a\n-b"), None);
-        assert_eq!(anchor_from_hunk(""), None);
+        assert_eq!(anchor_from_hunk("@@ -1,2 +1,1 @@\n a\n-b", None), None);
+        assert_eq!(anchor_from_hunk("", None), None);
+        // A full hunk with context after the commented line (line 5, "e"):
+        // the anchor still ends at the commented line.
+        let full = "@@ -1,6 +1,8 @@\n a\n-b\n+B\n c\n+d\n e\n f\n+g\n h";
+        assert_eq!(anchor_from_hunk(full, Some(5)), Some(anchor.clone()));
+        assert_ne!(anchor_from_hunk(full, None), Some(anchor.clone()));
+        // A line the hunk does not reach gives no anchor.
+        assert_eq!(anchor_from_hunk(full, Some(30)), None);
         let patch = "diff --git a/x b/x\n@@ -1,4 +1,5 @@\n a\n-b\n+B\n c\n+d\n e\n";
         assert!(anchor_unchanged(&anchor, 5, patch));
         assert!(!anchor_unchanged(&anchor, 4, patch));
