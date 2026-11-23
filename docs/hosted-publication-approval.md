@@ -51,7 +51,9 @@ approve through GitHub or the CLI.
   for it. `cururu approve-hosted-review` approves the waiting deployment with a
   `cururu-candidate:<digest>` comment, and the job refuses if any approval names
   a different candidate. The candidate file must match the review job's
-  `candidate_digest` output.
+  `candidate_digest` output. A new push, or closing or merging the PR, cancels
+  a `publish` job still waiting for approval: the example workflow's
+  `discard-pending` job runs on `closed` in the same concurrency group.
 - **Exemptions:** the diff-limit notice is still posted without approval (it
   contains no code or review content). Mention answers are posted directly,
   because a write-authorized collaborator requested them. The truncation

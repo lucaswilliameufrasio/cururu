@@ -210,7 +210,11 @@ the same setting: with it on, the check's **Publish review** button or
 `/cururu approve <digest>` publishes the candidate.
 
 The workflow needs `checks: write` and `actions: read` in addition to the PR and
-issue permissions. A new push cancels a run still waiting for approval. The
+issue permissions. A new push cancels a run still waiting for approval, and
+closing or merging the PR cancels it too (the `discard-pending` job), so
+approvals never pile up on finished PRs; GitHub itself only drops a pending
+approval after 30 days. Workflows set up before 6.3.0 need `closed` in the
+`pull_request_target` types and that job; see `docs/examples/cururu-review.yml`. The
 diff-limit notice is the only comment posted without approval; it contains no
 code or review content. The candidate is visible to anyone who can read the
 repository's checks and run summaries before approval. See
