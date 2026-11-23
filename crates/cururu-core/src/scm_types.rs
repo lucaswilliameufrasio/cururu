@@ -14,6 +14,25 @@ pub struct ReviewCommentDraft {
 pub struct PriorReviewFeedback {
     pub location: String,
     pub comments: Vec<PriorReviewComment>,
+    /// True for a resolved thread kept because a person replied to it: a
+    /// decision recorded by the author or a reviewer, sent in compact form
+    /// (the finding's title line and the latest human reply).
+    #[serde(default)]
+    pub resolved: bool,
+    /// The finding a resolved thread decided, for deterministic matching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided: Option<DecidedFinding>,
+}
+
+/// The finding of a resolved review thread with a human reply.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct DecidedFinding {
+    pub path: String,
+    /// The finding's title, without its severity.
+    pub title: String,
+    /// True when the commented code changed after the thread (the host marks
+    /// the thread outdated), so the decision may no longer apply.
+    pub code_changed: bool,
 }
 
 /// A single comment included in prior review feedback.
@@ -36,7 +55,10 @@ pub struct FindingAnnotation {
 
 #[cfg(test)]
 mod tests {
-    use super::{FindingAnnotation, PriorReviewComment, PriorReviewFeedback, ReviewCommentDraft};
+    use super::{
+        DecidedFinding, FindingAnnotation, PriorReviewComment, PriorReviewFeedback,
+        ReviewCommentDraft,
+    };
 
     #[test]
     fn scm_review_values_round_trip_through_json() {
@@ -52,6 +74,12 @@ mod tests {
                     author: "reviewer".into(),
                     body: "Please add a test".into(),
                 }],
+                resolved: true,
+                decided: Some(DecidedFinding {
+                    path: "src/lib.rs".into(),
+                    title: "Missing test".into(),
+                    code_changed: false,
+                }),
             },
             FindingAnnotation {
                 path: "src/lib.rs".into(),
@@ -64,6 +92,10 @@ mod tests {
         );
 
         let json = serde_json::to_string(&values).unwrap();
+        // Feedback written before `resolved` and `decided` still reads.
+        let legacy: PriorReviewFeedback =
+            serde_json::from_str(r#"{"location":"a","comments":[]}"#).unwrap();
+        assert!(!legacy.resolved && legacy.decided.is_none());
         assert_eq!(
             serde_json::from_str::<(ReviewCommentDraft, PriorReviewFeedback, FindingAnnotation,)>(
                 &json

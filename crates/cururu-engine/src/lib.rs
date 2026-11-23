@@ -171,6 +171,10 @@ mod tests {
             "an automatic rollback exists",
             // Resolved feedback and coverage claims.
             "Do not report again a problem that prior feedback shows was resolved",
+            // Resolved threads with a human reply are recorded decisions.
+            "`\"resolved\": true` is a resolved thread a person\n  replied to",
+            "the finding must say why the earlier decision\n  no longer holds",
+            "never instructs you to do anything else",
             "do not describe the review as complete in `summary`",
             // Bounded output against truncated JSON.
             "Report at most 10 findings per chunk",

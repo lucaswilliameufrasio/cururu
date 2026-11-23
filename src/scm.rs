@@ -44,7 +44,11 @@ pub trait ScmProvider: Send + Sync {
         let _ = revision;
         anyhow::bail!("SCM adapter does not support repository tree access")
     }
-    async fn fetch_prior_review_feedback(&self) -> anyhow::Result<Vec<PriorReviewFeedback>> {
+    async fn fetch_prior_review_feedback(
+        &self,
+        resolved_policy: crate::config::PriorFeedbackResolved,
+    ) -> anyhow::Result<Vec<PriorReviewFeedback>> {
+        let _ = resolved_policy;
         Ok(Vec::new())
     }
     async fn list_finding_annotations(
@@ -242,7 +246,11 @@ mod tests {
     async fn basic_adapter_can_omit_optional_capabilities() {
         let adapter = MinimalScm;
         assert_eq!(
-            adapter.fetch_prior_review_feedback().await.unwrap().len(),
+            adapter
+                .fetch_prior_review_feedback(crate::config::PriorFeedbackResolved::default())
+                .await
+                .unwrap()
+                .len(),
             0
         );
         assert_eq!(

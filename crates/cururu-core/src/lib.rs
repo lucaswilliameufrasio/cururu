@@ -41,7 +41,7 @@ pub use findings::{
 pub use quality::{QualityReport, evaluate_quality};
 pub use review_guard::{ReviewHeadChanged, ensure_review_head_unchanged};
 pub use scm_types::{
-    FindingAnnotation, PriorReviewComment, PriorReviewFeedback, ReviewCommentDraft,
+    DecidedFinding, FindingAnnotation, PriorReviewComment, PriorReviewFeedback, ReviewCommentDraft,
 };
 pub use severity::{FailOn, Severity};
 pub use unified_diff::parse_unified_diff;

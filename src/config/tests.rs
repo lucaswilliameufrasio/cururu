@@ -36,6 +36,7 @@ fn base_config() -> AppConfig {
             suggestion_detail: "detailed".into(),
             comment_mode: CommentMode::Inline,
             recommendations: false,
+            prior_feedback_resolved: crate::config::PriorFeedbackResolved::default(),
             policy: ReviewPolicy::default(),
         },
         context: ContextConfig::default(),
@@ -63,6 +64,26 @@ fn loads_review_tone_and_suggestion_detail() {
     assert_eq!(cfg.review.tone, "didactic");
     assert_eq!(cfg.review.technical_level, "beginner");
     assert_eq!(cfg.review.suggestion_detail, "standard");
+}
+
+#[test]
+fn resolved_prior_feedback_defaults_to_threads_with_human_replies() {
+    use crate::config::PriorFeedbackResolved;
+    let mut cfg = base_config();
+    assert_eq!(
+        cfg.review.prior_feedback_resolved,
+        PriorFeedbackResolved::WithHumanReply
+    );
+    cfg.merge_toml_str("version = 1\n[review]\nprior_feedback_resolved = \"none\"\n")
+        .unwrap();
+    assert_eq!(
+        cfg.review.prior_feedback_resolved,
+        PriorFeedbackResolved::None
+    );
+    let error = cfg
+        .merge_toml_str("version = 1\n[review]\nprior_feedback_resolved = \"all\"\n")
+        .unwrap_err();
+    assert!(error.to_string().contains("review.prior_feedback_resolved"));
 }
 
 #[test]

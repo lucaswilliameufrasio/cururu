@@ -240,8 +240,13 @@ pub async fn run_review_with_evaluator(
         }),
     )?;
 
-    let checked =
-        crate::review_input::review_chunks_checked(agent.as_ref(), &prepared, chunks).await?;
+    let checked = crate::review_input::review_chunks_checked(
+        agent.as_ref(),
+        &prepared,
+        chunks,
+        &prior_feedback,
+    )
+    .await?;
     let mut unconfirmed_paths: Vec<String> = Vec::new();
     for (item, chunk) in checked.iter().zip(chunks) {
         if !item.coverage_confirmed {
@@ -390,7 +395,9 @@ async fn collect_review_evidence(
     if config.context.auto.enabled {
         append_auto_context(config, source_control, &mut context, files).await?;
     }
-    let feedback = source_control.fetch_prior_review_feedback().await?;
+    let feedback = source_control
+        .fetch_prior_review_feedback(config.review.prior_feedback_resolved)
+        .await?;
     let analysis =
         analysis::load_evidence(&config.analysis, files, head_sha, source_control).await?;
     Ok((context, feedback, analysis))
@@ -718,6 +725,7 @@ mod tests {
         }
         async fn fetch_prior_review_feedback(
             &self,
+            _resolved_policy: crate::config::PriorFeedbackResolved,
         ) -> anyhow::Result<Vec<cururu_core::PriorReviewFeedback>> {
             Ok(vec![cururu_core::PriorReviewFeedback {
                 location: "fixture".into(),
@@ -725,6 +733,8 @@ mod tests {
                     author: "fixture".into(),
                     body: "untrusted-feedback-fixture".into(),
                 }],
+                resolved: false,
+                decided: None,
             }])
         }
         async fn list_finding_annotations(
@@ -1142,6 +1152,7 @@ mod tests {
         }
         async fn fetch_prior_review_feedback(
             &self,
+            _resolved_policy: crate::config::PriorFeedbackResolved,
         ) -> anyhow::Result<Vec<crate::scm::PriorReviewFeedback>> {
             panic!("unreviewable input must fail before further collection")
         }

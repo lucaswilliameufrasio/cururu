@@ -199,11 +199,14 @@ pub struct CheckedChunk {
 /// or whose reported coverage is inconsistent is requested once more. Invalid
 /// findings stay fatal; a coverage count that stays inconsistent is accepted
 /// as unconfirmed coverage, so one miscounted chunk does not discard the
-/// whole review. External agents (MCP) keep the strict check.
+/// whole review. External agents (MCP) keep the strict check. Findings that
+/// repeat a decision recorded in `prior_feedback` (a resolved thread with a
+/// human reply on unchanged code) are dropped.
 pub async fn review_chunks_checked(
     agent: &dyn cururu_engine::ReviewAgent,
     prepared: &PreparedReview,
     chunks: &[DiffChunk],
+    prior_feedback: &[cururu_core::PriorReviewFeedback],
 ) -> anyhow::Result<Vec<CheckedChunk>> {
     let mut checked = Vec::with_capacity(chunks.len());
     for chunk in chunks {
@@ -235,6 +238,15 @@ pub async fn review_chunks_checked(
             );
         }
         validate_chunk_findings(prepared, chunk, &result.review)?;
+        let suppressed =
+            crate::prior_feedback::suppress_decided(prior_feedback, &mut result.review);
+        if suppressed > 0 {
+            tracing::info!(
+                chunk = chunk.index,
+                suppressed_as_decided = suppressed,
+                "findings repeating recorded decisions were dropped"
+            );
+        }
         let coverage_confirmed = coverage_consistent(chunk, &result.review);
         if !coverage_confirmed {
             tracing::warn!(chunk = chunk.index, "chunk coverage remains unconfirmed");
@@ -566,7 +578,9 @@ pub async fn prepare_agent_pr(
     if config.context.auto.enabled {
         review::append_auto_context(config, scm, &mut context, &prepared.files).await?;
     }
-    let feedback = scm.fetch_prior_review_feedback().await?;
+    let feedback = scm
+        .fetch_prior_review_feedback(config.review.prior_feedback_resolved)
+        .await?;
     anyhow::ensure!(
         feedback.len() <= 1000,
         "prior review feedback exceeds entry limit"
@@ -998,6 +1012,7 @@ mod tests {
         }
         async fn fetch_prior_review_feedback(
             &self,
+            _resolved_policy: crate::config::PriorFeedbackResolved,
         ) -> anyhow::Result<Vec<cururu_core::PriorReviewFeedback>> {
             Ok(vec![cururu_core::PriorReviewFeedback {
                 location: "a:1".into(),
@@ -1005,6 +1020,8 @@ mod tests {
                     author: "reviewer".into(),
                     body: self.0.into(),
                 }],
+                resolved: false,
+                decided: None,
             }])
         }
     }
