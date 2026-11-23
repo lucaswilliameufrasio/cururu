@@ -23,6 +23,9 @@ pub const MAX_CONVERSATION_COMMENTS: usize = 10;
 pub const MAX_COMMENT_CHARS: usize = 2_000;
 /// Characters kept per location label.
 pub const MAX_LOCATION_CHARS: usize = 512;
+/// Lines a new finding may be from a decided thread's line and still count
+/// as the same place.
+pub const DECIDED_LINE_WINDOW: u32 = 3;
 /// Total bytes of locations and comment bodies.
 pub const MAX_FEEDBACK_BYTES: usize = 12_000;
 /// Appended to a body or location cut at its character limit.
@@ -89,6 +92,8 @@ pub struct Resolution {
 pub struct InlineThread {
     pub root_id: u64,
     pub path: String,
+    /// The root comment's line on the current diff, if any.
+    pub line: Option<u32>,
     pub location: String,
     pub root: PriorReviewComment,
     pub replies: Vec<PriorReviewComment>,
@@ -229,6 +234,7 @@ fn resolved_entry(
         resolved: true,
         decided: Some(DecidedFinding {
             path,
+            line: thread.line,
             title,
             code_changed: resolution.outdated,
         }),
@@ -354,20 +360,28 @@ pub fn validate_bounds(feedback: &[PriorReviewFeedback]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Drop new findings that repeat a decided one: same file and normalized
-/// title as a resolved thread with a human reply whose code did not change
-/// since. Returns how many were dropped; each is logged as
-/// `suppressed_as_decided`.
+/// Drop new findings that repeat a decided one: same file, a line within
+/// [`DECIDED_LINE_WINDOW`] of the thread's and the same normalized title as a
+/// resolved thread with a human reply whose code did not change since. A
+/// finding or thread without a line is never dropped, so a distinct
+/// occurrence elsewhere in the file reaches the review. Returns how many
+/// were dropped; each is logged as `suppressed_as_decided`.
 pub fn suppress_decided(
     feedback: &[PriorReviewFeedback],
     review: &mut cururu_core::ReviewResult,
 ) -> usize {
-    let decided: Vec<(&str, String)> = feedback
+    let decided: Vec<(&str, u32, String)> = feedback
         .iter()
         .filter(|entry| entry.resolved)
         .filter_map(|entry| entry.decided.as_ref())
         .filter(|decided| !decided.code_changed && !decided.title.trim().is_empty())
-        .map(|decided| (decided.path.as_str(), normalized_title(&decided.title)))
+        .filter_map(|decided| {
+            Some((
+                decided.path.as_str(),
+                decided.line?,
+                normalized_title(&decided.title),
+            ))
+        })
         .collect();
     if decided.is_empty() {
         return 0;
@@ -376,9 +390,13 @@ pub fn suppress_decided(
     review.findings.retain(|finding| {
         let title = normalized_title(&finding.title);
         let repeated = !title.is_empty()
-            && decided
-                .iter()
-                .any(|(path, decided)| *path == finding.path && *decided == title);
+            && finding.line.is_some_and(|line| {
+                decided.iter().any(|(path, decided_line, decided)| {
+                    *path == finding.path
+                        && line.abs_diff(*decided_line) <= DECIDED_LINE_WINDOW
+                        && *decided == title
+                })
+            });
         if repeated {
             tracing::info!(
                 path = %finding.path,
@@ -406,6 +424,7 @@ mod tests {
         InlineThread {
             root_id,
             path: format!("src/{root_id}.rs"),
+            line: Some(5),
             location: format!("src/{root_id}.rs (line 1)"),
             root: comment("finding"),
             replies: (0..replies)
@@ -495,6 +514,7 @@ mod tests {
         threads.push(InlineThread {
             root_id: 101,
             path: "x".into(),
+            line: None,
             location: "x".repeat(600),
             root: comment(&"ç".repeat(2_500)),
             replies: vec![comment("short")],
@@ -550,6 +570,7 @@ mod tests {
             .map(|id| InlineThread {
                 root_id: id,
                 path: format!("src/{id}.rs"),
+                line: Some(1),
                 resolution: None,
                 location: format!("src/{id}.rs (line 1)"),
                 root: PriorReviewComment {
@@ -621,6 +642,7 @@ mod tests {
             decision.decided,
             Some(DecidedFinding {
                 path: "src/7.rs".into(),
+                line: Some(5),
                 title: "Finding 7".into(),
                 code_changed: false,
             })
@@ -718,5 +740,38 @@ mod tests {
         };
         assert_eq!(suppress_decided(&changed, &mut review), 0);
         assert_eq!(review.findings.len(), 1);
+    }
+
+    #[test]
+    fn a_distinct_occurrence_elsewhere_in_the_file_is_kept() {
+        // The decision is on line 5; same file and title elsewhere is a new
+        // occurrence the review must see.
+        let (feedback, _) = bound_feedback(
+            vec![decided(1, "Not applicable: intentional.")],
+            None,
+            FeedbackCuts::default(),
+        );
+        let at = |line: Option<u32>| cururu_core::ReviewFinding {
+            line,
+            ..finding("src/1.rs", "Finding 1")
+        };
+        let mut review = cururu_core::ReviewResult {
+            model: "fixture".into(),
+            files_reviewed: 1,
+            summary: String::new(),
+            findings: vec![at(Some(8)), at(Some(9)), at(Some(40)), at(None)],
+        };
+        assert_eq!(suppress_decided(&feedback, &mut review), 1);
+        let lines: Vec<_> = review.findings.iter().map(|f| f.line).collect();
+        assert_eq!(lines, [Some(9), Some(40), None]);
+
+        // A decision without a line suppresses nothing.
+        let mut unanchored = feedback.clone();
+        unanchored[0].decided.as_mut().unwrap().line = None;
+        let mut review = cururu_core::ReviewResult {
+            findings: vec![at(Some(5))],
+            ..review
+        };
+        assert_eq!(suppress_decided(&unanchored, &mut review), 0);
     }
 }

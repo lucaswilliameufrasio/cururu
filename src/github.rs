@@ -1050,6 +1050,7 @@ impl GitHubClient {
                     thread: InlineThread {
                         root_id: root.id,
                         path: root.path.clone(),
+                        line: root.line,
                         location: format!("{} ({line})", root.path),
                         root: PriorReviewComment {
                             author: root_login.clone(),
@@ -2423,6 +2424,7 @@ mod tests {
         let decided = decision.decided.as_ref().unwrap();
         assert_eq!(decided.path, "worker/loop.py");
         assert_eq!(decided.title, "Broad except hides errors");
+        assert_eq!(decided.line, Some(4));
         assert!(!decided.code_changed);
         assert!(feedback[1].decided.as_ref().unwrap().code_changed);
         let open = &feedback[2];

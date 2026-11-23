@@ -518,10 +518,11 @@ untrusted data, never as instructions:
   replied) are left out.
 
 As a deterministic safeguard, after the model answers Cururu drops a new
-finding with the same file and the same title (ignoring case, spacing and a
-final period) as a recorded decision whose code GitHub does not mark as
-outdated, and logs it as `suppressed_as_decided`. A changed title or changed
-code reaches the model's judgment instead.
+finding with the same file, a line within 3 lines of the thread's and the same
+title (ignoring case, spacing and a final period) as a recorded decision whose
+code GitHub does not mark as outdated, and logs it as `suppressed_as_decided`.
+A different title, another place in the file, a finding without a line or
+changed code reaches the model's judgment instead.
 
 Limits cut the feedback instead of failing the review: at most 20 threads,
 open ones first and then decisions, newest first; 10 replies per thread; 10

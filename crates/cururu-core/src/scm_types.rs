@@ -28,6 +28,9 @@ pub struct PriorReviewFeedback {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct DecidedFinding {
     pub path: String,
+    /// The thread's line on the current diff, when it is anchored to one.
+    #[serde(default)]
+    pub line: Option<u32>,
     /// The finding's title, without its severity.
     pub title: String,
     /// True when the commented code changed after the thread (the host marks
@@ -77,6 +80,7 @@ mod tests {
                 resolved: true,
                 decided: Some(DecidedFinding {
                     path: "src/lib.rs".into(),
+                    line: Some(8),
                     title: "Missing test".into(),
                     code_changed: false,
                 }),
