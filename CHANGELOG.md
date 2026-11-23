@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [6.3.0] - 2026-11-23
+
+### Bug Fixes
+
+- *(deps)* Update url to 2.5.9 for RUSTSEC-2026-0592
+- *(review)* Suppress a decided finding only near the thread's line
+- *(review)* Suppress a decided finding only when its code is provably unchanged
+- *(review)* Anchor a decision at the comment's original line
+- *(review)* Log only the count of suppressed findings
+
+### CI / Build
+
+- *(workflows)* Cancel pending Cururu work when the PR closes
+
+### Chores
+
+- Pin v6.2.2 OCI digest
+- *(workflows)* Adopt Cururu v6.2.2
+
+### Documentation
+
+- Explain resolved threads as recorded decisions in prior feedback
+- *(agents)* Keep private repository identifiers out of the public project
+
+### Features
+
+- *(github)* Send resolved threads with a human reply as recorded decisions
+- *(config)* Let only non-author replies record a decision
+
+### Testing
+
+- *(review-quality)* A resolved decision is not reported again
+
 ## [6.2.2] - 2026-11-19
 
 ### Bug Fixes
