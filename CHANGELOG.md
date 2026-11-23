@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [6.3.0] - 2026-11-23
 
+### Upgrade notes
+
+- Resolved review threads with a human reply now reach the model as recorded
+  decisions (`[review].prior_feedback_resolved`, default `with_human_reply`).
+  Set `with_reviewer_reply` to count only replies from people other than the
+  PR author, or `none` to keep the 6.2 behavior.
+- Workflows that require publication approval: add `closed` to the
+  `pull_request_target` types and the `discard-pending` job from
+  `docs/examples/cururu-review.yml`, so closing or merging a PR cancels a
+  publication still waiting for approval. `cururu setup` writes the workflow
+  only once, so existing workflows must be updated by hand. Runs already
+  waiting on merged PRs can be cancelled with `gh run cancel <run id>`.
+
 ### Bug Fixes
 
 - *(deps)* Update url to 2.5.9 for RUSTSEC-2026-0592
