@@ -506,9 +506,11 @@ untrusted data, never as instructions:
 - **Open threads** with a reply are sent whole (the finding and its latest
   replies).
 - **Resolved threads with a human reply** are sent as recorded decisions, in
-  compact form: the finding's severity and title, its location and the latest
-  reply written by a person (not a bot and not Cururu), marked `"resolved":
-  true`. Resolving a thread after answering "not applicable" or "kept because…"
+  compact form: the finding's severity and title, its location and the last 3
+  replies written by people (not bots and not Cururu), marked `"resolved":
+  true`. Sending more than the last reply keeps a full explanation that was
+  followed by a short "resolving". Nothing parses the reply text, so any
+  language or wording works; the model reads it. Resolving a thread after answering "not applicable" or "kept because…"
   (as repositories that require conversation resolution before merge do) no
   longer makes the next review lose that answer and raise the same finding again.
   The model is told not to repeat it in the same file for the same cause unless
@@ -519,10 +521,13 @@ untrusted data, never as instructions:
 
 As a deterministic safeguard, after the model answers Cururu drops a new
 finding with the same file, a line within 3 lines of the thread's and the same
-title (ignoring case, spacing and a final period) as a recorded decision whose
-code GitHub does not mark as outdated, and logs it as `suppressed_as_decided`.
-A different title, another place in the file, a finding without a line or
-changed code reaches the model's judgment instead.
+title (ignoring case, spacing and a final period) as a recorded decision, and
+logs it as `suppressed_as_decided`, but only when the code is provably the
+same: GitHub does not mark the thread outdated, and the current diff still has
+exactly the commented line and the 3 lines before it as they were when the
+thread was written (compared by hash). A different title, another place in the
+file, a finding without a line, or changed or unverifiable code reaches the
+model's judgment instead.
 
 Limits cut the feedback instead of failing the review: at most 20 threads,
 open ones first and then decisions, newest first; 10 replies per thread; 10

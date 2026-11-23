@@ -33,6 +33,10 @@ pub struct DecidedFinding {
     pub line: Option<u32>,
     /// The finding's title, without its severity.
     pub title: String,
+    /// The commented code when the thread was written, to check that it is
+    /// still the same before treating a new finding as a repetition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<CodeAnchor>,
     /// True when the commented code changed after the thread (the host marks
     /// the thread outdated), so the decision may no longer apply.
     pub code_changed: bool,
@@ -43,6 +47,14 @@ pub struct DecidedFinding {
 pub struct PriorReviewComment {
     pub author: String,
     pub body: String,
+}
+
+/// The last lines of the code a review thread commented on, ending at its
+/// line: how many lines and the SHA-256 of their text joined by newlines.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct CodeAnchor {
+    pub lines: u32,
+    pub sha256: String,
 }
 
 /// A tool-produced annotation associated with a source location.
@@ -59,7 +71,7 @@ pub struct FindingAnnotation {
 #[cfg(test)]
 mod tests {
     use super::{
-        DecidedFinding, FindingAnnotation, PriorReviewComment, PriorReviewFeedback,
+        CodeAnchor, DecidedFinding, FindingAnnotation, PriorReviewComment, PriorReviewFeedback,
         ReviewCommentDraft,
     };
 
@@ -82,6 +94,10 @@ mod tests {
                     path: "src/lib.rs".into(),
                     line: Some(8),
                     title: "Missing test".into(),
+                    anchor: Some(CodeAnchor {
+                        lines: 2,
+                        sha256: "00".repeat(32),
+                    }),
                     code_changed: false,
                 }),
             },

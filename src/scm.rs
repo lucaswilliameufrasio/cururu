@@ -23,6 +23,9 @@ pub struct ReviewComment {
     pub line: Option<u32>,
     #[allow(dead_code)]
     pub subject_type: Option<String>,
+    /// The diff hunk the comment was written on, ending at its line.
+    #[serde(default)]
+    pub diff_hunk: Option<String>,
 }
 
 /// Source-control capabilities required by Cururu's core. Concrete adapters

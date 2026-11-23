@@ -188,7 +188,8 @@ struct GitHubCheckAnnotation {
 /// A Cururu finding thread with replies, before its resolution is known.
 struct AnsweredThread {
     thread: crate::prior_feedback::InlineThread,
-    last_human_reply: Option<PriorReviewComment>,
+    /// Replies written by people, oldest first.
+    human_replies: Vec<PriorReviewComment>,
 }
 
 /// A review thread's state from GraphQL.
@@ -956,18 +957,18 @@ impl GitHubClient {
         let mut threads: Vec<InlineThread> = Vec::with_capacity(candidates.len());
         for AnsweredThread {
             mut thread,
-            last_human_reply,
+            human_replies,
         } in candidates
         {
             let Some(state) = states.get(&thread.root_id).filter(|state| state.resolved) else {
                 threads.push(thread);
                 continue;
             };
-            match (resolved_policy, last_human_reply) {
-                (PriorFeedbackResolved::WithHumanReply, Some(last_human_reply)) => {
+            match resolved_policy {
+                PriorFeedbackResolved::WithHumanReply if !human_replies.is_empty() => {
                     thread.replies = Vec::new();
                     thread.resolution = Some(Resolution {
-                        last_human_reply,
+                        human_replies,
                         outdated: state.outdated,
                     });
                     threads.push(thread);
@@ -999,7 +1000,7 @@ impl GitHubClient {
     }
 
     /// Cururu findings with at least one reply from a person or from Cururu
-    /// itself (other bots are ignored), with the latest human reply.
+    /// itself (other bots are ignored), with the replies people wrote.
     fn answered_threads(
         comments: &[ReviewComment],
         own_login: Option<&str>,
@@ -1038,11 +1039,11 @@ impl GitHubClient {
                     return None;
                 }
                 replies.sort_by_key(|(id, _, _)| *id);
-                let last_human_reply = replies
+                let human_replies = replies
                     .iter()
-                    .rev()
-                    .find(|(_, _, human)| *human)
-                    .map(|(_, reply, _)| reply.clone());
+                    .filter(|(_, _, human)| *human)
+                    .map(|(_, reply, _)| reply.clone())
+                    .collect();
                 let line = root
                     .line
                     .map_or_else(|| "file".to_string(), |n| format!("line {n}"));
@@ -1051,6 +1052,10 @@ impl GitHubClient {
                         root_id: root.id,
                         path: root.path.clone(),
                         line: root.line,
+                        anchor: root
+                            .diff_hunk
+                            .as_deref()
+                            .and_then(crate::prior_feedback::anchor_from_hunk),
                         location: format!("{} ({line})", root.path),
                         root: PriorReviewComment {
                             author: root_login.clone(),
@@ -1059,7 +1064,7 @@ impl GitHubClient {
                         replies: replies.into_iter().map(|(_, reply, _)| reply).collect(),
                         resolution: None,
                     },
-                    last_human_reply,
+                    human_replies,
                 })
             })
             .collect()
@@ -2364,13 +2369,20 @@ mod tests {
     #[tokio::test]
     async fn only_resolved_threads_with_a_human_reply_enter_as_decisions() {
         let server = MockServer::start().await;
-        let root = |id: u64, path: &str| serde_json::json!({"id":id,"body":"<!-- cururu:finding -->\n\n**MEDIUM**: Broad except hides errors\n\nDetails.","user":{"login":"cururu[bot]","type":"Bot"},"path":path,"line":4});
+        let root = |id: u64, path: &str| serde_json::json!({"id":id,"body":"<!-- cururu:finding -->\n\n**MEDIUM**: Broad except hides errors\n\nDetails.","user":{"login":"cururu[bot]","type":"Bot"},"path":path,"line":4,"diff_hunk":"@@ -1,2 +1,4 @@\n a\n+b\n c\n+d"});
         let reply = |id: u64, root: u64, body: &str, login: &str, kind: &str| serde_json::json!({"id":id,"in_reply_to_id":root,"body":body,"user":{"login":login,"type":kind},"path":"x","line":4});
         let comments = vec![
-            // 1: resolved, answered by a person, then by Cururu.
+            // 1: resolved; a full explanation, Cururu, then a short closing reply.
             root(1, "worker/loop.py"),
-            reply(2, 1, "Not applicable: the queue retries.", "author", "User"),
+            reply(
+                2,
+                1,
+                "No aplica: la cola reintenta el mensaje y lo envía a la DLQ tras 5 intentos.",
+                "author",
+                "User",
+            ),
             reply(3, 1, "Understood.", "cururu[bot]", "Bot"),
+            reply(4, 1, "Resolving.", "author", "User"),
             // 10: resolved, only Cururu replied.
             root(10, "a.py"),
             reply(11, 10, "Still applies.", "cururu[bot]", "Bot"),
@@ -2414,10 +2426,16 @@ mod tests {
                     author: "cururu[bot]".into(),
                     body: "**MEDIUM**: Broad except hides errors".into(),
                 },
-                // The latest human reply, not Cururu's later one.
+                // Every human reply, so the explanation is not lost to the
+                // closing one; Cururu's reply is left out.
                 PriorReviewComment {
                     author: "author".into(),
-                    body: "Not applicable: the queue retries.".into(),
+                    body: "No aplica: la cola reintenta el mensaje y lo envía a la DLQ tras 5 intentos."
+                        .into(),
+                },
+                PriorReviewComment {
+                    author: "author".into(),
+                    body: "Resolving.".into(),
                 },
             ]
         );
@@ -2425,6 +2443,11 @@ mod tests {
         assert_eq!(decided.path, "worker/loop.py");
         assert_eq!(decided.title, "Broad except hides errors");
         assert_eq!(decided.line, Some(4));
+        assert_eq!(
+            decided.anchor,
+            crate::prior_feedback::anchor_from_hunk("@@ -1,2 +1,4 @@\n a\n+b\n c\n+d")
+        );
+        assert_eq!(decided.anchor.as_ref().unwrap().lines, 4);
         assert!(!decided.code_changed);
         assert!(feedback[1].decided.as_ref().unwrap().code_changed);
         let open = &feedback[2];
@@ -3391,6 +3414,7 @@ mod tests {
             path: "a.rs".into(),
             line: None,
             subject_type: None,
+            diff_hunk: None,
         }
     }
 

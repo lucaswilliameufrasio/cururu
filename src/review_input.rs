@@ -238,8 +238,11 @@ pub async fn review_chunks_checked(
             );
         }
         validate_chunk_findings(prepared, chunk, &result.review)?;
-        let suppressed =
-            crate::prior_feedback::suppress_decided(prior_feedback, &mut result.review);
+        let suppressed = crate::prior_feedback::suppress_decided(
+            prior_feedback,
+            &prepared.files,
+            &mut result.review,
+        );
         if suppressed > 0 {
             tracing::info!(
                 chunk = chunk.index,

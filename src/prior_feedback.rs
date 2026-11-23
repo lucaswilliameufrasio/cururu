@@ -7,11 +7,12 @@
 //!
 //! A resolved thread with a human reply is a decision recorded by the author
 //! or a reviewer. It is sent in compact form (the finding's title line, its
-//! location and the latest human reply), and a new finding that repeats it on
+//! location and the latest human replies), and a new finding that repeats it on
 //! unchanged code is dropped after parsing ([`suppress_decided`]).
 
 use crate::scm::{PriorReviewComment, PriorReviewFeedback};
-use cururu_core::DecidedFinding;
+use cururu_core::{CodeAnchor, DecidedFinding};
+use sha2::{Digest, Sha256};
 
 /// Inline review threads kept, newest first.
 pub const MAX_THREADS: usize = 20;
@@ -78,8 +79,9 @@ impl FeedbackCuts {
 /// How a resolved thread with a human reply enters the feedback.
 #[derive(Debug, Clone)]
 pub struct Resolution {
-    /// The latest reply written by a person (not a bot, not Cururu).
-    pub last_human_reply: PriorReviewComment,
+    /// Replies written by people (not bots, not Cururu), oldest first. The
+    /// explanation is often an earlier reply than a closing "resolving".
+    pub human_replies: Vec<PriorReviewComment>,
     /// The host marked the thread outdated: its code changed afterwards.
     pub outdated: bool,
 }
@@ -87,13 +89,15 @@ pub struct Resolution {
 /// One inline thread: its root comment id (newer threads have larger ids),
 /// path, location, root comment and replies in chronological order.
 /// `resolution` is set for a resolved thread kept as a decision; its replies
-/// are then replaced by the latest human reply.
+/// are then replaced by its human replies.
 #[derive(Debug, Clone)]
 pub struct InlineThread {
     pub root_id: u64,
     pub path: String,
     /// The root comment's line on the current diff, if any.
     pub line: Option<u32>,
+    /// The commented code when the thread was written ([`anchor_from_hunk`]).
+    pub anchor: Option<CodeAnchor>,
     pub location: String,
     pub root: PriorReviewComment,
     pub replies: Vec<PriorReviewComment>,
@@ -171,6 +175,86 @@ pub fn normalized_title(title: &str) -> String {
         .to_lowercase()
 }
 
+/// Human replies kept per resolved thread (the latest ones).
+pub const MAX_DECISION_REPLIES: usize = 3;
+
+/// Lines of code kept in a [`CodeAnchor`]: the commented line and up to this
+/// many before it, minus one.
+pub const ANCHOR_LINES: usize = 4;
+
+fn anchor_of(lines: &[&str]) -> CodeAnchor {
+    CodeAnchor {
+        lines: u32::try_from(lines.len()).unwrap_or(u32::MAX),
+        sha256: hex::encode(Sha256::digest(lines.join("\n").as_bytes())),
+    }
+}
+
+/// The anchor of a review comment from its diff hunk, which ends at the
+/// commented line: that line and up to [`ANCHOR_LINES`] - 1 new-side lines
+/// before it. None for a comment on a removed (left-side) line or an empty
+/// hunk.
+pub fn anchor_from_hunk(hunk: &str) -> Option<CodeAnchor> {
+    let body: Vec<&str> = hunk
+        .lines()
+        .skip_while(|line| !line.starts_with("@@"))
+        .skip(1)
+        .filter(|line| !line.starts_with('\\'))
+        .collect();
+    if body.last().is_none_or(|line| line.starts_with('-')) {
+        return None;
+    }
+    let mut lines: Vec<&str> = body
+        .iter()
+        .rev()
+        .filter(|line| !line.starts_with('-'))
+        .take(ANCHOR_LINES)
+        .map(|line| line.get(1..).unwrap_or_default())
+        .collect();
+    lines.reverse();
+    Some(anchor_of(&lines))
+}
+
+/// New-side lines of a unified patch by line number: context and added
+/// lines only.
+fn new_side_lines(patch: &str) -> std::collections::HashMap<u32, &str> {
+    let mut lines = std::collections::HashMap::new();
+    let mut next: Option<u32> = None;
+    for line in patch.lines() {
+        if let Some(header) = line.strip_prefix("@@ ") {
+            next = header
+                .split_whitespace()
+                .find_map(|part| part.strip_prefix('+'))
+                .and_then(|range| range.split(',').next())
+                .and_then(|start| start.parse().ok());
+            continue;
+        }
+        let Some(number) = next else {
+            continue;
+        };
+        match line.as_bytes().first() {
+            Some(b'+' | b' ') => {
+                lines.insert(number, line.get(1..).unwrap_or_default());
+                next = Some(number + 1);
+            }
+            Some(b'-' | b'\\') => {}
+            _ => next = None,
+        }
+    }
+    lines
+}
+
+/// Whether the current diff still has the anchored code ending at `line`.
+fn anchor_unchanged(anchor: &CodeAnchor, line: u32, patch: &str) -> bool {
+    let current = new_side_lines(patch);
+    let Some(first) = (line + 1).checked_sub(anchor.lines) else {
+        return false;
+    };
+    let lines: Option<Vec<&str>> = (first..=line)
+        .map(|number| current.get(&number).copied())
+        .collect();
+    lines.is_some_and(|lines| anchor.lines > 0 && anchor_of(&lines) == *anchor)
+}
+
 /// Bytes counted against [`MAX_FEEDBACK_BYTES`]: the location, each
 /// comment's author and body, and a decided finding's path and title, as
 /// sent to the model.
@@ -181,10 +265,14 @@ pub fn feedback_bytes(feedback: &PriorReviewFeedback) -> usize {
             .iter()
             .map(|comment| comment.author.len() + comment.body.len())
             .sum::<usize>()
-        + feedback
-            .decided
-            .as_ref()
-            .map_or(0, |decided| decided.path.len() + decided.title.len())
+        + feedback.decided.as_ref().map_or(0, |decided| {
+            decided.path.len()
+                + decided.title.len()
+                + decided
+                    .anchor
+                    .as_ref()
+                    .map_or(0, |anchor| anchor.sha256.len())
+        })
 }
 
 fn open_entry(thread: InlineThread, cuts: &mut FeedbackCuts) -> PriorReviewFeedback {
@@ -210,7 +298,7 @@ fn open_entry(thread: InlineThread, cuts: &mut FeedbackCuts) -> PriorReviewFeedb
 }
 
 /// Compact form of a resolved thread: the finding's title line, its location
-/// and the latest human reply.
+/// and the latest [`MAX_DECISION_REPLIES`] human replies.
 fn resolved_entry(
     thread: InlineThread,
     resolution: Resolution,
@@ -219,22 +307,32 @@ fn resolved_entry(
     let title_line = finding_title_line(&thread.root.body).to_owned();
     let (title, _) = truncate_chars(finding_title(&title_line), MAX_LOCATION_CHARS);
     let (path, _) = truncate_chars(&thread.path, MAX_LOCATION_CHARS);
+    let mut replies = resolution.human_replies;
+    if replies.len() > MAX_DECISION_REPLIES {
+        let excess = replies.len() - MAX_DECISION_REPLIES;
+        cuts.dropped_comments += excess;
+        replies.drain(..excess);
+    }
+    let mut comments = vec![bounded_comment(
+        PriorReviewComment {
+            author: thread.root.author,
+            body: title_line,
+        },
+        cuts,
+    )];
+    comments.extend(
+        replies
+            .into_iter()
+            .map(|reply| bounded_comment(reply, cuts)),
+    );
     PriorReviewFeedback {
         location: bounded_location(&thread.location, cuts),
-        comments: vec![
-            bounded_comment(
-                PriorReviewComment {
-                    author: thread.root.author,
-                    body: title_line,
-                },
-                cuts,
-            ),
-            bounded_comment(resolution.last_human_reply, cuts),
-        ],
+        comments,
         resolved: true,
         decided: Some(DecidedFinding {
             path,
             line: thread.line,
+            anchor: thread.anchor,
             title,
             code_changed: resolution.outdated,
         }),
@@ -362,12 +460,15 @@ pub fn validate_bounds(feedback: &[PriorReviewFeedback]) -> anyhow::Result<()> {
 
 /// Drop new findings that repeat a decided one: same file, a line within
 /// [`DECIDED_LINE_WINDOW`] of the thread's and the same normalized title as a
-/// resolved thread with a human reply whose code did not change since. A
-/// finding or thread without a line is never dropped, so a distinct
-/// occurrence elsewhere in the file reaches the review. Returns how many
-/// were dropped; each is logged as `suppressed_as_decided`.
+/// resolved thread with a human reply, when the commented code is provably
+/// the same: the host does not mark the thread outdated and the current diff
+/// (`files`) holds exactly the anchored lines at the thread's line. A
+/// finding or thread without a line or anchor is never dropped, so a distinct
+/// occurrence or changed code reaches the review. Returns how many were
+/// dropped; each is logged as `suppressed_as_decided`.
 pub fn suppress_decided(
     feedback: &[PriorReviewFeedback],
+    files: &[cururu_core::ChangedFile],
     review: &mut cururu_core::ReviewResult,
 ) -> usize {
     let decided: Vec<(&str, u32, String)> = feedback
@@ -376,11 +477,16 @@ pub fn suppress_decided(
         .filter_map(|entry| entry.decided.as_ref())
         .filter(|decided| !decided.code_changed && !decided.title.trim().is_empty())
         .filter_map(|decided| {
-            Some((
-                decided.path.as_str(),
-                decided.line?,
-                normalized_title(&decided.title),
-            ))
+            let line = decided.line?;
+            let anchor = decided.anchor.as_ref()?;
+            let file = files.iter().find(|file| file.path == decided.path)?;
+            anchor_unchanged(anchor, line, &file.patch).then(|| {
+                (
+                    decided.path.as_str(),
+                    line,
+                    normalized_title(&decided.title),
+                )
+            })
         })
         .collect();
     if decided.is_empty() {
@@ -425,6 +531,7 @@ mod tests {
             root_id,
             path: format!("src/{root_id}.rs"),
             line: Some(5),
+            anchor: None,
             location: format!("src/{root_id}.rs (line 1)"),
             root: comment("finding"),
             replies: (0..replies)
@@ -434,14 +541,36 @@ mod tests {
         }
     }
 
-    /// A resolved thread whose latest human reply is `reply`.
+    /// A patch adding `src/<id>.rs` with lines `l1`..`l40`, `changed` replaced.
+    fn changed_file(id: u64, changed: Option<u32>) -> cururu_core::ChangedFile {
+        let lines: Vec<String> = (1..=40)
+            .map(|number| {
+                let edited = if Some(number) == changed {
+                    " edited"
+                } else {
+                    ""
+                };
+                format!("+l{number}{edited}\n")
+            })
+            .collect();
+        let patch = format!("@@ -0,0 +1,40 @@\n{}", lines.concat());
+        cururu_core::ChangedFile {
+            path: format!("src/{id}.rs"),
+            patch,
+            right_lines: (1..=40).collect(),
+        }
+    }
+
+    /// A resolved thread on line 5 whose latest human reply is `reply`,
+    /// anchored on `l2`..`l5` as written then.
     fn decided(root_id: u64, reply: &str) -> InlineThread {
         InlineThread {
+            anchor: anchor_from_hunk("@@ -0,0 +1,5 @@\n+l1\n+l2\n+l3\n+l4\n+l5"),
             root: comment(&format!(
                 "<!-- cururu:finding -->\n\n**MEDIUM**: Finding {root_id}\n\nLong explanation that is not sent."
             )),
             resolution: Some(Resolution {
-                last_human_reply: comment(reply),
+                human_replies: vec![comment(reply)],
                 outdated: false,
             }),
             ..thread(root_id, 0, "")
@@ -515,6 +644,7 @@ mod tests {
             root_id: 101,
             path: "x".into(),
             line: None,
+            anchor: None,
             location: "x".repeat(600),
             root: comment(&"ç".repeat(2_500)),
             replies: vec![comment("short")],
@@ -571,6 +701,7 @@ mod tests {
                 root_id: id,
                 path: format!("src/{id}.rs"),
                 line: Some(1),
+                anchor: None,
                 resolution: None,
                 location: format!("src/{id}.rs (line 1)"),
                 root: PriorReviewComment {
@@ -633,7 +764,7 @@ mod tests {
         let decision = &feedback[1];
         assert!(decision.resolved);
         assert_eq!(decision.location, "src/7.rs (line 1)");
-        // Only the title line and the latest human reply, truncated.
+        // Only the title line and the human reply, truncated.
         assert_eq!(decision.comments.len(), 2);
         assert_eq!(decision.comments[0].body, "**MEDIUM**: Finding 7");
         assert_eq!(decision.comments[1].body.chars().count(), MAX_COMMENT_CHARS);
@@ -643,6 +774,7 @@ mod tests {
             Some(DecidedFinding {
                 path: "src/7.rs".into(),
                 line: Some(5),
+                anchor: anchor_from_hunk("@@ -0,0 +1,5 @@\n+l1\n+l2\n+l3\n+l4\n+l5"),
                 title: "Finding 7".into(),
                 code_changed: false,
             })
@@ -676,6 +808,25 @@ mod tests {
         assert_eq!(cuts.dropped_resolved_threads, 6 - kept.len());
         assert_eq!(cuts.resolved_kept, kept.len());
         assert!(cuts.any());
+    }
+
+    #[test]
+    fn a_decision_keeps_its_latest_human_replies() {
+        let mut thread = decided(1, "unused");
+        thread.resolution.as_mut().unwrap().human_replies = (0..5)
+            .map(|index| comment(&format!("reply {index}")))
+            .collect();
+        let (feedback, cuts) = bound_feedback(vec![thread], None, FeedbackCuts::default());
+        let bodies: Vec<_> = feedback[0]
+            .comments
+            .iter()
+            .map(|c| c.body.as_str())
+            .collect();
+        assert_eq!(
+            bodies,
+            ["**MEDIUM**: Finding 1", "reply 2", "reply 3", "reply 4"]
+        );
+        assert_eq!(cuts.dropped_comments, 2);
     }
 
     #[test]
@@ -717,6 +868,7 @@ mod tests {
             None,
             FeedbackCuts::default(),
         );
+        let files = [changed_file(1, None)];
         let mut review = cururu_core::ReviewResult {
             model: "fixture".into(),
             files_reviewed: 1,
@@ -727,7 +879,7 @@ mod tests {
                 finding("src/2.rs", "Finding 1"),
             ],
         };
-        assert_eq!(suppress_decided(&feedback, &mut review), 1);
+        assert_eq!(suppress_decided(&feedback, &files, &mut review), 1);
         let titles: Vec<_> = review.findings.iter().map(|f| f.title.as_str()).collect();
         assert_eq!(titles, ["Another problem", "Finding 1"]);
 
@@ -738,7 +890,7 @@ mod tests {
             findings: vec![finding("src/1.rs", "Finding 1")],
             ..review
         };
-        assert_eq!(suppress_decided(&changed, &mut review), 0);
+        assert_eq!(suppress_decided(&changed, &files, &mut review), 0);
         assert_eq!(review.findings.len(), 1);
     }
 
@@ -751,6 +903,7 @@ mod tests {
             None,
             FeedbackCuts::default(),
         );
+        let files = [changed_file(1, None)];
         let at = |line: Option<u32>| cururu_core::ReviewFinding {
             line,
             ..finding("src/1.rs", "Finding 1")
@@ -761,7 +914,7 @@ mod tests {
             summary: String::new(),
             findings: vec![at(Some(8)), at(Some(9)), at(Some(40)), at(None)],
         };
-        assert_eq!(suppress_decided(&feedback, &mut review), 1);
+        assert_eq!(suppress_decided(&feedback, &files, &mut review), 1);
         let lines: Vec<_> = review.findings.iter().map(|f| f.line).collect();
         assert_eq!(lines, [Some(9), Some(40), None]);
 
@@ -772,6 +925,52 @@ mod tests {
             findings: vec![at(Some(5))],
             ..review
         };
-        assert_eq!(suppress_decided(&unanchored, &mut review), 0);
+        assert_eq!(suppress_decided(&unanchored, &files, &mut review), 0);
+    }
+
+    #[test]
+    fn changed_code_at_the_same_anchor_is_not_suppressed() {
+        // GitHub can keep a thread current when code next to its line
+        // changes; the anchored lines must still be the same.
+        let (feedback, _) = bound_feedback(
+            vec![decided(1, "Not applicable: intentional.")],
+            None,
+            FeedbackCuts::default(),
+        );
+        assert!(!feedback[0].decided.as_ref().unwrap().code_changed);
+        let review = || cururu_core::ReviewResult {
+            model: "fixture".into(),
+            files_reviewed: 1,
+            summary: String::new(),
+            findings: vec![finding("src/1.rs", "Finding 1")],
+        };
+        for changed in [3, 5] {
+            let mut current = review();
+            let files = [changed_file(1, Some(changed))];
+            assert_eq!(suppress_decided(&feedback, &files, &mut current), 0);
+        }
+        // Outside the anchored lines, or unchanged: still the same code.
+        let mut current = review();
+        assert_eq!(
+            suppress_decided(&feedback, &[changed_file(1, Some(20))], &mut current),
+            1
+        );
+        // The file is not in the current diff: nothing to compare with.
+        let mut current = review();
+        assert_eq!(suppress_decided(&feedback, &[], &mut current), 0);
+    }
+
+    #[test]
+    fn anchors_come_from_the_new_side_of_the_hunk() {
+        let hunk = "@@ -1,4 +1,5 @@\n a\n-b\n+B\n c\n+d\n e";
+        // e, d, c, B (removed b is not part of the new side).
+        let anchor = anchor_from_hunk(hunk).unwrap();
+        assert_eq!(anchor.lines, 4);
+        assert_eq!(anchor, anchor_of(&["B", "c", "d", "e"]));
+        assert_eq!(anchor_from_hunk("@@ -1,2 +1,1 @@\n a\n-b"), None);
+        assert_eq!(anchor_from_hunk(""), None);
+        let patch = "diff --git a/x b/x\n@@ -1,4 +1,5 @@\n a\n-b\n+B\n c\n+d\n e\n";
+        assert!(anchor_unchanged(&anchor, 5, patch));
+        assert!(!anchor_unchanged(&anchor, 4, patch));
     }
 }

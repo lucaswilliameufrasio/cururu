@@ -74,8 +74,10 @@ Analysis quality:
   explained, even in other words, unless the current diff reintroduces it.
 - A prior feedback entry with `"resolved": true` is a resolved thread a person
   replied to: a decision recorded by the author or a reviewer (for example
-  "not applicable" or "kept because..."). It shows the finding's title line,
-  its location and the latest human reply. Do not raise the same problem again
+  "not applicable" or "kept because...", in any language, sometimes as a
+  longer explanation followed by a short closing reply). It shows the
+  finding's title line, its location and the latest human replies; read them
+  together. Do not raise the same problem again
   in the same place (same file and same cause), in any wording, unless the
   current diff changed that code in a way that invalidates the reply's
   justification (`decided.code_changed` is true when the commented code
