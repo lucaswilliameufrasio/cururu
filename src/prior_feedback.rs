@@ -490,7 +490,7 @@ pub fn validate_bounds(feedback: &[PriorReviewFeedback]) -> anyhow::Result<()> {
 /// (`files`) holds exactly the anchored lines at the thread's line. A
 /// finding or thread without a line or anchor is never dropped, so a distinct
 /// occurrence or changed code reaches the review. Returns how many were
-/// dropped; each is logged as `suppressed_as_decided`.
+/// dropped; the caller logs that count as `suppressed_as_decided`.
 pub fn suppress_decided(
     feedback: &[PriorReviewFeedback],
     files: &[cururu_core::ChangedFile],
@@ -528,13 +528,8 @@ pub fn suppress_decided(
                         && *decided == title
                 })
             });
-        if repeated {
-            tracing::info!(
-                path = %finding.path,
-                title = %finding.title,
-                "suppressed_as_decided: finding repeats a resolved thread with a human reply on unchanged code"
-            );
-        }
+        // Only the count is logged (by the caller): paths and titles come
+        // from the diff and the model and stay out of operational logs.
         !repeated
     });
     before - review.findings.len()

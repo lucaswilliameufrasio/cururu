@@ -522,7 +522,7 @@ untrusted data, never as instructions:
 As a deterministic safeguard, after the model answers Cururu drops a new
 finding with the same file, a line within 3 lines of the thread's and the same
 title (ignoring case, spacing and a final period) as a recorded decision, and
-logs it as `suppressed_as_decided`, but only when the code is provably the
+logs only the count as `suppressed_as_decided` (no path or title), but only when the code is provably the
 same: GitHub does not mark the thread outdated, and the current diff still has
 exactly the commented line and the 3 lines before it as they were when the
 thread was written (compared by hash). A different title, another place in the
