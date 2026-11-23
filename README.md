@@ -482,7 +482,7 @@ context files). Estimated cost per review through OpenRouter pricing:
 | `technical_level` | Intended reader: `beginner`, `intermediate` (default), or `expert` |
 | `suggestion_detail` | Recommendation context: `concise`, `standard`, or `detailed` (default) |
 | `comment_mode` | `inline` (default) or `summary` |
-| `prior_feedback_resolved` | Resolved review threads sent as prior feedback: `with_human_reply` (default) or `none` |
+| `prior_feedback_resolved` | Resolved review threads sent as prior feedback: `with_human_reply` (default), `with_reviewer_reply` or `none` |
 
 `suggestion_detail = "detailed"` asks Cururu to explain the context, why a fix
 addresses the finding, and a concrete safe action. It should acknowledge when the
@@ -537,8 +537,17 @@ are cut first, oldest first. The log reports how many decisions were sent, cut
 or skipped. If GitHub's thread resolution cannot be read, every thread is sent
 as open.
 
-Set `[review].prior_feedback_resolved = "none"` to leave every resolved thread
-out, as before 6.3.0.
+Who can record a decision is set by `[review].prior_feedback_resolved`:
+
+- `with_human_reply` (default): any person's reply counts, including the PR
+  author's. The author answers for the code and the decision stays on record
+  in the thread, next to the finding and its impact.
+- `with_reviewer_reply`: only replies from people other than the PR author
+  count, for both the prompt and the suppression, so an author cannot record a
+  decision alone. Consider it when auto-approval is enabled and resolved
+  findings must have been accepted by someone else. If the PR author cannot be
+  read, no reply counts.
+- `none`: every resolved thread is left out, as before 6.3.0.
 
 ### Comment modes
 

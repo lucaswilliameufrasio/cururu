@@ -58,6 +58,8 @@ struct PullRequest {
     #[allow(dead_code)]
     head: PullRef,
     base: PullRef,
+    #[serde(default)]
+    user: Option<ScmIdentity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -786,6 +788,35 @@ impl GitHubClient {
         Ok(pr.head.sha)
     }
 
+    /// Login of the pull request's author.
+    async fn fetch_pr_author(&self) -> anyhow::Result<String> {
+        let url = format!(
+            "{}/repos/{}/{}/pulls/{}",
+            self.cfg.api_url, self.cfg.owner, self.cfg.repo, self.cfg.pr_number
+        );
+        let pr: PullRequest = retry_with_backoff(
+            || async {
+                self.client
+                    .get(&url)
+                    .timeout(Duration::from_secs(15))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("X-GitHub-Api-Version", "2026-03-10")
+                    .bearer_auth(&self.cfg.token)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<PullRequest>()
+                    .await
+                    .context("failed to fetch PR author")
+            },
+            3,
+        )
+        .await?;
+        pr.user
+            .map(|user| user.login)
+            .context("PR author missing from the API response")
+    }
+
     /// List check-run annotations for a commit SHA, optionally filtered to the
     /// configured check run names. Used to ingest analyzer evidence that is
     /// reported through GitHub Check Runs instead of a SARIF artifact.
@@ -954,18 +985,47 @@ impl GitHubClient {
                 }
             }
         };
+        // With `with_reviewer_reply`, the PR author's replies do not count.
+        // If the author cannot be read, no reply counts (fail closed).
+        let excluded_author = if resolved_policy == PriorFeedbackResolved::WithReviewerReply
+            && states.values().any(|state| state.resolved)
+        {
+            match self.fetch_pr_author().await {
+                Ok(author) => Some(author),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "could not read the PR author; resolved threads are not sent as decisions"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let mut threads: Vec<InlineThread> = Vec::with_capacity(candidates.len());
         for AnsweredThread {
             mut thread,
-            human_replies,
+            mut human_replies,
         } in candidates
         {
             let Some(state) = states.get(&thread.root_id).filter(|state| state.resolved) else {
                 threads.push(thread);
                 continue;
             };
+            if resolved_policy == PriorFeedbackResolved::WithReviewerReply {
+                match &excluded_author {
+                    Some(author) => {
+                        human_replies.retain(|reply| !reply.author.eq_ignore_ascii_case(author));
+                    }
+                    None => human_replies.clear(),
+                }
+            }
             match resolved_policy {
-                PriorFeedbackResolved::WithHumanReply if !human_replies.is_empty() => {
+                PriorFeedbackResolved::WithHumanReply
+                | PriorFeedbackResolved::WithReviewerReply
+                    if !human_replies.is_empty() =>
+                {
                     thread.replies = Vec::new();
                     thread.resolution = Some(Resolution {
                         human_replies,
@@ -2454,6 +2514,56 @@ mod tests {
         assert!(!open.resolved && open.decided.is_none());
         assert_eq!(open.comments.len(), 2);
         server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn with_reviewer_reply_ignores_the_pr_authors_replies() {
+        for author_readable in [true, false] {
+            let server = MockServer::start().await;
+            let root = |id: u64| serde_json::json!({"id":id,"body":"<!-- cururu:finding -->\n\n**HIGH**: Finding","user":{"login":"cururu[bot]","type":"Bot"},"path":format!("src/{id}.rs"),"line":2,"diff_hunk":"@@ -1 +1,2 @@\n a\n+b"});
+            let reply = |id: u64, root: u64, body: &str, login: &str| serde_json::json!({"id":id,"in_reply_to_id":root,"body":body,"user":{"login":login,"type":"User"},"path":"x","line":2});
+            let comments = vec![
+                // 1: only the PR author answered.
+                root(1),
+                reply(2, 1, "Kept on purpose.", "Author"),
+                // 10: the author and a reviewer answered.
+                root(10),
+                reply(11, 10, "Kept on purpose.", "author"),
+                reply(12, 10, "Agreed, the queue retries it.", "reviewer"),
+            ];
+            mount_feedback(&server, comments, serde_json::json!([])).await;
+            mount_thread_states(&server, &[(1, true, false), (10, true, false)]).await;
+            let pr = Mock::given(method("GET")).and(path("/repos/owner/repo/pulls/1"));
+            let pr = if author_readable {
+                pr.respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "head":{"sha":"h","ref":"h"},"base":{"sha":"b","ref":"main"},
+                    "user":{"login":"author","type":"User"}
+                })))
+            } else {
+                pr.respond_with(ResponseTemplate::new(404))
+            };
+            pr.mount(&server).await;
+            let feedback = feedback_client(&server)
+                .fetch_prior_review_feedback(PriorFeedbackResolved::WithReviewerReply)
+                .await
+                .unwrap();
+            if author_readable {
+                assert_eq!(feedback.len(), 1, "{feedback:?}");
+                assert_eq!(feedback[0].location, "src/10.rs (line 2)");
+                let bodies: Vec<_> = feedback[0]
+                    .comments
+                    .iter()
+                    .map(|c| c.body.as_str())
+                    .collect();
+                assert_eq!(
+                    bodies,
+                    ["**HIGH**: Finding", "Agreed, the queue retries it."]
+                );
+            } else {
+                // Fail closed: without the author, no reply counts.
+                assert!(feedback.is_empty(), "{feedback:?}");
+            }
+        }
     }
 
     #[tokio::test]

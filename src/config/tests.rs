@@ -80,6 +80,14 @@ fn resolved_prior_feedback_defaults_to_threads_with_human_replies() {
         cfg.review.prior_feedback_resolved,
         PriorFeedbackResolved::None
     );
+    cfg.merge_toml_str(
+        "version = 1\n[review]\nprior_feedback_resolved = \"with_reviewer_reply\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        cfg.review.prior_feedback_resolved,
+        PriorFeedbackResolved::WithReviewerReply
+    );
     let error = cfg
         .merge_toml_str("version = 1\n[review]\nprior_feedback_resolved = \"all\"\n")
         .unwrap_err();
