@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ## [6.4.0] - 2026-11-26
 
+### Upgrade notes
+
+- Resolved threads beyond the prior-feedback budget are now sent as one-line
+  summaries instead of being dropped, so the model stops reopening decisions
+  already answered. This is on by default and adds up to 16 KB of input to
+  every model call (each chunk) on PRs with many resolved threads. Tune it with
+  `[review].prior_feedback_summary_bytes` (`0` drops them as in 6.3) and
+  `[review].prior_feedback_max_resolved` (default and maximum 20).
+- A hosted review whose prior feedback changed during the model call (someone
+  replied to or resolved a thread) is now published, without findings on
+  threads resolved meanwhile, instead of failing after the paid calls. It still
+  fails when the reviewed code, context or analyzer evidence changed.
+- `[policy] incremental = "changed_files"` (opt-in) re-reviews only the files
+  whose PR patch changed since the last published review. `true` keeps its
+  meaning: it only skips a head that was already reviewed and does not reduce
+  the cost of new pushes. Auto-approval, `fail_on` and `/cururu review --full`
+  always run a complete review.
+- When more findings pass the policy than `max_findings`, the most severe and
+  then most confident are kept (previously the first paths alphabetically).
+- `prepare-review --local` and MCP local reviews now support `[config] base`
+  (with `CURURU_SHARED_CONFIG_TOKEN` or the source-control token) and commit
+  ranges (`--base`/`--head`; MCP `repository_path`, `base`, `head`). MCP
+  refusals name the chunk, finding and field that failed.
+- New `cururu install-skill` installs the cururu-review Agent Skill for Claude
+  Code, Codex, opencode or Grok.
+
 ### Bug Fixes
 
 - *(review)* Keep the strongest findings when max_findings cuts
