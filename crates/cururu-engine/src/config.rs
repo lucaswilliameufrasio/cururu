@@ -76,9 +76,17 @@ pub struct PolicyToml {
     pub fail_on: Option<String>,
     pub allowed_severities: Option<Vec<String>>,
     pub suggested_changes: Option<bool>,
-    pub incremental: Option<bool>,
+    pub incremental: Option<IncrementalToml>,
     pub synthesis: Option<bool>,
     pub focus: Option<Vec<String>>,
+}
+
+/// `policy.incremental`: `true`/`false`, or `"changed_files"`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum IncrementalToml {
+    Enabled(bool),
+    Mode(String),
 }
 
 #[derive(Debug, Deserialize)]

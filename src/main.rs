@@ -16,6 +16,7 @@ mod evaluation;
 mod github;
 mod hosted_approval;
 mod hosted_publication;
+mod incremental;
 mod local_git;
 mod mcp;
 mod mcp_install;
@@ -835,7 +836,7 @@ async fn main() -> anyhow::Result<()> {
         .as_ref()
         .is_some_and(|command| command.full)
     {
-        config.review.policy.incremental = false;
+        config.review.policy.incremental = cururu_engine::review_policy::Incremental::Off;
     }
 
     match cli.command {
@@ -893,7 +894,7 @@ async fn main() -> anyhow::Result<()> {
                     &source_control.fetch_head_sha().await?,
                 )?;
             }
-            if config.review.policy.incremental {
+            if config.review.policy.incremental.skips_reviewed_head() {
                 let head_sha = source_control.fetch_head_sha().await?;
                 if source_control.has_summary_for_revision(&head_sha).await? {
                     println!("Cururu: review already exists for the current revision");

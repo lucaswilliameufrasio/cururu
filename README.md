@@ -515,18 +515,46 @@ context files). Estimated cost per review through OpenRouter pricing:
 
 ### Cost across pushes
 
-Each review of a PR sends the **whole PR diff** at the current head, with its
-context and prior feedback, whatever the value of `incremental`. On a large PR
-that receives many pushes, cost grows with *pushes × PR size*: a PR whose diff
-needs three chunks costs about three chunks per push, even when a push only
-adds one line. The scenario `push-cost` in `tests/review_scenarios/` measures
-this; for a 12-file PR with two follow-up pushes, the model input per push was
-the same (about 26 KB) with `incremental` on and off.
+By default each review of a PR sends the **whole PR diff** at the current
+head, with its context and prior feedback. On a large PR that receives many
+pushes, cost grows with *pushes × PR size*: a PR whose diff needs three
+chunks costs about three chunks per push, even when a push only adds one
+line. `incremental = true` does not change that: it only avoids paying twice
+for the **same** head (a workflow re-run, or `/cururu review` on an already
+reviewed head).
 
-`incremental = true` only avoids paying twice for the **same** head (a
-workflow re-run, or a `/cururu review` comment on an already reviewed head),
-so it is safe to enable and recommended for that, but it does not reduce the
-cost of new pushes. To bound that cost:
+To review only what changed, set:
+
+```toml
+[policy]
+incremental = "changed_files"
+```
+
+Each published summary then records, in a hidden marker, a hash of every
+file's patch on the PR diff that the review fully covered. On the next push
+only the files whose patch changed, or that were not fully covered (cut by
+`chunk_bytes`, or with coverage the model did not confirm), go to the model,
+each with its whole PR patch, so comments stay anchored on the PR diff.
+Comparing patches rather than commits works across force-pushes and rebases
+and ignores changes merged from the base branch. The summary says how many
+files were reviewed again and how many were not; earlier findings on
+unchanged files stay on the PR. If no file changed, no model call is made.
+
+A complete review still runs when:
+
+- there is no earlier summary with a recorded state (the first review, a
+  candidate that was never approved, or a state too large to record);
+- auto-approval is enabled or `fail_on` is not `off`: both decide on the whole
+  diff at the current head, and an incremental review never approves or
+  turns a gate green on its own;
+- someone comments `/cururu review --full`.
+
+The scenario `push-cost` in `tests/review_scenarios/` measures this: for a
+12-file PR with two follow-up pushes that each add one file, the model input
+per push was about 26 KB with `incremental` off or `true`, and about 10 KB
+(only the new file plus the fixed prompt) with `"changed_files"`.
+
+Other ways to bound the cost:
 
 - review on demand (`/cururu review`) or only on `ready_for_review` instead of
   on every `synchronize` event;
@@ -684,7 +712,7 @@ consumers.
 | `fail_on` | `off` | `off`, `critical`, `high`, `medium`, or `low` |
 | `allowed_severities` | all | Severities retained in the result |
 | `suggested_changes` | `false` | Enable safe one-line GitHub suggestions |
-| `incremental` | `false` | Skip a run when the current head already has a Cururu summary (a re-run or a duplicate trigger). It does **not** limit a new push to its new commits; see [Cost across pushes](#cost-across-pushes) |
+| `incremental` | `false` | `true`: skip a run when the current head already has a Cururu summary (a re-run or a duplicate trigger); a new push is still reviewed whole. `"changed_files"`: that, plus re-review only the files whose PR patch changed since the last published review; see [Cost across pushes](#cost-across-pushes) |
 | `synthesis` | `false` | Enable cross-chunk synthesis |
 | `focus` | `[]` | Review focus hints such as `security` or `tests` |
 

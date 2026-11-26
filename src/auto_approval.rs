@@ -819,6 +819,8 @@ mod tests {
             dropped_findings: 0,
             auto_approval: None,
             language: "en".into(),
+            reviewed_files: None,
+            incremental: None,
         }
     }
 

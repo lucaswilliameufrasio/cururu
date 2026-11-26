@@ -514,8 +514,23 @@ impl AppConfig {
             if let Some(v) = tp.suggested_changes {
                 self.review.policy.suggested_changes = v;
             }
-            if let Some(v) = tp.incremental {
-                self.review.policy.incremental = v;
+            match tp.incremental {
+                None => {}
+                Some(cururu_engine::config::IncrementalToml::Enabled(enabled)) => {
+                    self.review.policy.incremental = if enabled {
+                        cururu_engine::review_policy::Incremental::SameHead
+                    } else {
+                        cururu_engine::review_policy::Incremental::Off
+                    };
+                }
+                Some(cururu_engine::config::IncrementalToml::Mode(mode)) => {
+                    anyhow::ensure!(
+                        mode == "changed_files",
+                        "invalid policy.incremental: {mode:?}; expected true, false or \"changed_files\""
+                    );
+                    self.review.policy.incremental =
+                        cururu_engine::review_policy::Incremental::ChangedFiles;
+                }
             }
             if let Some(v) = tp.synthesis {
                 self.review.policy.synthesis = v;

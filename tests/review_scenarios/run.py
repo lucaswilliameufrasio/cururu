@@ -265,7 +265,15 @@ class Fake(http.server.BaseHTTPRequestHandler):
             per_page = int(query.get("per_page", ["100"])[0])
             comments = world.comments()
             self.reply(200, comments[(page - 1) * per_page: page * per_page])
-        elif path == prefix + "/issues/1/comments" or path == prefix + "/pulls/1/reviews":
+        elif path == prefix + "/issues/1/comments":
+            # Summaries Cururu posted earlier in this scenario, as its own.
+            posted = [{"id": 900 + index, "body": json.loads(body).get("body", ""),
+                       "user": {"login": LOGIN, "type": "Bot"}}
+                      for index, (where, body) in enumerate(world.posts, 1)
+                      if where == prefix + "/issues/1/comments"]
+            page = int(query.get("page", ["1"])[0])
+            self.reply(200, posted if page == 1 else [])
+        elif path == prefix + "/pulls/1/reviews":
             self.reply(200, [])
         elif "/check-runs" in path or "/check-suites" in path:
             self.reply(200, {"total_count": 0, "check_runs": []})
@@ -789,31 +797,38 @@ def scenario_mcp_agent(ctx, workdir):
 
 def scenario_push_cost(ctx, workdir):
     """Issue 6. Three pushes on a large PR, the last two adding one small
-    file each. Measures the diff bytes sent to the model per push with
-    `incremental` off and on. Expected: the README documents the measured
-    behavior of `incremental` (what it skips and what it does not)."""
+    file each. Measures the model input bytes per push with `incremental`
+    off, `true` and `"changed_files"`. Expected: `true` alone does not reduce
+    a new push's cost (it only skips a head already reviewed), the README
+    says so, and `"changed_files"` sends only the new file on later pushes."""
     rows = {}
-    for incremental in (False, True):
+    for mode in ("false", "true", '"changed_files"'):
         world = reset_world()
-        world.config = f"version = 1\n[policy]\nincremental = {'true' if incremental else 'false'}\n"
+        world.config = f"version = 1\n[policy]\nincremental = {mode}\n"
         world.base = {f"big/f{i}.py": "x = 0\n" for i in range(12)}
         world.head = {f"big/f{i}.py": "".join(f"x{n} = {n}\n" for n in range(120)) for i in range(12)}
         world.model = default_review
-        sent = []
+        sent, files_sent = [], []
         for push in range(3):
             if push:
                 world.head[f"small/p{push}.py"] = "y = 1\n"
                 world.head_sha = f"{push:x}" * 40
             before = len(world.model_requests)
             result = ctx.run(["review"], workdir, GITHUB_OUTPUT=os.path.join(workdir, f"out-cost-{push}"))
-            expect(result.returncode == 0, f"push {push} failed: {result.stderr[-800:]}")
+            expect(result.returncode == 0, f"{mode} push {push} failed: {result.stderr[-800:]}")
             sent.append(sum(len(model_text(r)) for r in world.model_requests[before:]))
-        rows["incremental" if incremental else "full"] = sent
+            files_sent.append(sorted({p for r in world.model_requests[before:] for p in chunk_files(r)}))
+        rows[mode.strip('"')] = sent
+        if mode == '"changed_files"':
+            changed_files_sent = files_sent
     readme = open(os.path.join(os.path.dirname(__file__), "..", "..", "README.md")).read()
     ctx.record("push-cost", rows)
     documented = re.search(r"incremental[^\n]*(push|commit)", readme, re.I)
     expect(documented and "cost" in readme[documented.start(): documented.start() + 1500].lower(),
            f"README does not document incremental's effect on cost; measured model input bytes per push: {rows}")
+    expect(len(changed_files_sent[0]) == 12, f"the first review must be complete: {changed_files_sent[0]}")
+    expect(changed_files_sent[1:] == [["small/p1.py"], ["small/p2.py"]],
+           f"changed_files must send only the file each push added: {changed_files_sent[1:]}")
     return f"model input bytes per push: {rows}"
 
 

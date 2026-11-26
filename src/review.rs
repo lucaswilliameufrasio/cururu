@@ -79,11 +79,17 @@ pub struct ReviewOutput {
     pub auto_approval: Option<crate::auto_approval::Decision>,
     /// Configured review language, used for Cururu's own explanations.
     pub language: String,
+    /// Files this review covered with their patch hashes, recorded in the
+    /// summary when `policy.incremental = "changed_files"`.
+    pub reviewed_files: Option<crate::incremental::ReviewedFiles>,
+    /// Set when only files changed since an earlier review were sent.
+    pub incremental: Option<crate::incremental::Selection>,
 }
 
 impl ReviewOutput {
-    /// Whether every reviewable file was sent in full, its coverage was
-    /// confirmed and no finding was dropped. Paths excluded by configuration
+    /// Whether every reviewable file was sent in full in this run (not an
+    /// incremental review), its coverage was confirmed and no finding was
+    /// dropped. Paths excluded by configuration
     /// are a deliberate choice.
     #[must_use]
     pub const fn fully_reviewed(&self) -> bool {
@@ -91,6 +97,7 @@ impl ReviewOutput {
             && self.unreviewable_paths.is_empty()
             && self.truncated_paths.is_empty()
             && self.unconfirmed_paths.is_empty()
+            && self.incremental.is_none()
     }
 
     pub fn usage_record(&self) -> crate::review_usage::UsageRecord {
@@ -195,7 +202,27 @@ pub async fn run_review_with_evaluator(
     crate::review_input::ensure_reviewable(&prepared)?;
     let head_sha = &prepared.revision;
     let files = &prepared.files;
-    let chunks = &prepared.chunks;
+    let current_patches = crate::review_input::patch_hashes(files);
+    let selection = incremental_selection(config, source_control, &current_patches).await;
+    let incremental_chunks;
+    let chunks: &[cururu_core::DiffChunk] = match &selection {
+        Some(selection) => {
+            let changed: Vec<diff::ChangedFile> = files
+                .iter()
+                .filter(|file| selection.changed.contains(&file.path))
+                .cloned()
+                .collect();
+            incremental_chunks = crate::review_input::build_chunks(config, &changed).0;
+            info!(
+                changed = selection.changed.len(),
+                unchanged = selection.unchanged.len(),
+                since = %selection.since_head,
+                "incremental review: only files whose patch changed since the last review are sent"
+            );
+            &incremental_chunks
+        }
+        None => &prepared.chunks,
+    };
     info!(
         files = files.len(),
         chunks = chunks.len(),
@@ -386,6 +413,11 @@ pub async fn run_review_with_evaluator(
         );
     }
 
+    let reviewed_files = config.review.policy.incremental.changed_files().then(|| {
+        let mut not_covered = prepared.truncated_paths.clone();
+        not_covered.extend(unconfirmed_paths.iter().cloned());
+        crate::incremental::next_state(head_sha, &current_patches, &not_covered)
+    });
     Ok(ReviewOutput {
         review,
         usage,
@@ -407,7 +439,40 @@ pub async fn run_review_with_evaluator(
         dropped_findings,
         auto_approval: None,
         language: config.review.language.clone(),
+        reviewed_files,
+        incremental: selection,
     })
+}
+
+/// The files to review again under `policy.incremental = "changed_files"`,
+/// or None for a complete review: the mode is off, auto-approval or
+/// `fail_on` needs the whole diff reviewed, there is no recorded state, it
+/// cannot be read, or every file changed.
+async fn incremental_selection(
+    config: &AppConfig,
+    source_control: &dyn ScmProvider,
+    current: &std::collections::BTreeMap<String, String>,
+) -> Option<crate::incremental::Selection> {
+    let policy = &config.review.policy;
+    if !policy.incremental.changed_files() {
+        return None;
+    }
+    if config.auto_approval.enabled || policy.fail_on != cururu_core::FailOn::Off {
+        info!(
+            "incremental review disabled for this run: auto-approval and fail_on need the whole diff reviewed"
+        );
+        return None;
+    }
+    let previous = match source_control.latest_reviewed_files().await {
+        Ok(Some(previous)) => previous,
+        Ok(None) => return None,
+        Err(error) => {
+            warn!(%error, "could not read the last review's files; reviewing the whole diff");
+            return None;
+        }
+    };
+    let selection = crate::incremental::select(&previous, current);
+    (!selection.unchanged.is_empty()).then_some(selection)
 }
 
 async fn collect_review_evidence(
@@ -963,6 +1028,103 @@ mod tests {
             }
             Ok((diff, false))
         }
+    }
+
+    /// Files `a` and `b` changed; the last review recorded `recorded`.
+    struct IncrementalScm {
+        recorded: Option<crate::incremental::ReviewedFiles>,
+    }
+
+    #[async_trait::async_trait]
+    impl ScmProvider for IncrementalScm {
+        async fn fetch_head_sha(&self) -> anyhow::Result<String> {
+            MultiChunkScm.fetch_head_sha().await
+        }
+        async fn fetch_diff_with_limit(&self, limit: usize) -> anyhow::Result<(String, bool)> {
+            MultiChunkScm.fetch_diff_with_limit(limit).await
+        }
+        async fn latest_reviewed_files(
+            &self,
+        ) -> anyhow::Result<Option<crate::incremental::ReviewedFiles>> {
+            Ok(self.recorded.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_files_mode_sends_only_files_whose_patch_changed() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/chat/completions"))
+            .respond_with(|_: &wiremock::Request| {
+                let review = serde_json::json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[]}).to_string();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]}))
+            }).mount(&server).await;
+        let mut config = crate::config::AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.base_url = server.uri();
+        config.llm.api_key = "fixture".into();
+        config.review.policy.incremental = cururu_engine::review_policy::Incremental::ChangedFiles;
+        let prepared = crate::review_input::prepare_pr(&config, &MultiChunkScm)
+            .await
+            .unwrap();
+        let current = crate::review_input::patch_hashes(&prepared.files);
+        // The last review saw `a` with this patch and `b` with another one.
+        let mut recorded = crate::incremental::next_state("old-head", &current, &[]);
+        recorded.patches.insert("b".into(), "0".repeat(32));
+
+        let output = super::run_review(
+            &config,
+            &IncrementalScm {
+                recorded: Some(recorded.clone()),
+            },
+        )
+        .await
+        .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body = String::from_utf8_lossy(&requests[0].body);
+        assert!(body.contains("diff --git a/b b/b") && !body.contains("diff --git a/a b/a"));
+        let selection = output.incremental.as_ref().unwrap();
+        assert_eq!(
+            (selection.changed.as_slice(), selection.unchanged.as_slice()),
+            (&["b".to_owned()][..], &["a".to_owned()][..])
+        );
+        assert!(!output.fully_reviewed());
+        // The next state covers both files at their current patches.
+        let state = output.reviewed_files.unwrap();
+        assert_eq!(state, crate::incremental::next_state("head", &current, &[]));
+
+        // Nothing changed since the recorded review (a new head, the same
+        // PR patches): no model call at all.
+        let output = super::run_review(
+            &config,
+            &IncrementalScm {
+                recorded: Some(crate::incremental::next_state("old-head", &current, &[])),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        assert!(output.review.findings.is_empty());
+        assert_eq!(output.incremental.unwrap().changed, Vec::<String>::new());
+
+        // fail_on needs the whole diff: both files are sent.
+        config.review.policy.fail_on = cururu_core::FailOn::High;
+        let output = super::run_review(
+            &config,
+            &IncrementalScm {
+                recorded: Some(recorded),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(output.incremental.is_none());
+        let requests = server.received_requests().await.unwrap();
+        let body = String::from_utf8_lossy(&requests[1].body);
+        assert!(body.contains("diff --git a/a b/a") && body.contains("diff --git a/b b/b"));
     }
 
     #[tokio::test]
