@@ -77,6 +77,13 @@ pub trait ScmProvider: Send + Sync {
     async fn has_summary_for_revision(&self, _revision: &str) -> anyhow::Result<bool> {
         Ok(false)
     }
+    /// The files the latest published Cururu review fully covered, for an
+    /// incremental review; None when there is no recorded state.
+    async fn latest_reviewed_files(
+        &self,
+    ) -> anyhow::Result<Option<crate::incremental::ReviewedFiles>> {
+        Ok(None)
+    }
     async fn upsert_summary_comment(&self, _body: &str) -> anyhow::Result<()> {
         anyhow::bail!("SCM adapter does not support summary comments")
     }

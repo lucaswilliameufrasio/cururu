@@ -734,7 +734,7 @@ async fn process_issue_comment(state: &AppState, payload: &Value) -> anyhow::Res
     };
     if command {
         if trimmed == "/cururu review --full" {
-            config.review.policy.incremental = false;
+            config.review.policy.incremental = cururu_engine::review_policy::Incremental::Off;
         }
         return run_pull_request_review(
             &state.store,

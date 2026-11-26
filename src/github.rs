@@ -1631,6 +1631,25 @@ impl GitHubClient {
         }))
     }
 
+    /// The state recorded by the newest Cururu summary that has one. Only
+    /// Cururu's own summaries count, and model text in them cannot write a
+    /// marker (summaries neutralize `<!--`).
+    pub async fn latest_reviewed_files(
+        &self,
+    ) -> anyhow::Result<Option<crate::incremental::ReviewedFiles>> {
+        let comments = self.list_issue_comments().await?;
+        let own_login = self.current_login().await;
+        Ok(comments
+            .iter()
+            .filter(|comment| Self::issue_comment_is_cururu(comment, own_login.as_deref()))
+            .filter_map(|comment| {
+                let state = crate::incremental::parse_marker(comment.body.as_deref()?)?;
+                Some((comment.id, state))
+            })
+            .max_by_key(|(id, _)| *id)
+            .map(|(_, state)| state))
+    }
+
     /// Post a new summary comment for this review run unless it already exists.
     /// Earlier summaries are kept as review history. Not retried: a lost
     /// response may already have created the comment.
@@ -1953,6 +1972,12 @@ impl ScmProvider for GitHubClient {
 
     async fn has_summary_for_revision(&self, revision: &str) -> anyhow::Result<bool> {
         Self::summary_has_head(self, revision).await
+    }
+
+    async fn latest_reviewed_files(
+        &self,
+    ) -> anyhow::Result<Option<crate::incremental::ReviewedFiles>> {
+        Self::latest_reviewed_files(self).await
     }
 
     async fn upsert_summary_comment(&self, body: &str) -> anyhow::Result<()> {
@@ -2362,6 +2387,44 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(issue_comments))
             .mount(server)
             .await;
+    }
+
+    #[tokio::test]
+    async fn latest_reviewed_files_reads_only_the_newest_own_summary() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/user"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"login":"cururu[bot]","type":"Bot"})),
+            )
+            .mount(&server)
+            .await;
+        let state = |head: &str| crate::incremental::ReviewedFiles {
+            head: head.into(),
+            patches: [("a.rs".to_owned(), "1".repeat(32))].into(),
+        };
+        let summary = |id: u64, head: &str, login: &str, kind: &str| {
+            let marker = crate::incremental::render_marker(&state(head)).unwrap();
+            serde_json::json!({"id":id,"body":format!("<!-- cururu:summary -->\n{marker}\nbody"),"user":{"login":login,"type":kind}})
+        };
+        mount_feedback(
+            &server,
+            Vec::new(),
+            serde_json::json!([
+                summary(30, "newest", "cururu[bot]", "Bot"),
+                summary(10, "older", "cururu[bot]", "Bot"),
+                // A person can paste a marker; it is not Cururu's state.
+                summary(40, "forged", "someone", "User"),
+                {"id":50,"body":"<!-- cururu:summary -->\nno state","user":{"login":"cururu[bot]","type":"Bot"}},
+            ]),
+        )
+        .await;
+        let latest = feedback_client(&server)
+            .latest_reviewed_files()
+            .await
+            .unwrap();
+        assert_eq!(latest, Some(state("newest")));
     }
 
     async fn mount_review_threads(server: &MockServer, resolved_roots: &[u64], open_roots: &[u64]) {

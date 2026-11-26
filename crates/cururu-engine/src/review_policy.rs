@@ -11,7 +11,7 @@ pub struct ReviewPolicy {
     pub fail_on: FailOn,
     pub allowed_severities: Vec<Severity>,
     pub suggested_changes: bool,
-    pub incremental: bool,
+    pub incremental: Incremental,
     pub synthesis: bool,
     pub focus: Vec<String>,
 }
@@ -25,10 +25,38 @@ impl Default for ReviewPolicy {
             fail_on: FailOn::Off,
             allowed_severities: Severity::all(),
             suggested_changes: false,
-            incremental: false,
+            incremental: Incremental::Off,
             synthesis: false,
             focus: Vec::new(),
         }
+    }
+}
+
+/// `policy.incremental`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Incremental {
+    /// Review every run in full (`false`, the default).
+    #[default]
+    Off,
+    /// Skip a run when the current head already has a Cururu summary
+    /// (`true`); a new push is still reviewed in full.
+    SameHead,
+    /// Like `SameHead`, and re-review only files whose PR-diff patch changed
+    /// since the last published review (`"changed_files"`).
+    ChangedFiles,
+}
+
+impl Incremental {
+    /// Whether a head that already has a Cururu summary is skipped.
+    #[must_use]
+    pub const fn skips_reviewed_head(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    /// Whether only files changed since the last review are sent.
+    #[must_use]
+    pub const fn changed_files(self) -> bool {
+        matches!(self, Self::ChangedFiles)
     }
 }
 
@@ -80,7 +108,11 @@ mod tests {
             assert_eq!(policy.minimum_confidence.to_bits(), confidence.to_bits());
             assert_eq!(policy.max_findings, count);
             assert_eq!(policy.fail_on, threshold);
-            assert!(!policy.incremental && !policy.synthesis && !policy.suggested_changes);
+            assert!(
+                policy.incremental == Incremental::Off
+                    && !policy.synthesis
+                    && !policy.suggested_changes
+            );
         }
         assert_eq!(profile_defaults("security").unwrap().focus, ["security"]);
         assert_eq!(

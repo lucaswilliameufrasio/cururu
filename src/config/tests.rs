@@ -97,6 +97,24 @@ fn resolved_prior_feedback_defaults_to_threads_with_human_replies() {
 }
 
 #[test]
+fn incremental_accepts_a_boolean_or_changed_files() {
+    use cururu_engine::review_policy::Incremental;
+    let mut cfg = base_config();
+    assert_eq!(cfg.review.policy.incremental, Incremental::Off);
+    cfg.merge_toml_str("version = 1\n[policy]\nincremental = \"changed_files\"\n")
+        .unwrap();
+    assert_eq!(cfg.review.policy.incremental, Incremental::ChangedFiles);
+    // `true` keeps its meaning: skip a head already reviewed, nothing more.
+    cfg.merge_toml_str("version = 1\n[policy]\nincremental = true\n")
+        .unwrap();
+    assert_eq!(cfg.review.policy.incremental, Incremental::SameHead);
+    let error = cfg
+        .merge_toml_str("version = 1\n[policy]\nincremental = \"commits\"\n")
+        .unwrap_err();
+    assert!(error.to_string().contains("policy.incremental"), "{error}");
+}
+
+#[test]
 fn prior_feedback_limits_are_configurable_and_bounded() {
     let mut cfg = base_config();
     assert_eq!(cfg.review.prior_feedback_max_resolved, 20);

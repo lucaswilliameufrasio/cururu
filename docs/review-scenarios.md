@@ -13,7 +13,7 @@ is published: every GitHub call goes to the fake.
 | `mcp-repository-path` | The MCP server starts outside the repository: `repository_path`, `base`/`head` (a stacked range) and the error for a directory that is not a Git repository. |
 | `mcp-assemble-errors` | `assemble_review` refusals name the missing chunk, the invalid field and a stale snapshot. |
 | `mcp-agent` | With `--agent`: opencode itself is the MCP client and reviews a stacked range through the tools. |
-| `push-cost` | Model input bytes per push with `incremental` off and on (both review the whole PR diff on a new push), and that the README documents it. |
+| `push-cost` | Model input bytes per push with `incremental` off, `true` (both review the whole PR diff on a new push) and `"changed_files"` (later pushes send only the file they added), and that the README documents it. |
 | `findings-cap` | The prompt does not make `max_findings` a target, and the cap keeps the most severe and then most confident findings. With a real model, reports the count against the cap. |
 
 ## Running

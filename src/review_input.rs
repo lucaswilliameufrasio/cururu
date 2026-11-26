@@ -530,18 +530,7 @@ pub fn prepare(
         }
         return Err(error.into());
     }
-    // A change larger than one chunk keeps room in every chunk for its
-    // cross-reference note, so annotated chunks stay within chunk_bytes.
-    let chunk_bytes = config.review.chunk_bytes;
-    let diff_bytes: usize = files.iter().map(|file| file.patch.len() + 1).sum();
-    let reserve = if diff_bytes > chunk_bytes {
-        cururu_core::cross_reference_reserve(chunk_bytes)
-    } else {
-        0
-    };
-    let mut chunks = diff::chunk_files(&files, chunk_bytes - reserve, config.review.max_diff_bytes);
-    cururu_core::annotate_cross_references(&mut chunks, reserve);
-    let truncated_paths = diff::truncated_paths(&files, chunk_bytes - reserve);
+    let (chunks, truncated_paths) = build_chunks(config, &files);
     let raw_hash = hex::encode(Sha256::digest(raw.as_bytes()));
     let preferences = serde_json::json!({
         "language": config.review.language,
@@ -599,6 +588,37 @@ pub fn prepare(
         chunks,
         policy: config.review.policy.clone(),
     })
+}
+
+/// Split `files` into review chunks, and the paths sent only partially.
+pub fn build_chunks(config: &AppConfig, files: &[ChangedFile]) -> (Vec<DiffChunk>, Vec<String>) {
+    // A change larger than one chunk keeps room in every chunk for its
+    // cross-reference note, so annotated chunks stay within chunk_bytes.
+    let chunk_bytes = config.review.chunk_bytes;
+    let diff_bytes: usize = files.iter().map(|file| file.patch.len() + 1).sum();
+    let reserve = if diff_bytes > chunk_bytes {
+        cururu_core::cross_reference_reserve(chunk_bytes)
+    } else {
+        0
+    };
+    let mut chunks = diff::chunk_files(files, chunk_bytes - reserve, config.review.max_diff_bytes);
+    cururu_core::annotate_cross_references(&mut chunks, reserve);
+    let truncated_paths = diff::truncated_paths(files, chunk_bytes - reserve);
+    (chunks, truncated_paths)
+}
+
+/// SHA-256 of each file's patch on the PR diff, by path: what an incremental
+/// review compares to decide which files changed since the last review.
+pub fn patch_hashes(files: &[ChangedFile]) -> std::collections::BTreeMap<String, String> {
+    files
+        .iter()
+        .map(|file| {
+            (
+                file.path.clone(),
+                hex::encode(Sha256::digest(file.patch.as_bytes())),
+            )
+        })
+        .collect()
 }
 
 pub async fn prepare_pr(

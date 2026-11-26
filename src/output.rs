@@ -56,6 +56,12 @@ pub fn render_summary_comment(output: &ReviewOutput) -> String {
     out.push_str(MARKER);
     let _ = writeln!(out, "<!-- cururu:state:v1 head={} -->", output.head_sha);
     let _ = writeln!(out, "{}", run_marker(&output.run_id));
+    if let Some(state) = &output.reviewed_files {
+        // Without a marker the next incremental review is complete.
+        if let Some(marker) = crate::incremental::render_marker(state) {
+            let _ = writeln!(out, "{marker}");
+        }
+    }
     out.push_str("\n## 🐸 Cururu review\n\n");
 
     render_header(output, &mut out);
@@ -285,6 +291,18 @@ fn url_path(path: &str) -> String {
 }
 
 fn render_not_reviewed(output: &ReviewOutput, out: &mut String) {
+    if let Some(selection) = &output.incremental {
+        let since = selection
+            .since_head
+            .get(..12)
+            .unwrap_or(&selection.since_head);
+        let _ = write!(
+            out,
+            "**Incremental review:** {} changed file(s) reviewed since `{since}`; {} file(s) with the same patch as then were not sent again, and their earlier findings stay on the PR. Comment `/cururu review --full` for a complete review.\n\n",
+            selection.changed.len(),
+            selection.unchanged.len()
+        );
+    }
     if output.dropped_findings > 0 {
         let _ = write!(
             out,
@@ -694,6 +712,8 @@ mod tests {
             dropped_findings: 0,
             auto_approval: None,
             language: "en".into(),
+            reviewed_files: None,
+            incremental: None,
             evaluation: Some(crate::evaluation::EvaluationReport {
                 model: "jev-1.13.0".into(),
                 findings: vec![crate::evaluation::EvaluatedFinding {
@@ -765,6 +785,8 @@ mod tests {
             dropped_findings: 0,
             auto_approval: None,
             language: "en".into(),
+            reviewed_files: None,
+            incremental: None,
         };
         let body = render_summary_comment(&output);
         assert!(body.contains("Provider-reported cost (this review):** `$0.123456`"));
@@ -841,6 +863,8 @@ mod tests {
             dropped_findings: 0,
             auto_approval: None,
             language: "en".into(),
+            reviewed_files: None,
+            incremental: None,
         };
         let body = render_summary_comment(&output);
         assert!(body.contains("**Tokens (this review):** 100 prompt + 20 completion = 120 total"));
