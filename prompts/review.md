@@ -121,6 +121,9 @@ Rules:
   express doubt through `confidence` instead of omitting the finding.
 - Report at most 10 findings per chunk, most severe first, and keep `message`
   and `suggestion` to a few sentences each, so the JSON response is not cut off.
+  This is an upper limit, not a target: never add weaker, speculative or
+  overlapping findings to reach it, and an empty `findings` list is a valid
+  answer when the chunk has no supported problem.
 - Avoid style-only nitpicks.
 - Do not ask questions in findings.
 - Use severity: critical, high, medium, low.

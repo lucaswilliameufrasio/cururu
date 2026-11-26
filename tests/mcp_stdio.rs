@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 #[test]
-fn stdio_multichunk_requires_all_results_in_order() {
+fn stdio_multichunk_requires_one_result_per_index() {
     let dir = tempfile::tempdir().unwrap();
     let git = |args: &[&str]| {
         assert!(
@@ -75,11 +75,15 @@ fn stdio_multichunk_requires_all_results_in_order() {
         call(
             3,
             "assemble_review",
-            arguments(serde_json::json!([reviews[1], reviews[0]]))
+            arguments(serde_json::json!([reviews[0], reviews[0]]))
         )["isError"],
         true
     );
-    let complete = call(4, "assemble_review", arguments(serde_json::json!(reviews)));
+    let complete = call(
+        4,
+        "assemble_review",
+        arguments(serde_json::json!([reviews[1], reviews[0]])),
+    );
     assert_eq!(complete["isError"], false);
     let result: serde_json::Value =
         serde_json::from_str(complete["content"][0]["text"].as_str().unwrap()).unwrap();

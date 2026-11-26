@@ -24,11 +24,25 @@ const GIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct LocalGit {
     root: PathBuf,
+    /// The trusted base revision for context, when it is not `HEAD`: the
+    /// merge base of a reviewed commit range.
+    base: Option<String>,
 }
 
 impl LocalGit {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            base: None,
+        }
+    }
+
+    /// Read context at `base` (a full commit SHA) instead of `HEAD`.
+    pub fn with_base(root: impl Into<PathBuf>, base: String) -> Self {
+        Self {
+            root: root.into(),
+            base: Some(base),
+        }
     }
 
     /// Run git without blocking the async runtime, reading at most
@@ -93,6 +107,16 @@ impl LocalGit {
 
 #[async_trait]
 impl ScmProvider for LocalGit {
+    async fn fetch_config_toml(&self, revision: &str) -> anyhow::Result<Option<String>> {
+        Self::valid_revision(revision)?;
+        let path = ".cururu.toml";
+        let entry = self.git(&["ls-tree", revision, "--", path], 256).await?;
+        if entry.is_empty() {
+            return Ok(None);
+        }
+        self.fetch_file_at_ref(path, revision).await.map(Some)
+    }
+
     async fn fetch_head_sha(&self) -> anyhow::Result<String> {
         Ok(String::from_utf8(
             self.git(&["rev-parse", "--verify", "HEAD"], MAX_METADATA_BYTES)
@@ -106,8 +130,12 @@ impl ScmProvider for LocalGit {
         anyhow::bail!("local context access does not provide change-request diffs")
     }
 
-    /// Local changes are reviewed against `HEAD`, which is therefore the base.
+    /// Local changes are reviewed against `HEAD`, which is therefore the
+    /// base; a commit range is reviewed against its merge base.
     async fn fetch_base_sha(&self) -> anyhow::Result<String> {
+        if let Some(base) = &self.base {
+            return Ok(base.clone());
+        }
         self.fetch_head_sha().await
     }
 

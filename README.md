@@ -20,6 +20,43 @@ pull_request event
 
 ## Quick start
 
+### Review a commit range with your agent
+
+Install [cururu-review](skills/cururu-review/SKILL.md) from the Cururu binary
+in the project root. The agent uses its own session; no GitHub Action or
+separate LLM key is needed.
+
+```sh
+cururu install-skill --target claude   # or --target grok / --target codex / --target opencode
+```
+
+Add `--global` for a per-user installation. Rerun the same command after a
+binary upgrade: an identical file is left alone, and a different file is shown
+as a diff and replaced only if you type `UPDATE`. Other compatible agents can
+install the `skills/cururu-review/` directory directly. To regenerate its exact
+release contents: `cururu install-skill --print > skills/cururu-review/SKILL.md`.
+
+For example, with `main` and a feature branch checked out locally, ask:
+
+> Use cururu-review to review the committed changes from main to HEAD in this
+> repository. Review all chunks and return the final Cururu JSON. Do not publish.
+
+With [MCP configured](docs/agent-mcp-setup.md), the agent uses `prepare_review`
+with `source: "local"`, `base: "main"`, `head: "HEAD"` and the checkout path,
+then assembles and validates the results against the same hash. Without MCP,
+the equivalent CLI flow is:
+
+```sh
+cururu prepare-review --local --base main --head HEAD
+# The agent reviews each returned chunk and saves {snapshot_sha256, reviews}
+# in a private file outside the repository, e.g. ~/cururu-parts.json.
+cururu prepare-review --local --base main --head HEAD --assemble ~/cururu-parts.json
+```
+
+The final command prints the assembled review JSON. The range excludes
+uncommitted changes, uses the target branch's policy, and takes the diff
+from the merge base. Use `--pr` for hosted PR threads and replies.
+
 ### Agent review input (experimental)
 
 `cururu prepare-review --local` emits a bounded JSON snapshot of tracked staged
@@ -27,13 +64,15 @@ and unstaged changes relative to HEAD. It excludes untracked files and lists
 paths ignored by Cururu. `cururu prepare-review --pr` uses the configured GitHub
 change request and checks that its head did not change during collection.
 Both commands only prepare input: they do not call an agent or publish. Their
-output contains source code; treat it as sensitive. Local review currently
-rejects shared configuration bases rather than silently ignoring them.
+output contains source code; treat it as sensitive. When `[config] base` is
+configured, local preparation resolves and merges it with the same rules as
+hosted review. Set `CURURU_SHARED_CONFIG_TOKEN` or a source-control token
+with read access to the shared repository.
 
 `cururu mcp` offers the same read-only `prepare_review` tool to MCP hosts over
 stdio, plus `validate_review` to check finding shape and anchors against a
 fresh matching effective snapshot hash. `assemble_review` combines exactly one
-validated result for each chunk; incomplete, reordered or stale results fail.
+validated result for each chunk; incomplete, duplicated or stale results fail.
 It strips agent-supplied analyzer provenance and follows the configured policy
 for executable suggestions.
 Validation does not establish correctness or approve

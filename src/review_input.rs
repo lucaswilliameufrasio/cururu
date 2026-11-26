@@ -128,24 +128,54 @@ pub fn assemble_review_with_unconfirmed(
 ) -> anyhow::Result<cururu_core::ReviewResult> {
     anyhow::ensure!(
         prepared.snapshot_sha256 == snapshot_sha256,
-        "review snapshot changed"
+        "snapshot_sha256 does not match the current review input: the snapshot changed since prepare_review (diff, configuration, context or prior feedback), or the value was not copied exactly; call prepare_review again and review the new chunks"
     );
     ensure_reviewable(prepared)?;
-    anyhow::ensure!(
-        reviews.len() == prepared.chunks.len(),
-        "review is incomplete"
-    );
+    let mut reviews = reviews;
+    // Results may arrive in any order; each chunk needs exactly one.
+    reviews.sort_by_key(|item| item.chunk_index);
+    let expected: Vec<usize> = prepared.chunks.iter().map(|chunk| chunk.index).collect();
+    let received: Vec<usize> = reviews.iter().map(|item| item.chunk_index).collect();
+    if received != expected {
+        let missing: Vec<usize> = expected
+            .iter()
+            .copied()
+            .filter(|index| !received.contains(index))
+            .collect();
+        let unknown: Vec<usize> = received
+            .iter()
+            .copied()
+            .filter(|index| !expected.contains(index))
+            .collect();
+        let mut duplicated: Vec<usize> = received
+            .windows(2)
+            .filter(|pair| pair[0] == pair[1])
+            .map(|pair| pair[0])
+            .collect();
+        duplicated.dedup();
+        let mut reasons = Vec::new();
+        if !missing.is_empty() {
+            reasons.push(format!("missing chunk_index {missing:?}"));
+        }
+        if !unknown.is_empty() {
+            reasons.push(format!("unknown chunk_index {unknown:?}"));
+        }
+        if !duplicated.is_empty() {
+            reasons.push(format!("duplicated chunk_index {duplicated:?}"));
+        }
+        anyhow::bail!(
+            "review is incomplete: expected one result for each chunk_index {expected:?}; {}",
+            reasons.join("; ")
+        );
+    }
     let mut results = Vec::with_capacity(reviews.len());
     for (chunk, mut item) in prepared.chunks.iter().zip(reviews) {
-        anyhow::ensure!(
-            item.chunk_index == chunk.index,
-            "chunk results are missing or out of order"
-        );
-        if unconfirmed.contains(&chunk.index) {
-            validate_chunk_findings(prepared, chunk, &item.review)?;
+        let checked = if unconfirmed.contains(&chunk.index) {
+            validate_chunk_findings(prepared, chunk, &item.review)
         } else {
-            validate_chunk_review(prepared, chunk, &item.review)?;
-        }
+            validate_chunk_review(prepared, chunk, &item.review)
+        };
+        checked.with_context(|| format!("chunk_index {}", chunk.index))?;
         for finding in &mut item.review.findings {
             // A model cannot establish analyzer provenance.
             finding.source = None;
@@ -174,7 +204,9 @@ pub fn validate_chunk_review(
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
         coverage_consistent(chunk, review),
-        "chunk review reports incomplete or inconsistent file coverage"
+        "files_reviewed is {} but the chunk has {} file(s); review every file of the chunk and report that count",
+        review.files_reviewed,
+        chunk.files.len()
     );
     validate_chunk_findings(prepared, chunk, review)
 }
@@ -315,13 +347,48 @@ pub fn validate_chunk_findings(
     review: &cururu_core::ReviewResult,
 ) -> anyhow::Result<()> {
     validate_findings(prepared, review)?;
+    if let Some(index) = review
+        .findings
+        .iter()
+        .position(|finding| !chunk.files.contains(&finding.path))
+    {
+        anyhow::bail!(
+            "findings[{index}]: path is not one of the {} file(s) of this chunk",
+            chunk.files.len()
+        );
+    }
+    Ok(())
+}
+
+fn validate_finding(
+    prepared: &PreparedReview,
+    finding: &cururu_core::ReviewFinding,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
-        review
-            .findings
-            .iter()
-            .all(|finding| chunk.files.contains(&finding.path)),
-        "finding is outside its review chunk"
+        cururu_core::Severity::from_name(&finding.severity).is_some(),
+        "severity {:?} is not one of critical, high, medium, low",
+        finding.severity
     );
+    anyhow::ensure!(
+        finding.confidence.is_finite() && (0.0..=1.0).contains(&finding.confidence),
+        "confidence {} is not between 0 and 1",
+        finding.confidence
+    );
+    anyhow::ensure!(
+        !finding.title.trim().is_empty() && !finding.message.trim().is_empty(),
+        "title and message are required"
+    );
+    let file = prepared
+        .files
+        .iter()
+        .find(|file| file.path == finding.path)
+        .context("path is not a file of the review diff")?;
+    if let Some(line) = finding.line {
+        anyhow::ensure!(
+            file.right_lines.contains(&line),
+            "line {line} is not a changed or context line on the new side of the diff for this path; use a line from the diff or null"
+        );
+    }
     Ok(())
 }
 
@@ -329,31 +396,13 @@ pub fn validate_findings(
     prepared: &PreparedReview,
     result: &cururu_core::ReviewResult,
 ) -> anyhow::Result<()> {
-    anyhow::ensure!(result.findings.len() <= 1000, "too many findings");
-    for finding in &result.findings {
-        anyhow::ensure!(
-            cururu_core::Severity::from_name(&finding.severity).is_some(),
-            "invalid finding severity"
-        );
-        anyhow::ensure!(
-            finding.confidence.is_finite() && (0.0..=1.0).contains(&finding.confidence),
-            "invalid finding confidence"
-        );
-        anyhow::ensure!(
-            !finding.title.trim().is_empty() && !finding.message.trim().is_empty(),
-            "finding title and message are required"
-        );
-        let file = prepared
-            .files
-            .iter()
-            .find(|file| file.path == finding.path)
-            .context("finding references a file outside the review diff")?;
-        if let Some(line) = finding.line {
-            anyhow::ensure!(
-                file.right_lines.contains(&line),
-                "finding references a line outside the review diff"
-            );
-        }
+    anyhow::ensure!(
+        result.findings.len() <= 1000,
+        "too many findings: {} (at most 1000)",
+        result.findings.len()
+    );
+    for (index, finding) in result.findings.iter().enumerate() {
+        validate_finding(prepared, finding).with_context(|| format!("findings[{index}]"))?;
     }
     Ok(())
 }
@@ -501,6 +550,9 @@ pub fn prepare(
         "suggestion_detail": config.review.suggestion_detail,
         "suggested_changes": config.review.policy.suggested_changes,
         "focus": config.review.policy.focus,
+        "minimum_confidence": config.review.policy.minimum_confidence,
+        "max_findings": config.review.policy.max_findings,
+        "allowed_severities": config.review.policy.allowed_severities,
     });
     let snapshot = serde_json::to_vec(&(
         source,
@@ -527,13 +579,7 @@ pub fn prepare(
         &chunks,
         instructions_for(source),
         &preferences,
-        (
-            config.review.policy.minimum_confidence,
-            config.review.policy.max_findings,
-            &config.review.policy.allowed_severities,
-            config.review.policy.synthesis,
-            config.review.policy.suggested_changes,
-        ),
+        config.review.policy.synthesis,
     ))?;
     Ok(PreparedReview {
         source,
@@ -619,14 +665,127 @@ pub async fn prepare_agent_pr(
     Ok(prepared)
 }
 
+/// A committed range of a local repository, reviewed the way a PR shows it:
+/// the changes from the merge base of `base` and `head` to `head`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalRange {
+    /// Target branch tip, whose policy a hosted PR would use.
+    pub base: String,
+    /// Full SHA of the merge base.
+    pub merge_base: String,
+    /// Full SHA of the reviewed head commit.
+    pub head: String,
+}
+
+/// Fail with a clear message unless `root` is a Git working tree.
+pub fn ensure_git_repository(root: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        root.is_dir(),
+        "repository_path {} is not a directory",
+        root.display()
+    );
+    let output = Command::new("git")
+        .current_dir(root)
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "rev-parse",
+            "--is-inside-work-tree",
+        ])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .context("failed to start git")?;
+    anyhow::ensure!(
+        output.status.success() && output.stdout.starts_with(b"true"),
+        "{} is not a Git repository (or not a working tree); pass repository_path with the repository's directory",
+        root.display()
+    );
+    Ok(())
+}
+
+fn resolve_commit(root: &Path, revision: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        !revision.is_empty() && !revision.starts_with('-') && revision.len() <= 255,
+        "invalid revision {revision:?}"
+    );
+    let spec = format!("{revision}^{{commit}}");
+    let output = Command::new("git")
+        .current_dir(root)
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &spec,
+        ])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .context("failed to start git")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "revision {revision:?} is not a commit of this repository"
+    );
+    Ok(String::from_utf8(output.stdout)
+        .context("Git revision is not UTF-8")?
+        .trim()
+        .to_string())
+}
+
+/// Resolve `base` and `head` (default `HEAD`) to the range a PR from `head`
+/// into `base` would show.
+pub fn resolve_local_range(
+    root: &Path,
+    base: &str,
+    head: Option<&str>,
+) -> anyhow::Result<LocalRange> {
+    let base_sha = resolve_commit(root, base)?;
+    let head_sha = resolve_commit(root, head.unwrap_or("HEAD"))?;
+    let output = Command::new("git")
+        .current_dir(root)
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "merge-base",
+            "--end-of-options",
+            &base_sha,
+            &head_sha,
+        ])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .context("failed to start git merge-base")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{base:?} and {:?} have no common ancestor",
+        head.unwrap_or("HEAD")
+    );
+    Ok(LocalRange {
+        base: base_sha,
+        merge_base: String::from_utf8(output.stdout)
+            .context("Git merge base is not UTF-8")?
+            .trim()
+            .to_string(),
+        head: head_sha,
+    })
+}
+
 /// Prepare local changes and, when configured, the same repository context
 /// (explicit files and automatic related files) as a hosted review, read
-/// from the committed `HEAD` of the checkout.
+/// from the committed `HEAD` of the checkout, or from the merge base of a
+/// commit range.
 pub async fn prepare_local_with_context(
     config: &AppConfig,
     root: &Path,
+    range: Option<&LocalRange>,
 ) -> anyhow::Result<PreparedReview> {
-    let mut prepared = prepare_local(config, root)?;
+    let mut prepared = prepare_local(config, root, range)?;
     let context_configured = config.context.auto.enabled
         || !(config.context.conventions.is_empty()
             && config.context.specifications.is_empty()
@@ -635,7 +794,10 @@ pub async fn prepare_local_with_context(
     if !context_configured {
         return Ok(prepared);
     }
-    let local = crate::local_git::LocalGit::new(root);
+    let local = match range {
+        Some(range) => crate::local_git::LocalGit::with_base(root, range.merge_base.clone()),
+        None => crate::local_git::LocalGit::new(root),
+    };
     let mut context = review::fetch_repo_context(config, &local).await?;
     if config.context.auto.enabled {
         review::append_auto_context(config, &local, &mut context, &prepared.files).await?;
@@ -646,23 +808,38 @@ pub async fn prepare_local_with_context(
     Ok(prepared)
 }
 
-pub fn prepare_local(config: &AppConfig, root: &Path) -> anyhow::Result<PreparedReview> {
-    let revision = git_head(root)?;
+/// Tracked staged and unstaged changes against `HEAD`, or with `range` the
+/// committed changes from its merge base to its head (the working tree is
+/// then ignored).
+pub fn prepare_local(
+    config: &AppConfig,
+    root: &Path,
+    range: Option<&LocalRange>,
+) -> anyhow::Result<PreparedReview> {
+    let revision = match range {
+        Some(range) => range.head.clone(),
+        None => git_head(root)?,
+    };
+    let mut diff_args = vec![
+        "-c",
+        "core.quotePath=false",
+        "-c",
+        "core.fsmonitor=false",
+        "--no-pager",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+    ];
+    match range {
+        Some(range) => {
+            diff_args.extend(["--end-of-options", &range.merge_base, &range.head, "--"]);
+        }
+        None => diff_args.extend(["HEAD", "--"]),
+    }
     let mut child = Command::new("git")
         .current_dir(root)
-        .args([
-            "-c",
-            "core.quotePath=false",
-            "-c",
-            "core.fsmonitor=false",
-            "--no-pager",
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-color",
-            "HEAD",
-            "--",
-        ])
+        .args(&diff_args)
         .stdin(Stdio::null())
         .env("GIT_OPTIONAL_LOCKS", "0")
         .stdout(Stdio::piped())
@@ -688,11 +865,20 @@ pub fn prepare_local(config: &AppConfig, root: &Path) -> anyhow::Result<Prepared
         "git diff failed; verify this repository has a HEAD commit"
     );
     let raw = String::from_utf8(bytes).context("local diff is not UTF-8")?;
-    anyhow::ensure!(
-        git_head(root)? == revision,
-        "repository HEAD changed while preparing review"
-    );
-    prepare(config, &raw, revision, "local")
+    if range.is_none() {
+        anyhow::ensure!(
+            git_head(root)? == revision,
+            "repository HEAD changed while preparing review"
+        );
+    }
+    let mut prepared = prepare(config, &raw, revision, "local")?;
+    if let Some(range) = range {
+        // The same diff from another base is another review input.
+        let bytes = serde_json::to_vec(&(&prepared.snapshot_sha256, &range.merge_base))?;
+        prepared.snapshot_sha256 = hex::encode(Sha256::digest(bytes));
+        prepared.scope = "committed changes from the merge base of base and head to head; excludes the working tree";
+    }
+    Ok(prepared)
 }
 
 fn git_head(root: &Path) -> anyhow::Result<String> {
@@ -1449,12 +1635,12 @@ mod tests {
         let mut config = AppConfig::from_local_env().unwrap();
         config.review.max_diff_bytes = 10_000;
         config.review.chunk_bytes = 10_000;
-        let without = prepare_local_with_context(&config, dir.path())
+        let without = prepare_local_with_context(&config, dir.path(), None)
             .await
             .unwrap();
         assert!(without.repository_context.is_none());
         config.context.conventions = vec!["AGENTS.md".into()];
-        let with = prepare_local_with_context(&config, dir.path())
+        let with = prepare_local_with_context(&config, dir.path(), None)
             .await
             .unwrap();
         let context = serde_json::to_string(&with.repository_context).unwrap();
@@ -1497,13 +1683,13 @@ mod tests {
         let mut config = AppConfig::from_local_env().unwrap();
         config.review.max_diff_bytes = 1000;
         config.review.chunk_bytes = 1000;
-        let result = prepare_local(&config, dir.path()).unwrap();
+        let result = prepare_local(&config, dir.path(), None).unwrap();
         assert_eq!(result.files.len(), 1);
         assert!(result.files[0].patch.contains("+unstaged"));
         assert!(!result.files[0].patch.contains("private"));
         assert_eq!(result.diff_sha256.len(), 64);
         config.review.max_diff_bytes = 5;
-        assert!(prepare_local(&config, dir.path()).is_err());
+        assert!(prepare_local(&config, dir.path(), None).is_err());
         assert!(
             prepare(
                 &config,

@@ -24,14 +24,15 @@ jobs:
     steps:
       - name: Validate version format
         id: version-check
+        env:
+          RAW: ${{ inputs.version }}
         run: |
-          RAW="${{ inputs.version }}"
-          CLEAN="$(echo "$RAW" | sed 's/^v//')"
-          echo "version=$CLEAN" >> "$GITHUB_OUTPUT"
-          if ! echo "$CLEAN" | grep -qP '^\d+\.\d+\.\d+$'; then
+          CLEAN="${RAW#v}"
+          if [[ ! "$CLEAN" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "error: version must be semver format (e.g., 4.6.0 or v4.6.0)"
             exit 1
           fi
+          echo "version=$CLEAN" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,6 +58,7 @@ jobs:
         run: |
           sed -i "s/^version = \".*\"/version = \"$V\"/" Cargo.toml
           cargo update -p cururu
+          cargo run --locked --quiet -- install-skill --print > skills/cururu-review/SKILL.md
 
       - name: Point action.yml at the version tag
         env:
@@ -74,7 +76,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add CHANGELOG.md Cargo.toml Cargo.lock action.yml
+          git add CHANGELOG.md Cargo.toml Cargo.lock action.yml skills/cururu-review/SKILL.md
           git commit -m "chore(release): prepare for v$V"
 
           git push origin HEAD:"$BRANCH"
