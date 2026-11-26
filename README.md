@@ -20,6 +20,43 @@ pull_request event
 
 ## Quick start
 
+### Review a commit range with your agent
+
+Install [cururu-review](skills/cururu-review/SKILL.md) from the Cururu binary
+in the project root. The agent uses its own session; no GitHub Action or
+separate LLM key is needed.
+
+```sh
+cururu install-skill --target claude   # or --target grok / --target codex / --target opencode
+```
+
+Add `--global` for a per-user installation. Rerun the same command after a
+binary upgrade: an identical file is left alone, and a different file is shown
+as a diff and replaced only if you type `UPDATE`. Other compatible agents can
+install the `skills/cururu-review/` directory directly. To regenerate its exact
+release contents: `cururu install-skill --print > skills/cururu-review/SKILL.md`.
+
+For example, with `main` and a feature branch checked out locally, ask:
+
+> Use cururu-review to review the committed changes from main to HEAD in this
+> repository. Review all chunks and return the final Cururu JSON. Do not publish.
+
+With [MCP configured](docs/agent-mcp-setup.md), the agent uses `prepare_review`
+with `source: "local"`, `base: "main"`, `head: "HEAD"` and the checkout path,
+then assembles and validates the results against the same hash. Without MCP,
+the equivalent CLI flow is:
+
+```sh
+cururu prepare-review --local --base main --head HEAD
+# The agent reviews each returned chunk and saves {snapshot_sha256, reviews}
+# in a private file outside the repository, e.g. ~/cururu-parts.json.
+cururu prepare-review --local --base main --head HEAD --assemble ~/cururu-parts.json
+```
+
+The final command prints the assembled review JSON. The range excludes
+uncommitted changes, uses the target branch's policy, and takes the diff
+from the merge base. Use `--pr` for hosted PR threads and replies.
+
 ### Agent review input (experimental)
 
 `cururu prepare-review --local` emits a bounded JSON snapshot of tracked staged
@@ -27,13 +64,15 @@ and unstaged changes relative to HEAD. It excludes untracked files and lists
 paths ignored by Cururu. `cururu prepare-review --pr` uses the configured GitHub
 change request and checks that its head did not change during collection.
 Both commands only prepare input: they do not call an agent or publish. Their
-output contains source code; treat it as sensitive. Local review currently
-rejects shared configuration bases rather than silently ignoring them.
+output contains source code; treat it as sensitive. When `[config] base` is
+configured, local preparation resolves and merges it with the same rules as
+hosted review. Set `CURURU_SHARED_CONFIG_TOKEN` or a source-control token
+with read access to the shared repository.
 
 `cururu mcp` offers the same read-only `prepare_review` tool to MCP hosts over
 stdio, plus `validate_review` to check finding shape and anchors against a
 fresh matching effective snapshot hash. `assemble_review` combines exactly one
-validated result for each chunk; incomplete, reordered or stale results fail.
+validated result for each chunk; incomplete, duplicated or stale results fail.
 It strips agent-supplied analyzer provenance and follows the configured policy
 for executable suggestions.
 Validation does not establish correctness or approve
@@ -474,6 +513,28 @@ context files). Estimated cost per review through OpenRouter pricing:
   commits; beyond that it is marked as a lower bound. Failed runs (for example,
   a truncated model response) and evaluator calls are not counted.
 
+### Cost across pushes
+
+Each review of a PR sends the **whole PR diff** at the current head, with its
+context and prior feedback, whatever the value of `incremental`. On a large PR
+that receives many pushes, cost grows with *pushes × PR size*: a PR whose diff
+needs three chunks costs about three chunks per push, even when a push only
+adds one line. The scenario `push-cost` in `tests/review_scenarios/` measures
+this; for a 12-file PR with two follow-up pushes, the model input per push was
+the same (about 26 KB) with `incremental` on and off.
+
+`incremental = true` only avoids paying twice for the **same** head (a
+workflow re-run, or a `/cururu review` comment on an already reviewed head),
+so it is safe to enable and recommended for that, but it does not reduce the
+cost of new pushes. To bound that cost:
+
+- review on demand (`/cururu review`) or only on `ready_for_review` instead of
+  on every `synchronize` event;
+- keep `max_diff_bytes` and `chunk_bytes` at the sizes your PRs need
+  (`cururu setup limits` suggests them from recent runs);
+- with `[publication] require_approval = true`, only approved candidates are
+  published, but each candidate's model calls are still paid.
+
 ### Review
 
 | Field | Description |
@@ -487,6 +548,8 @@ context files). Estimated cost per review through OpenRouter pricing:
 | `suggestion_detail` | Recommendation context: `concise`, `standard`, or `detailed` (default) |
 | `comment_mode` | `inline` (default) or `summary` |
 | `prior_feedback_resolved` | Resolved review threads sent as prior feedback: `with_human_reply` (default), `with_reviewer_reply` or `none` |
+| `prior_feedback_max_resolved` | At most this many resolved threads are sent in full compact form, within the 20 thread slots left by open threads (default and maximum `20`; `0` summarizes every decision); see [Prior review feedback](#prior-review-feedback) |
+| `prior_feedback_summary_bytes` | Bytes for one-line summaries of the other resolved threads (default `16000`, at most `64000`; `0` drops them as before 6.4) |
 
 `suggestion_detail = "detailed"` asks Cururu to explain the context, why a fix
 addresses the finding, and a concrete safe action. It should acknowledge when the
@@ -533,13 +596,38 @@ thread was written (compared by hash). A different title, another place in the
 file, a finding without a line, or changed or unverifiable code reaches the
 model's judgment instead.
 
-Limits cut the feedback instead of failing the review: at most 20 threads,
-open ones first and then decisions, newest first; 10 replies per thread; 10
-conversation comments; 2,000 characters per comment; and 12,000 bytes in all,
-filled with the conversation, then open threads, then decisions, so decisions
-are cut first, oldest first. The log reports how many decisions were sent, cut
-or skipped. If GitHub's thread resolution cannot be read, every thread is sent
-as open.
+Limits cut the feedback instead of failing the review: at most 20 threads
+sent in full, open ones first, newest first; 10 replies per thread; 10 conversation comments; 2,000
+characters per comment; and 12,000 bytes in all, filled with the conversation,
+then open threads, then decisions. If GitHub's thread resolution cannot be
+read, every thread is sent as open.
+
+Decisions are ordered so the ones the model is most likely to reopen come
+first: threads on files in the current diff, then newer threads. The first
+`[review].prior_feedback_max_resolved` (default 20) that fit in the slots
+left by open threads and in the 12,000 bytes are sent in the compact form
+above. The rest are **summarized, not dropped**:
+each becomes one line with the finding's title line (up to 160 characters)
+and the start of its most explanatory human reply (the longest of the last 3,
+up to 240 characters), marked `"summarized": true`, within
+`[review].prior_feedback_summary_bytes` (default 16,000). Only decisions that
+fit neither budget are dropped. A PR with many resolved threads therefore no
+longer loses the answers behind them and gets the same findings reopened on
+other lines. Summaries also feed the deterministic `suppressed_as_decided`
+safeguard. The log reports `resolved_kept`, `resolved_summarized`,
+`resolved_dropped` and `resolved_skipped`, and lists the root comment ids of
+summarized and dropped threads (`summarized_thread_ids`,
+`dropped_thread_ids`) so you can find them on the PR without paths or titles
+in the log. Raise `prior_feedback_summary_bytes` if threads are still dropped;
+the summaries are sent with every chunk, so they add input tokens to each
+model call.
+
+If a person replies to or resolves a thread while the model is reviewing, the
+review is still published: Cururu compares the feedback again before
+publication and drops any new finding that falls on a thread resolved in the
+meantime (same file, within 3 lines), logging the count. The review still
+fails, without publishing, when the reviewed code, repository context or
+analyzer evidence changed during the call.
 
 Who can record a decision is set by `[review].prior_feedback_resolved`:
 
@@ -592,11 +680,11 @@ consumers.
 | Field | Default | Description |
 |---|---:|---|
 | `minimum_confidence` | `0.65` | Minimum confidence from the model (`0..=1`) |
-| `max_findings` | `30` | Maximum findings posted |
+| `max_findings` | `30` | Upper bound on findings posted, not a target. When more findings pass `minimum_confidence`, the most severe are kept and, within a severity, the most confident |
 | `fail_on` | `off` | `off`, `critical`, `high`, `medium`, or `low` |
 | `allowed_severities` | all | Severities retained in the result |
 | `suggested_changes` | `false` | Enable safe one-line GitHub suggestions |
-| `incremental` | `false` | Enable incremental review state |
+| `incremental` | `false` | Skip a run when the current head already has a Cururu summary (a re-run or a duplicate trigger). It does **not** limit a new push to its new commits; see [Cost across pushes](#cost-across-pushes) |
 | `synthesis` | `false` | Enable cross-chunk synthesis |
 | `focus` | `[]` | Review focus hints such as `security` or `tests` |
 

@@ -19,6 +19,11 @@ pub struct PriorReviewFeedback {
     /// (the finding's title line and the latest human reply).
     #[serde(default)]
     pub resolved: bool,
+    /// True for a resolved thread beyond the full prior-feedback budget,
+    /// sent as a one-line summary: the finding's title line and the start of
+    /// the most explanatory human reply.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub summarized: bool,
     /// The finding a resolved thread decided, for deterministic matching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided: Option<DecidedFinding>,
@@ -90,6 +95,7 @@ mod tests {
                     body: "Please add a test".into(),
                 }],
                 resolved: true,
+                summarized: false,
                 decided: Some(DecidedFinding {
                     path: "src/lib.rs".into(),
                     line: Some(8),

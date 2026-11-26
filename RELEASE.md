@@ -61,7 +61,9 @@ by digest for supply-chain security.
 If the automation is unavailable, the equivalent steps are:
 
 1. Check CI (fmt, clippy, build, test).
-2. Bump `version` in `Cargo.toml`, run `cargo update -p cururu`.
+2. Bump `version` in `Cargo.toml`, run `cargo update -p cururu`, then regenerate
+   the versioned Agent Skill with
+   `cargo run --locked --quiet -- install-skill --print > skills/cururu-review/SKILL.md`.
 3. Point `action.yml` at the version tag:
    `image: docker://ghcr.io/lucaswilliameufrasio/cururu:vX.Y.Z`.
 4. Regenerate the changelog: `git cliff --bump --tag "vX.Y.Z" -o CHANGELOG.md`.

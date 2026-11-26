@@ -37,6 +37,8 @@ fn base_config() -> AppConfig {
             comment_mode: CommentMode::Inline,
             recommendations: false,
             prior_feedback_resolved: crate::config::PriorFeedbackResolved::default(),
+            prior_feedback_max_resolved: crate::prior_feedback::DEFAULT_MAX_RESOLVED,
+            prior_feedback_summary_bytes: crate::prior_feedback::DEFAULT_SUMMARY_BYTES,
             policy: ReviewPolicy::default(),
         },
         context: ContextConfig::default(),
@@ -92,6 +94,29 @@ fn resolved_prior_feedback_defaults_to_threads_with_human_replies() {
         .merge_toml_str("version = 1\n[review]\nprior_feedback_resolved = \"all\"\n")
         .unwrap_err();
     assert!(error.to_string().contains("review.prior_feedback_resolved"));
+}
+
+#[test]
+fn prior_feedback_limits_are_configurable_and_bounded() {
+    let mut cfg = base_config();
+    assert_eq!(cfg.review.prior_feedback_max_resolved, 20);
+    assert_eq!(cfg.review.prior_feedback_summary_bytes, 16_000);
+    cfg.merge_toml_str(
+        "version = 1\n[review]\nprior_feedback_max_resolved = 5\nprior_feedback_summary_bytes = 0\n",
+    )
+    .unwrap();
+    assert_eq!(cfg.review.prior_feedback_max_resolved, 5);
+    assert_eq!(cfg.review.prior_feedback_summary_bytes, 0);
+    for raw in [
+        "version = 1\n[review]\nprior_feedback_max_resolved = 21\n",
+        "version = 1\n[review]\nprior_feedback_summary_bytes = 64001\n",
+    ] {
+        let error = cfg.merge_toml_str(raw).unwrap_err();
+        assert!(
+            error.to_string().contains("review.prior_feedback_"),
+            "{error}"
+        );
+    }
 }
 
 #[test]

@@ -48,6 +48,23 @@ pub fn sort_review_findings(findings: &mut [ReviewFinding]) {
     });
 }
 
+/// Keep at most `max` findings, the most severe and then the most confident.
+///
+/// A cap is an upper bound, so the cut never prefers a weak finding because
+/// of its path. Order afterwards is unspecified; sort with
+/// [`sort_review_findings`] for display.
+pub fn keep_strongest_findings(findings: &mut Vec<ReviewFinding>, max: usize) {
+    if findings.len() <= max {
+        return;
+    }
+    findings.sort_by(|a, b| {
+        severity_rank(&a.severity)
+            .cmp(&severity_rank(&b.severity))
+            .then(b.confidence.total_cmp(&a.confidence))
+    });
+    findings.truncate(max);
+}
+
 /// Deduplicate findings at the same location while preferring analyzer evidence.
 #[must_use]
 pub fn deduplicate_review_findings(findings: Vec<ReviewFinding>) -> Vec<ReviewFinding> {

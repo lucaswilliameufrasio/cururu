@@ -247,6 +247,8 @@ impl AppConfig {
                 comment_mode: CommentMode::Inline,
                 recommendations: false,
                 prior_feedback_resolved: PriorFeedbackResolved::default(),
+                prior_feedback_max_resolved: crate::prior_feedback::DEFAULT_MAX_RESOLVED,
+                prior_feedback_summary_bytes: crate::prior_feedback::DEFAULT_SUMMARY_BYTES,
                 policy,
             },
             context: ContextConfig::default(),
@@ -459,6 +461,22 @@ impl AppConfig {
                 self.review.prior_feedback_resolved =
                     PriorFeedbackResolved::from_name(&resolved)
                         .context("validated prior_feedback_resolved")?;
+            }
+            if let Some(max) = tr.prior_feedback_max_resolved {
+                anyhow::ensure!(
+                    max <= crate::prior_feedback::LIMIT_MAX_RESOLVED,
+                    "review.prior_feedback_max_resolved must be at most {}",
+                    crate::prior_feedback::LIMIT_MAX_RESOLVED
+                );
+                self.review.prior_feedback_max_resolved = max;
+            }
+            if let Some(bytes) = tr.prior_feedback_summary_bytes {
+                anyhow::ensure!(
+                    bytes <= crate::prior_feedback::LIMIT_SUMMARY_BYTES,
+                    "review.prior_feedback_summary_bytes must be at most {}",
+                    crate::prior_feedback::LIMIT_SUMMARY_BYTES
+                );
+                self.review.prior_feedback_summary_bytes = bytes;
             }
 
             if env::env_optional("CURURU_PROFILE").is_none()

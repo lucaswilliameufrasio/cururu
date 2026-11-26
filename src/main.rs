@@ -30,6 +30,7 @@ mod review_input;
 mod review_usage;
 mod scm;
 mod setup;
+mod skill_install;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -223,6 +224,9 @@ enum Command {
     PrintConfig,
     /// Prepare a bounded, read-only review input without invoking an agent.
     PrepareReview {
+        /// Assemble and validate saved `{snapshot_sha256, reviews}` against this target.
+        #[arg(long, value_name = "FILE")]
+        assemble: Option<std::path::PathBuf>,
         /// Review tracked staged and unstaged changes against HEAD, not untracked files.
         #[arg(long, conflicts_with_all = ["pr", "codebase"], required_unless_present_any = ["pr", "codebase"])]
         local: bool,
@@ -235,6 +239,13 @@ enum Command {
         /// Limit a codebase review to files matching this glob (repeatable).
         #[arg(long = "path")]
         paths: Vec<String>,
+        /// Local only: review the committed changes from the merge base of
+        /// this branch, tag or commit to --head, as a PR into it shows them.
+        #[arg(long, conflicts_with_all = ["pr", "codebase"])]
+        base: Option<String>,
+        /// Local only, with --base: the head of the reviewed range (default HEAD).
+        #[arg(long, requires = "base")]
+        head: Option<String>,
         /// Preview an explicitly selected local SARIF file.
         #[arg(long, requires = "analysis_manifest")]
         sarif: Option<std::path::PathBuf>,
@@ -275,6 +286,13 @@ enum Command {
         /// Limit a codebase review to files matching this glob (repeatable).
         #[arg(long = "path")]
         paths: Vec<String>,
+        /// Local only: review the committed changes from the merge base of
+        /// this branch, tag or commit to --head, as a PR into it shows them.
+        #[arg(long, conflicts_with_all = ["pr", "codebase"])]
+        base: Option<String>,
+        /// Local only, with --base: the head of the reviewed range (default HEAD).
+        #[arg(long, requires = "base")]
+        head: Option<String>,
         /// Output format: the JSON receipt, or a readable report of the findings.
         #[arg(long, value_enum, default_value_t = ReportFormat::Json)]
         format: ReportFormat,
@@ -304,6 +322,17 @@ enum Command {
     },
     /// Serve read-only review preparation tools over MCP stdio.
     Mcp,
+    /// Install or update the versioned cururu-review Agent Skill.
+    InstallSkill {
+        /// Print the generated SKILL.md without installing it.
+        #[arg(long, conflicts_with = "global")]
+        print: bool,
+        #[arg(long, value_enum, default_value_t = skill_install::Target::Codex)]
+        target: skill_install::Target,
+        /// Install for the current user instead of the current project.
+        #[arg(long)]
+        global: bool,
+    },
     /// Create a project MCP configuration only if its file does not exist.
     InstallMcp {
         #[arg(value_enum)]
@@ -385,6 +414,7 @@ async fn main() -> anyhow::Result<()> {
             | Command::PublishAgentReview { .. }
             | Command::ApproveHostedReview { .. }
             | Command::InstallMcp { .. }
+            | Command::InstallSkill { .. }
             | Command::CheckMcp { .. }
             | Command::PreviewMcpMerge { .. }
             | Command::UpdateCodexMcp { .. }
@@ -474,25 +504,54 @@ async fn main() -> anyhow::Result<()> {
             return Ok(());
         }
         Command::PrepareReview {
+            assemble,
             local,
             codebase,
             paths,
+            base,
+            head,
             sarif,
             analysis_manifest,
             ..
         } => {
-            let target = ReviewTarget::from_flags(*local, *codebase, paths)?;
+            let target = ReviewTarget::from_flags(
+                *local,
+                *codebase,
+                paths,
+                base.as_deref(),
+                head.as_deref(),
+            )?;
             let mut prepared = prepare_review_input(&target).await?;
             if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
                 review_input::attach_local_analysis(&mut prepared, sarif, manifest)?;
             }
-            println!("{}", serde_json::to_string_pretty(&prepared)?);
+            if let Some(path) = assemble {
+                #[derive(serde::Deserialize)]
+                struct Parts {
+                    snapshot_sha256: String,
+                    reviews: Vec<review_input::ChunkReview>,
+                }
+                let parts: Parts = serde_json::from_reader(std::io::BufReader::new(
+                    std::fs::File::open(path).context("cannot open chunk results")?,
+                ))?;
+                let review = review_input::assemble_review(
+                    &prepared,
+                    &parts.snapshot_sha256,
+                    parts.reviews,
+                )?;
+                review_input::validate_findings(&prepared, &review)?;
+                println!("{}", serde_json::to_string_pretty(&review)?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&prepared)?);
+            }
             return Ok(());
         }
         Command::ApiReview {
             pr,
             codebase,
             paths,
+            base,
+            head,
             format,
             confirm_send,
             expected_snapshot,
@@ -504,9 +563,9 @@ async fn main() -> anyhow::Result<()> {
                 "sending source code requires --confirm-send; inspect prepare-review first"
             );
             let target = if *pr {
-                ReviewTarget::from_flags(false, false, paths)?
+                ReviewTarget::from_flags(false, false, paths, base.as_deref(), head.as_deref())?
             } else {
-                ReviewTarget::from_flags(true, *codebase, paths)?
+                ReviewTarget::from_flags(true, *codebase, paths, base.as_deref(), head.as_deref())?
             };
             let (config, mut prepared) = prepare_api_review(&target).await?;
             if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
@@ -608,6 +667,17 @@ async fn main() -> anyhow::Result<()> {
             );
             return Ok(());
         }
+        Command::InstallSkill {
+            target,
+            global,
+            print,
+        } => {
+            if *print {
+                print!("{}", skill_install::render());
+                return Ok(());
+            }
+            return skill_install::install(*target, *global);
+        }
         Command::InstallMcp { client, executable } => {
             let path = mcp_install::install(std::path::Path::new("."), *client, executable)?;
             println!(
@@ -704,48 +774,13 @@ async fn main() -> anyhow::Result<()> {
         let mut config =
             AppConfig::from_local_env().context("failed to load local configuration defaults")?;
         match std::fs::read_to_string(".cururu.toml") {
-            Ok(local_raw) => {
-                if let Some(shared) = AppConfig::shared_base_from_toml(&local_raw)? {
-                    let shared_token = std::env::var("CURURU_SHARED_CONFIG_TOKEN")
-                        .ok()
-                        .filter(|token| !token.is_empty())
-                        .unwrap_or_else(|| config.source_control.token.clone());
-                    if shared_token.is_empty() {
-                        anyhow::bail!(
-                            "GITHUB_TOKEN or CURURU_SHARED_CONFIG_TOKEN is required to inspect a private or remote shared base"
-                        );
-                    }
-                    let mut shared_github_config = config.source_control.clone();
-                    shared_github_config.token = shared_token;
-                    let shared_github: Box<dyn scm::ScmProvider> = Box::new(
-                        github::GitHubClient::from_scm_config(&shared_github_config)?,
-                    );
-                    let shared_commit = shared_github
-                        .resolve_repository_ref(&shared.repository, &shared.reference)
-                        .await?;
-                    let shared_raw = shared_github
-                        .fetch_repository_file_at_ref(
-                            &shared.repository,
-                            &shared.path,
-                            &shared_commit,
-                        )
-                        .await?;
-                    if AppConfig::shared_base_from_toml(&shared_raw)?.is_some() {
-                        anyhow::bail!("shared configuration cannot extend another base");
-                    }
-                    config
-                        .merge_toml_str(&shared_raw)
-                        .context("invalid shared base configuration")?;
-                    config.merge_toml_str(&AppConfig::compose_toml(&shared_raw, &local_raw)?)?;
-                    println!(
-                        "Merged shared configuration from {}:{} at {} (commit {shared_commit}).",
-                        shared.repository, shared.path, shared.reference
-                    );
-                } else {
-                    config.merge_toml_str(&local_raw)?;
-                    println!("Loaded local configuration from .cururu.toml.");
-                }
-            }
+            Ok(local_raw) => match merge_local_config(&mut config, &local_raw).await? {
+                Some(config::SharedConfigSnapshot { source, commit, .. }) => println!(
+                    "Merged shared configuration from {}:{} at {} (commit {commit}).",
+                    source.repository, source.path, source.reference
+                ),
+                None => println!("Loaded local configuration from .cururu.toml."),
+            },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 println!("No .cururu.toml found in the current directory.");
             }
@@ -817,6 +852,7 @@ async fn main() -> anyhow::Result<()> {
         | Command::PublishAgentReview { .. }
         | Command::ApproveHostedReview { .. }
         | Command::InstallMcp { .. }
+        | Command::InstallSkill { .. }
         | Command::PreviewMcpMerge { .. }
         | Command::UpdateCodexMcp { .. }
         | Command::WriteMcpMerge { .. }
@@ -1102,23 +1138,52 @@ pub(crate) async fn review_with_api(
 /// What a review reads: local tracked changes, the configured hosted PR, or
 /// the committed files of the local checkout as existing code.
 pub(crate) enum ReviewTarget {
-    Local,
+    Local(LocalTarget),
     Pr,
-    Codebase(Vec<String>),
+    Codebase {
+        root: std::path::PathBuf,
+        paths: Vec<String>,
+    },
+}
+
+/// A local review: the repository directory and, optionally, a commit range.
+pub(crate) struct LocalTarget {
+    pub root: std::path::PathBuf,
+    /// With a base, the committed changes from the merge base of `base` and
+    /// `head` (default `HEAD`) are reviewed instead of the working tree.
+    pub base: Option<String>,
+    pub head: Option<String>,
 }
 
 impl ReviewTarget {
     /// clap counts a boolean flag's default as present, so `requires` cannot
     /// tie `--path` to `--codebase`; reject a path filter here instead.
-    fn from_flags(local: bool, codebase: bool, paths: &[String]) -> anyhow::Result<Self> {
+    fn from_flags(
+        local: bool,
+        codebase: bool,
+        paths: &[String],
+        base: Option<&str>,
+        head: Option<&str>,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             codebase || paths.is_empty(),
             "--path selects files for a codebase review; add --codebase"
         );
+        anyhow::ensure!(
+            (local && !codebase) || (base.is_none() && head.is_none()),
+            "--base and --head select a local commit range; use them with a local review"
+        );
         Ok(if codebase {
-            Self::Codebase(paths.to_vec())
+            Self::Codebase {
+                root: ".".into(),
+                paths: paths.to_vec(),
+            }
         } else if local {
-            Self::Local
+            Self::Local(LocalTarget {
+                root: ".".into(),
+                base: base.map(str::to_owned),
+                head: head.map(str::to_owned),
+            })
         } else {
             Self::Pr
         })
@@ -1143,16 +1208,34 @@ async fn prepare_api_review(
             let prepared = review_input::prepare_agent_pr(&config, &scm).await?;
             Ok((config, prepared))
         }
-        ReviewTarget::Local => {
-            let config = local_review_config()?;
+        ReviewTarget::Local(target) => {
+            review_input::ensure_git_repository(&target.root)?;
+            let range = target
+                .base
+                .as_deref()
+                .map(|base| {
+                    review_input::resolve_local_range(&target.root, base, target.head.as_deref())
+                })
+                .transpose()?;
+            let config = if let Some(range) = &range {
+                let git = local_git::LocalGit::new(&target.root);
+                let mut config = AppConfig::from_local_env()?;
+                if let Some(raw) = scm::ScmProvider::fetch_config_toml(&git, &range.base).await? {
+                    merge_local_config(&mut config, &raw).await?;
+                }
+                config
+            } else {
+                local_review_config(&target.root).await?
+            };
             let prepared =
-                review_input::prepare_local_with_context(&config, std::path::Path::new("."))
+                review_input::prepare_local_with_context(&config, &target.root, range.as_ref())
                     .await?;
             Ok((config, prepared))
         }
-        ReviewTarget::Codebase(paths) => {
-            let config = local_review_config()?;
-            let local = local_git::LocalGit::new(".");
+        ReviewTarget::Codebase { root, paths } => {
+            review_input::ensure_git_repository(root)?;
+            let config = local_review_config(root).await?;
+            let local = local_git::LocalGit::new(root);
             let revision = scm::ScmProvider::fetch_head_sha(&local).await?;
             let prepared = review_input::prepare_codebase(&config, &local, revision, paths).await?;
             Ok((config, prepared))
@@ -1166,20 +1249,33 @@ pub(crate) async fn prepare_review_input(
     Ok(prepare_api_review(target).await?.1)
 }
 
-fn local_review_config() -> anyhow::Result<AppConfig> {
+/// Configuration for a local review in `root`: environment defaults, then
+/// the repository's `.cururu.toml` and, when it names one, its shared base,
+/// merged with the same rules as a hosted review.
+async fn local_review_config(root: &std::path::Path) -> anyhow::Result<AppConfig> {
     let mut config = AppConfig::from_local_env()?;
-    match std::fs::read_to_string(".cururu.toml") {
+    match std::fs::read_to_string(root.join(".cururu.toml")) {
         Ok(raw) => {
-            anyhow::ensure!(
-                AppConfig::shared_base_from_toml(&raw)?.is_none(),
-                "local review does not support shared configuration bases"
-            );
-            config.merge_toml_str(&raw)?;
+            merge_local_config(&mut config, &raw).await?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error).context("failed to read local configuration"),
     }
     Ok(config)
+}
+
+/// Merge a local `.cururu.toml` into `config`. A shared base is read with
+/// `CURURU_SHARED_CONFIG_TOKEN`, or else the source-control token
+/// (`CURURU_SCM_TOKEN` / `GITHUB_TOKEN`), and composed like in a hosted
+/// review: the base first, the repository file over it.
+async fn merge_local_config(
+    config: &mut AppConfig,
+    local_raw: &str,
+) -> anyhow::Result<Option<config::SharedConfigSnapshot>> {
+    let shared_token = std::env::var("CURURU_SHARED_CONFIG_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty());
+    merge_review_config(config, local_raw, shared_token.as_deref()).await
 }
 
 pub(crate) async fn merge_repository_config(
@@ -1207,13 +1303,31 @@ async fn merge_repository_config_with_shared_token(
         return Ok(false);
     };
 
+    config.shared_config_snapshot = merge_review_config(config, &local_raw, shared_token).await?;
+    config.trusted_config_snapshot =
+        Some((base_sha, Some(review::trusted_config_hash(&local_raw))));
+    Ok(true)
+}
+
+async fn merge_review_config(
+    config: &mut AppConfig,
+    local_raw: &str,
+    shared_token: Option<&str>,
+) -> anyhow::Result<Option<config::SharedConfigSnapshot>> {
     let mut validation = config.clone();
-    validation.merge_toml_str(&local_raw)?;
-    if let Some(shared) = AppConfig::shared_base_from_toml(&local_raw)? {
+    validation.merge_toml_str(local_raw)?;
+    if let Some(shared) = AppConfig::shared_base_from_toml(local_raw)? {
         let mut shared_github_config = config.source_control.clone();
+        shared_github_config
+            .repository
+            .clone_from(&shared.repository);
         if let Some(token) = shared_token {
             shared_github_config.token = token.to_string();
         }
+        anyhow::ensure!(
+            !shared_github_config.token.is_empty(),
+            "GITHUB_TOKEN or CURURU_SHARED_CONFIG_TOKEN is required to read the shared configuration base"
+        );
         let shared_github: std::sync::Arc<dyn scm::ScmProvider> = std::sync::Arc::new(
             github::GitHubClient::from_scm_config(&shared_github_config)?,
         );
@@ -1235,21 +1349,18 @@ async fn merge_repository_config_with_shared_token(
         validation
             .merge_toml_str(&shared_raw)
             .context("invalid shared base configuration")?;
-        let effective = AppConfig::compose_toml(&shared_raw, &local_raw)?;
+        let effective = AppConfig::compose_toml(&shared_raw, local_raw)?;
         config.merge_toml_str(&effective)?;
-        config.shared_config_snapshot = Some(config::SharedConfigSnapshot {
+        Ok(Some(config::SharedConfigSnapshot {
             source: shared,
             commit: shared_commit,
             hash: review::trusted_config_hash(&shared_raw),
             client: shared_github,
-        });
+        }))
     } else {
-        config.merge_toml_str(&local_raw)?;
-        config.shared_config_snapshot = None;
+        config.merge_toml_str(local_raw)?;
+        Ok(None)
     }
-    config.trusted_config_snapshot =
-        Some((base_sha, Some(review::trusted_config_hash(&local_raw))));
-    Ok(true)
 }
 
 fn initialize_repository() -> anyhow::Result<()> {

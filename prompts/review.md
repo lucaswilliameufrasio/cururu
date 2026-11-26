@@ -84,6 +84,9 @@ Analysis quality:
   changed after the thread), or there is new evidence in the diff or trusted
   context. When you do raise it, the finding must say why the earlier decision
   no longer holds.
+- An entry with `"summarized": true` is a resolved decision shortened to fit:
+  its title line and the start of the most explanatory reply. It carries the
+  same weight as a full one; do not reopen it because the explanation is short.
 
 How to write each finding:
 - `message`: the concrete scenario in which the problem happens (inputs, state,
@@ -121,6 +124,9 @@ Rules:
   express doubt through `confidence` instead of omitting the finding.
 - Report at most 10 findings per chunk, most severe first, and keep `message`
   and `suggestion` to a few sentences each, so the JSON response is not cut off.
+  This is an upper limit, not a target: never add weaker, speculative or
+  overlapping findings to reach it, and an empty `findings` list is a valid
+  answer when the chunk has no supported problem.
 - Avoid style-only nitpicks.
 - Do not ask questions in findings.
 - Use severity: critical, high, medium, low.

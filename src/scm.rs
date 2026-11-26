@@ -52,9 +52,9 @@ pub trait ScmProvider: Send + Sync {
     }
     async fn fetch_prior_review_feedback(
         &self,
-        resolved_policy: crate::config::PriorFeedbackResolved,
+        options: &crate::prior_feedback::FeedbackOptions,
     ) -> anyhow::Result<Vec<PriorReviewFeedback>> {
-        let _ = resolved_policy;
+        let _ = options;
         Ok(Vec::new())
     }
     async fn list_finding_annotations(
@@ -253,7 +253,9 @@ mod tests {
         let adapter = MinimalScm;
         assert_eq!(
             adapter
-                .fetch_prior_review_feedback(crate::config::PriorFeedbackResolved::default())
+                .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::new(
+                    crate::config::PriorFeedbackResolved::default(),
+                ))
                 .await
                 .unwrap()
                 .len(),
