@@ -128,8 +128,9 @@ pub fn apply_policy(mut candidates: ReviewResult, policy: &ReviewPolicy) -> Revi
             && Severity::from_name(&f.severity)
                 .is_some_and(|severity| policy.allowed_severities.contains(&severity))
     });
+    // `max_findings` is an upper bound, never a target.
+    cururu_core::keep_strongest_findings(&mut candidates.findings, policy.max_findings);
     sort_review_findings(&mut candidates.findings);
-    candidates.findings.truncate(policy.max_findings);
     candidates.summary = format!("Found {} review finding(s).", candidates.findings.len());
     candidates
 }
@@ -199,6 +200,53 @@ mod tests {
             source: None,
             rule: None,
         }
+    }
+
+    #[test]
+    fn max_findings_keeps_the_most_severe_then_most_confident() {
+        // Seven medium findings and a cap of 3: the cut must keep the three
+        // most confident, not the first paths in alphabetical order.
+        let mut findings: Vec<ReviewFinding> = (0..6)
+            .map(|index| {
+                let mut finding = llm_finding(&format!("a/{index}.rs"), 1, "weak", 0.4);
+                finding.severity = "medium".into();
+                finding
+            })
+            .collect();
+        for (path, confidence) in [("z/1.rs", 0.95), ("z/2.rs", 0.9)] {
+            let mut finding = llm_finding(path, 1, "strong", confidence);
+            finding.severity = "medium".into();
+            findings.push(finding);
+        }
+        findings.push(llm_finding("y/high.rs", 1, "high", 0.5));
+        let policy = ReviewPolicy {
+            max_findings: 3,
+            minimum_confidence: 0.0,
+            ..ReviewPolicy::default()
+        };
+        let review = apply_policy(
+            ReviewResult {
+                model: "m".into(),
+                files_reviewed: 9,
+                summary: String::new(),
+                findings,
+            },
+            &policy,
+        );
+        let kept: Vec<(&str, &str)> = review
+            .findings
+            .iter()
+            .map(|finding| (finding.path.as_str(), finding.title.as_str()))
+            .collect();
+        // Display order is still severity, then path and line.
+        assert_eq!(
+            kept,
+            [
+                ("y/high.rs", "high"),
+                ("z/1.rs", "strong"),
+                ("z/2.rs", "strong")
+            ]
+        );
     }
 
     #[test]
