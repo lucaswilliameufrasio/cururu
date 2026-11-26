@@ -2,7 +2,7 @@
 name: cururu-review
 description: Review a local diff, a commit range, or a pull request before pushing or instead of hosted Cururu review. Use the current agent to produce Cururu review JSON.
 metadata:
-  version: "6.3.0"
+  version: "6.4.0"
 ---
 
 # Cururu review
