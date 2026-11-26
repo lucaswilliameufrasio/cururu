@@ -9,6 +9,12 @@
 //! or a reviewer. It is sent in compact form (the finding's title line, its
 //! location and the latest human replies), and a new finding that repeats it on
 //! unchanged code is dropped after parsing ([`suppress_decided`]).
+//!
+//! Resolved threads on files in the current diff, then newer ones, come first.
+//! Those beyond `[review].prior_feedback_max_resolved` or the byte budget are
+//! not dropped: they are sent as one-line summaries (title line and the start
+//! of the most explanatory reply) within `[review].prior_feedback_summary_bytes`,
+//! so the model still sees every decision it could otherwise reopen.
 
 use crate::scm::{PriorReviewComment, PriorReviewFeedback};
 use cururu_core::{CodeAnchor, DecidedFinding};
@@ -29,6 +35,57 @@ pub const MAX_LOCATION_CHARS: usize = 512;
 pub const DECIDED_LINE_WINDOW: u32 = 3;
 /// Total bytes of locations and comment bodies.
 pub const MAX_FEEDBACK_BYTES: usize = 12_000;
+/// Default for `[review].prior_feedback_max_resolved`.
+pub const DEFAULT_MAX_RESOLVED: usize = 20;
+/// Highest accepted `[review].prior_feedback_max_resolved`.
+pub const LIMIT_MAX_RESOLVED: usize = MAX_THREADS;
+/// Default for `[review].prior_feedback_summary_bytes`.
+pub const DEFAULT_SUMMARY_BYTES: usize = 16_000;
+/// Highest accepted `[review].prior_feedback_summary_bytes`.
+pub const LIMIT_SUMMARY_BYTES: usize = 64_000;
+/// Characters kept of a summarized thread's title line.
+pub const SUMMARY_TITLE_CHARS: usize = 160;
+/// Characters kept of a summarized thread's reply.
+pub const SUMMARY_REPLY_CHARS: usize = 240;
+/// Characters kept of a summarized thread's location.
+pub const SUMMARY_LOCATION_CHARS: usize = 160;
+
+/// How prior feedback is selected for one review.
+#[derive(Debug, Clone)]
+pub struct FeedbackOptions {
+    pub resolved: crate::config::PriorFeedbackResolved,
+    /// Paths in the current diff: their resolved threads come first.
+    pub changed_paths: Vec<String>,
+    pub max_resolved: usize,
+    pub summary_bytes: usize,
+}
+
+impl FeedbackOptions {
+    /// Default limits for `resolved`, with no diff paths.
+    #[cfg(test)]
+    pub const fn new(resolved: crate::config::PriorFeedbackResolved) -> Self {
+        Self {
+            resolved,
+            changed_paths: Vec::new(),
+            max_resolved: DEFAULT_MAX_RESOLVED,
+            summary_bytes: DEFAULT_SUMMARY_BYTES,
+        }
+    }
+
+    /// The configured selection for a review of `files`.
+    pub fn for_review(
+        review: &crate::config::ReviewConfig,
+        files: &[cururu_core::ChangedFile],
+    ) -> Self {
+        Self {
+            resolved: review.prior_feedback_resolved,
+            changed_paths: files.iter().map(|file| file.path.clone()).collect(),
+            max_resolved: review.prior_feedback_max_resolved,
+            summary_bytes: review.prior_feedback_summary_bytes,
+        }
+    }
+}
+
 /// Appended to a body or location cut at its character limit.
 pub const TRUNCATION_MARK: &str = "…[truncado]";
 
@@ -40,9 +97,16 @@ pub struct FeedbackCuts {
     pub resolved_threads: usize,
     /// Resolved threads with a human reply sent as recorded decisions.
     pub resolved_kept: usize,
-    /// Resolved threads with a human reply cut by [`MAX_THREADS`] or the byte
-    /// budget (they are cut before any open thread).
+    /// Resolved threads with a human reply beyond the full budget, sent as
+    /// one-line summaries.
+    pub resolved_summarized: usize,
+    /// Root comment ids of the summarized threads.
+    pub summarized_ids: Vec<u64>,
+    /// Resolved threads with a human reply that fit neither the full budget
+    /// nor the summary budget (they are cut before any open thread).
     pub dropped_resolved_threads: usize,
+    /// Root comment ids of the dropped resolved threads.
+    pub dropped_resolved_ids: Vec<u64>,
     /// Open threads beyond [`MAX_THREADS`] or the byte budget.
     pub dropped_threads: usize,
     /// Thread replies and conversation comments beyond their count limit or
@@ -56,6 +120,8 @@ pub struct FeedbackCuts {
 
 impl FeedbackCuts {
     pub const fn any(&self) -> bool {
+        // Summarizing is not a cut: every summarized decision still reaches
+        // the model. It is logged with the resolved-thread counts.
         self.dropped_threads > 0
             || self.dropped_resolved_threads > 0
             || self.dropped_comments > 0
@@ -318,6 +384,7 @@ fn open_entry(thread: InlineThread, cuts: &mut FeedbackCuts) -> PriorReviewFeedb
         location: bounded_location(&thread.location, cuts),
         comments,
         resolved: false,
+        summarized: false,
         decided: None,
     }
 }
@@ -354,6 +421,54 @@ fn resolved_entry(
         location: bounded_location(&thread.location, cuts),
         comments,
         resolved: true,
+        summarized: false,
+        decided: Some(DecidedFinding {
+            path,
+            line: thread.line,
+            anchor: thread.anchor,
+            title,
+            code_changed: resolution.outdated,
+        }),
+    }
+}
+
+/// The reply that best explains a decision: the longest of the latest
+/// [`MAX_DECISION_REPLIES`] human replies (a closing "resolving" often follows
+/// the explanation), the latest on a tie.
+fn explanatory_reply(replies: &[PriorReviewComment]) -> Option<&PriorReviewComment> {
+    replies.iter().rev().take(MAX_DECISION_REPLIES).fold(
+        None,
+        |best: Option<&PriorReviewComment>, reply| match best {
+            Some(best) if best.body.chars().count() >= reply.body.chars().count() => Some(best),
+            _ => Some(reply),
+        },
+    )
+}
+
+/// One-line form of a resolved thread beyond the full budget: its title
+/// line and the start of its most explanatory human reply.
+fn summary_entry(thread: InlineThread, resolution: &Resolution) -> PriorReviewFeedback {
+    let title_line = finding_title_line(&thread.root.body).to_owned();
+    let (title, _) = truncate_chars(finding_title(&title_line), MAX_LOCATION_CHARS);
+    let (path, _) = truncate_chars(&thread.path, MAX_LOCATION_CHARS);
+    let (title_line, _) = truncate_chars(&title_line, SUMMARY_TITLE_CHARS);
+    let mut comments = vec![PriorReviewComment {
+        author: thread.root.author,
+        body: title_line,
+    }];
+    if let Some(reply) = explanatory_reply(&resolution.human_replies) {
+        let (body, _) = truncate_chars(reply.body.trim(), SUMMARY_REPLY_CHARS);
+        comments.push(PriorReviewComment {
+            author: reply.author.clone(),
+            body,
+        });
+    }
+    let (location, _) = truncate_chars(&thread.location, SUMMARY_LOCATION_CHARS);
+    PriorReviewFeedback {
+        location,
+        comments,
+        resolved: true,
+        summarized: true,
         decided: Some(DecidedFinding {
             path,
             line: thread.line,
@@ -374,30 +489,32 @@ pub fn bound_feedback(
     threads: Vec<InlineThread>,
     conversation: Option<PriorReviewFeedback>,
     mut cuts: FeedbackCuts,
+    options: &FeedbackOptions,
 ) -> (Vec<PriorReviewFeedback>, FeedbackCuts) {
     let (mut open, mut resolved): (Vec<_>, Vec<_>) =
         threads.into_iter().partition(|thread| !thread.resolved());
     open.sort_by_key(|thread| std::cmp::Reverse(thread.root_id));
-    resolved.sort_by_key(|thread| std::cmp::Reverse(thread.root_id));
+    // Resolved threads on files in the current diff first, newer first: the
+    // decisions the model is most likely to reopen.
+    let in_diff = |thread: &InlineThread| options.changed_paths.contains(&thread.path);
+    resolved.sort_by_key(|thread| (!in_diff(thread), std::cmp::Reverse(thread.root_id)));
     if open.len() > MAX_THREADS {
         cuts.dropped_threads += open.len() - MAX_THREADS;
         open.truncate(MAX_THREADS);
     }
-    let resolved_slots = MAX_THREADS - open.len();
-    if resolved.len() > resolved_slots {
-        cuts.dropped_resolved_threads += resolved.len() - resolved_slots;
-        resolved.truncate(resolved_slots);
-    }
+    // Decisions share the thread limit with open threads, which come first,
+    // and are capped by `max_resolved`; the rest are summarized.
+    let resolved_slots = (MAX_THREADS - open.len()).min(options.max_resolved);
+    let overflow = resolved.split_off(resolved.len().min(resolved_slots));
     // Open threads first, then resolved ones: the budget is filled in this
     // order, so a resolved thread never displaces an open one.
-    let mut candidates: Vec<(u64, PriorReviewFeedback)> = Vec::new();
+    let mut candidates: Vec<(u64, InlineThread, PriorReviewFeedback)> = Vec::new();
     for thread in open.into_iter().chain(resolved) {
-        let root_id = thread.root_id;
         let entry = match thread.resolution.clone() {
-            Some(resolution) => resolved_entry(thread, resolution, &mut cuts),
-            None => open_entry(thread, &mut cuts),
+            Some(resolution) => resolved_entry(thread.clone(), resolution, &mut cuts),
+            None => open_entry(thread.clone(), &mut cuts),
         };
-        candidates.push((root_id, entry));
+        candidates.push((thread.root_id, thread, entry));
     }
 
     let mut budget = MAX_FEEDBACK_BYTES;
@@ -415,6 +532,7 @@ pub fn bound_feedback(
                 .map(|comment| bounded_comment(comment, &mut cuts))
                 .collect(),
             resolved: false,
+            summarized: false,
             decided: None,
         };
         // The conversation has priority, but must fit too: drop its oldest
@@ -431,7 +549,8 @@ pub fn bound_feedback(
     });
 
     let mut kept = Vec::new();
-    for (root_id, entry) in candidates {
+    let mut to_summarize = Vec::new();
+    for (root_id, thread, entry) in candidates {
         let bytes = feedback_bytes(&entry);
         if bytes <= budget {
             budget -= bytes;
@@ -440,21 +559,54 @@ pub fn bound_feedback(
             }
             kept.push((root_id, entry));
         } else if entry.resolved {
-            cuts.dropped_resolved_threads += 1;
+            to_summarize.push(thread);
         } else {
             cuts.dropped_threads += 1;
         }
     }
+    // Resolved threads that did not fit in full come before the overflow;
+    // both keep their priority order.
+    to_summarize.extend(overflow);
+    let mut summary_budget = options.summary_bytes;
+    let mut summaries = Vec::new();
+    for thread in to_summarize {
+        let root_id = thread.root_id;
+        let Some(resolution) = thread.resolution.clone() else {
+            continue;
+        };
+        let entry = summary_entry(thread, &resolution);
+        let bytes = feedback_bytes(&entry);
+        if bytes <= summary_budget {
+            summary_budget -= bytes;
+            cuts.resolved_summarized += 1;
+            cuts.summarized_ids.push(root_id);
+            summaries.push((root_id, entry));
+        } else {
+            cuts.dropped_resolved_threads += 1;
+            cuts.dropped_resolved_ids.push(root_id);
+        }
+    }
     kept.sort_by_key(|(root_id, _)| *root_id);
-    let mut kept: Vec<_> = kept.into_iter().map(|(_, entry)| entry).collect();
+    summaries.sort_by_key(|(root_id, _)| *root_id);
+    cuts.summarized_ids.sort_unstable();
+    cuts.dropped_resolved_ids.sort_unstable();
+    let mut kept: Vec<_> = kept
+        .into_iter()
+        .chain(summaries)
+        .map(|(_, entry)| entry)
+        .collect();
     kept.extend(conversation);
     (kept, cuts)
 }
 
 /// Final check that the bounded feedback respects every limit. It must never
 /// fail after [`bound_feedback`]; a failure is a bug in the bounds.
-pub fn validate_bounds(feedback: &[PriorReviewFeedback]) -> anyhow::Result<()> {
+pub fn validate_bounds(
+    feedback: &[PriorReviewFeedback],
+    summary_bytes: usize,
+) -> anyhow::Result<()> {
     let mut total = 0usize;
+    let mut summaries = 0usize;
     for entry in feedback {
         anyhow::ensure!(
             entry.location.chars().count() <= MAX_LOCATION_CHARS,
@@ -474,11 +626,19 @@ pub fn validate_bounds(feedback: &[PriorReviewFeedback]) -> anyhow::Result<()> {
             }),
             "prior feedback decided finding exceeds character limit"
         );
-        total = total.saturating_add(feedback_bytes(entry));
+        if entry.summarized {
+            summaries = summaries.saturating_add(feedback_bytes(entry));
+        } else {
+            total = total.saturating_add(feedback_bytes(entry));
+        }
     }
     anyhow::ensure!(
         total <= MAX_FEEDBACK_BYTES,
         "prior feedback exceeds byte limit"
+    );
+    anyhow::ensure!(
+        summaries <= summary_bytes,
+        "prior feedback summaries exceed their byte limit"
     );
     Ok(())
 }
@@ -535,9 +695,63 @@ pub fn suppress_decided(
     before - review.findings.len()
 }
 
+/// Drop findings that fall on a thread resolved after the model input was
+/// collected (`before`) and before publication (`after`): same file and a
+/// line within [`DECIDED_LINE_WINDOW`] of the thread's line or, for a thread
+/// without a line, the same normalized title. The model never saw that
+/// decision, so it cannot have taken it into account. Returns how many were
+/// dropped.
+pub fn drop_on_newly_resolved(
+    before: &[PriorReviewFeedback],
+    after: &[PriorReviewFeedback],
+    findings: &mut Vec<cururu_core::ReviewFinding>,
+) -> usize {
+    let known = |decided: &DecidedFinding| {
+        before.iter().any(|entry| {
+            entry.resolved
+                && entry.decided.as_ref().is_some_and(|old| {
+                    old.path == decided.path
+                        && old.line == decided.line
+                        && old.title == decided.title
+                })
+        })
+    };
+    let newly: Vec<&DecidedFinding> = after
+        .iter()
+        .filter(|entry| entry.resolved)
+        .filter_map(|entry| entry.decided.as_ref())
+        .filter(|decided| !known(decided))
+        .collect();
+    if newly.is_empty() {
+        return 0;
+    }
+    let before_count = findings.len();
+    findings.retain(|finding| {
+        !newly.iter().any(|decided| {
+            decided.path == finding.path
+                && match (decided.line, finding.line) {
+                    (Some(thread), Some(line)) => line.abs_diff(thread) <= DECIDED_LINE_WINDOW,
+                    (None, _) => {
+                        normalized_title(&decided.title) == normalized_title(&finding.title)
+                    }
+                    (Some(_), None) => false,
+                }
+        })
+    });
+    before_count - findings.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The full-budget rules alone: no summaries, as before they existed.
+    fn without_summaries() -> FeedbackOptions {
+        FeedbackOptions {
+            summary_bytes: 0,
+            ..FeedbackOptions::new(crate::config::PriorFeedbackResolved::WithHumanReply)
+        }
+    }
 
     fn comment(body: &str) -> PriorReviewComment {
         PriorReviewComment {
@@ -638,10 +852,16 @@ mod tests {
             location: "PR conversation".into(),
             comments: vec![comment("please also check the retry")],
             resolved: false,
+            summarized: false,
             decided: None,
         };
-        let (feedback, cuts) = bound_feedback(threads, Some(conversation), FeedbackCuts::default());
-        validate_bounds(&feedback).unwrap();
+        let (feedback, cuts) = bound_feedback(
+            threads,
+            Some(conversation),
+            FeedbackCuts::default(),
+            &without_summaries(),
+        );
+        validate_bounds(&feedback, 0).unwrap();
         assert_eq!(feedback.last().unwrap().location, "PR conversation");
         let kept: Vec<_> = feedback[..feedback.len() - 1]
             .iter()
@@ -670,8 +890,9 @@ mod tests {
             replies: vec![comment("short")],
             resolution: None,
         });
-        let (feedback, cuts) = bound_feedback(threads, None, FeedbackCuts::default());
-        validate_bounds(&feedback).unwrap();
+        let (feedback, cuts) =
+            bound_feedback(threads, None, FeedbackCuts::default(), &without_summaries());
+        validate_bounds(&feedback, 0).unwrap();
         assert!(feedback.len() <= MAX_THREADS);
         let many = feedback
             .iter()
@@ -703,11 +924,16 @@ mod tests {
                 .map(|index| comment(&format!("{index}{}", "é".repeat(1_990))))
                 .collect(),
             resolved: false,
+            summarized: false,
             decided: None,
         };
-        let (feedback, cuts) =
-            bound_feedback(Vec::new(), Some(conversation), FeedbackCuts::default());
-        validate_bounds(&feedback).unwrap();
+        let (feedback, cuts) = bound_feedback(
+            Vec::new(),
+            Some(conversation),
+            FeedbackCuts::default(),
+            &without_summaries(),
+        );
+        validate_bounds(&feedback, 0).unwrap();
         let kept = &feedback[0].comments;
         assert!(kept.last().unwrap().body.starts_with("11"));
         assert_eq!(cuts.dropped_comments, 12 - kept.len());
@@ -736,8 +962,9 @@ mod tests {
                     .collect(),
             })
             .collect();
-        let (feedback, cuts) = bound_feedback(threads, None, FeedbackCuts::default());
-        validate_bounds(&feedback).unwrap();
+        let (feedback, cuts) =
+            bound_feedback(threads, None, FeedbackCuts::default(), &without_summaries());
+        validate_bounds(&feedback, 0).unwrap();
         let rendered: usize = feedback
             .iter()
             .map(|entry| {
@@ -761,13 +988,108 @@ mod tests {
             location: "a".into(),
             comments: vec![comment(&"é".repeat(MAX_FEEDBACK_BYTES))],
             resolved: false,
+            summarized: false,
             decided: None,
         }];
-        assert!(validate_bounds(&feedback).is_err());
+        assert!(validate_bounds(&feedback, 0).is_err());
         feedback[0].comments[0].body = "ok".into();
-        assert!(validate_bounds(&feedback).is_ok());
+        assert!(validate_bounds(&feedback, 0).is_ok());
         feedback[0].location = "x".repeat(MAX_LOCATION_CHARS + 1);
-        assert!(validate_bounds(&feedback).is_err());
+        assert!(validate_bounds(&feedback, 0).is_err());
+    }
+
+    #[test]
+    fn resolved_threads_beyond_the_budget_are_summarized_in_diff_first() {
+        // 60 decisions with a long explanation and a short closing reply,
+        // as a long-running PR collects them; files 0..8 are in the diff.
+        let explanation = "Kept on purpose: the shared session sets the timeout. ".repeat(8);
+        let threads: Vec<InlineThread> = (0..60)
+            .map(|index| {
+                let mut thread = decided(1000 + index, &explanation);
+                thread.path = format!("svc/{}.py", index % 20);
+                if let Some(resolution) = &mut thread.resolution {
+                    resolution.human_replies.push(comment("resolving"));
+                }
+                thread
+            })
+            .collect();
+        let options = FeedbackOptions {
+            changed_paths: (0..8).map(|index| format!("svc/{index}.py")).collect(),
+            ..FeedbackOptions::new(crate::config::PriorFeedbackResolved::WithHumanReply)
+        };
+        let (feedback, cuts) = bound_feedback(threads, None, FeedbackCuts::default(), &options);
+        validate_bounds(&feedback, options.summary_bytes).unwrap();
+        // Nothing is dropped: every decision is sent in full or summarized.
+        assert_eq!(cuts.dropped_resolved_threads, 0, "{cuts:?}");
+        assert_eq!(cuts.resolved_kept + cuts.resolved_summarized, 60);
+        assert_eq!(feedback.len(), 60);
+        assert_eq!(cuts.summarized_ids.len(), cuts.resolved_summarized);
+        // Full entries go to files in the diff first.
+        let full: Vec<&PriorReviewFeedback> =
+            feedback.iter().filter(|entry| !entry.summarized).collect();
+        assert_ne!(full.len(), 0);
+        assert!(full.iter().all(|entry| {
+            options
+                .changed_paths
+                .contains(&entry.decided.as_ref().unwrap().path)
+        }));
+        // A summary keeps the title line and the explanation, not "resolving".
+        let summary = feedback.iter().find(|entry| entry.summarized).unwrap();
+        assert!(summary.resolved && summary.decided.is_some());
+        assert!(summary.comments[0].body.starts_with("**MEDIUM**: Finding"));
+        assert!(summary.comments[1].body.starts_with("Kept on purpose"));
+        assert!(summary.comments[1].body.chars().count() <= SUMMARY_REPLY_CHARS);
+        assert!(!cuts.any(), "summarizing is not reported as a cut");
+
+        // A small summary budget drops the rest, and names them by id.
+        let tight = FeedbackOptions {
+            summary_bytes: 1_000,
+            ..options
+        };
+        let threads: Vec<InlineThread> = (0..60)
+            .map(|index| decided(1000 + index, &explanation))
+            .collect();
+        let (feedback, cuts) = bound_feedback(threads, None, FeedbackCuts::default(), &tight);
+        validate_bounds(&feedback, tight.summary_bytes).unwrap();
+        assert!(cuts.dropped_resolved_threads > 0 && cuts.any());
+        assert_eq!(
+            cuts.dropped_resolved_ids.len(),
+            cuts.dropped_resolved_threads
+        );
+        assert_eq!(
+            cuts.resolved_kept + cuts.resolved_summarized + cuts.dropped_resolved_threads,
+            60
+        );
+    }
+
+    #[test]
+    fn findings_on_threads_resolved_meanwhile_are_dropped() {
+        let before = bound_feedback(
+            vec![thread(1, 1, "open")],
+            None,
+            FeedbackCuts::default(),
+            &without_summaries(),
+        )
+        .0;
+        let after = bound_feedback(
+            vec![decided(1, "Not applicable.")],
+            None,
+            FeedbackCuts::default(),
+            &without_summaries(),
+        )
+        .0;
+        let mut findings = vec![
+            finding("src/1.rs", "Any title"),
+            cururu_core::ReviewFinding {
+                line: Some(30),
+                ..finding("src/1.rs", "Elsewhere in the file")
+            },
+            finding("src/2.rs", "Another file"),
+        ];
+        assert_eq!(drop_on_newly_resolved(&before, &after, &mut findings), 1);
+        assert_eq!(findings.len(), 2);
+        // Unchanged feedback drops nothing.
+        assert_eq!(drop_on_newly_resolved(&after, &after, &mut findings), 0);
     }
 
     #[test]
@@ -777,8 +1099,9 @@ mod tests {
             vec![decided(7, &long_reply), thread(3, 1, "open")],
             None,
             FeedbackCuts::default(),
+            &without_summaries(),
         );
-        validate_bounds(&feedback).unwrap();
+        validate_bounds(&feedback, 0).unwrap();
         // Oldest first: the open thread (3), then the decision (7).
         assert!(!feedback[0].resolved && feedback[0].decided.is_none());
         let decision = &feedback[1];
@@ -811,8 +1134,9 @@ mod tests {
             .map(|id| thread(id, 1, &"o".repeat(1_900)))
             .collect();
         threads.extend((10..=15).map(|id| decided(id, &"r".repeat(400))));
-        let (feedback, cuts) = bound_feedback(threads, None, FeedbackCuts::default());
-        validate_bounds(&feedback).unwrap();
+        let (feedback, cuts) =
+            bound_feedback(threads, None, FeedbackCuts::default(), &without_summaries());
+        validate_bounds(&feedback, 0).unwrap();
         let open = feedback.iter().filter(|entry| !entry.resolved).count();
         assert_eq!(open, 5, "no open thread is dropped for a decision");
         let kept: Vec<_> = feedback
@@ -836,7 +1160,12 @@ mod tests {
         thread.resolution.as_mut().unwrap().human_replies = (0..5)
             .map(|index| comment(&format!("reply {index}")))
             .collect();
-        let (feedback, cuts) = bound_feedback(vec![thread], None, FeedbackCuts::default());
+        let (feedback, cuts) = bound_feedback(
+            vec![thread],
+            None,
+            FeedbackCuts::default(),
+            &without_summaries(),
+        );
         let bodies: Vec<_> = feedback[0]
             .comments
             .iter()
@@ -853,8 +1182,9 @@ mod tests {
     fn the_thread_count_limit_cuts_resolved_threads_first() {
         let mut threads: Vec<_> = (1..=18).map(|id| thread(id, 1, "ok")).collect();
         threads.extend((100..=104).map(|id| decided(id, "kept as is")));
-        let (feedback, cuts) = bound_feedback(threads, None, FeedbackCuts::default());
-        validate_bounds(&feedback).unwrap();
+        let (feedback, cuts) =
+            bound_feedback(threads, None, FeedbackCuts::default(), &without_summaries());
+        validate_bounds(&feedback, 0).unwrap();
         assert_eq!(feedback.len(), MAX_THREADS);
         let kept: Vec<_> = feedback
             .iter()
@@ -863,6 +1193,7 @@ mod tests {
             .collect();
         assert_eq!(kept, ["src/103.rs (line 1)", "src/104.rs (line 1)"]);
         assert_eq!(cuts.dropped_resolved_threads, 3);
+        assert_eq!(cuts.dropped_resolved_ids, [100, 101, 102]);
         assert_eq!(cuts.dropped_threads, 0);
     }
 
@@ -887,6 +1218,7 @@ mod tests {
             vec![decided(1, "Not applicable: intentional.")],
             None,
             FeedbackCuts::default(),
+            &without_summaries(),
         );
         let files = [changed_file(1, None)];
         let mut review = cururu_core::ReviewResult {
@@ -922,6 +1254,7 @@ mod tests {
             vec![decided(1, "Not applicable: intentional.")],
             None,
             FeedbackCuts::default(),
+            &without_summaries(),
         );
         let files = [changed_file(1, None)];
         let at = |line: Option<u32>| cururu_core::ReviewFinding {
@@ -956,6 +1289,7 @@ mod tests {
             vec![decided(1, "Not applicable: intentional.")],
             None,
             FeedbackCuts::default(),
+            &without_summaries(),
         );
         assert!(!feedback[0].decided.as_ref().unwrap().code_changed);
         let review = || cururu_core::ReviewResult {

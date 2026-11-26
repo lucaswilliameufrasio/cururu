@@ -64,6 +64,8 @@ pub struct ReviewToml {
     pub comment_mode: Option<String>,
     pub recommendations: Option<bool>,
     pub prior_feedback_resolved: Option<String>,
+    pub prior_feedback_max_resolved: Option<usize>,
+    pub prior_feedback_summary_bytes: Option<usize>,
     pub profile: Option<String>,
 }
 

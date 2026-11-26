@@ -7,7 +7,7 @@ use crate::{
 };
 use anyhow::Context;
 pub use cururu_core::{ensure_review_diff_limits, ensure_review_head_unchanged};
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -269,11 +269,29 @@ pub async fn run_review_with_evaluator(
     let (current_context, current_feedback, current_analysis) =
         collect_review_evidence(config, source_control, &current.files, &current.revision).await?;
     ensure_review_head_unchanged(head_sha, &source_control.fetch_head_sha().await?)?;
+    // The reviewed code and its evidence must be what the model saw. Prior
+    // feedback may change meanwhile (a person replies or resolves a thread):
+    // that does not invalidate the paid review, but findings on threads
+    // resolved meanwhile are dropped.
     anyhow::ensure!(
-        serde_json::to_vec(&(&context_store, &prior_feedback, &analysis_report))?
-            == serde_json::to_vec(&(&current_context, &current_feedback, &current_analysis))?,
+        serde_json::to_vec(&(&context_store, &analysis_report))?
+            == serde_json::to_vec(&(&current_context, &current_analysis))?,
         "review context or analyzer evidence changed during model call"
     );
+    let mut dropped_newly_resolved = 0;
+    if serde_json::to_vec(&prior_feedback)? != serde_json::to_vec(&current_feedback)? {
+        for result in &mut chunk_results {
+            dropped_newly_resolved += crate::prior_feedback::drop_on_newly_resolved(
+                &prior_feedback,
+                &current_feedback,
+                &mut result.review.findings,
+            );
+        }
+        warn!(
+            dropped = dropped_newly_resolved,
+            "prior review feedback changed during the model call; publishing the review without findings on threads resolved meanwhile"
+        );
+    }
     for (chunk, result) in chunks.iter().zip(&mut chunk_results) {
         crate::review_input::validate_chunk_findings(&prepared, chunk, &result.review)?;
         for finding in &mut result.review.findings {
@@ -291,7 +309,7 @@ pub async fn run_review_with_evaluator(
         &config.review.policy,
         analysis_report.findings.clone(),
     );
-    let (review, mut evaluation_report) = if let Some(mode) = config.evaluator.mode {
+    let (mut review, mut evaluation_report) = if let Some(mode) = config.evaluator.mode {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_mins(2))
             .build()
@@ -336,10 +354,21 @@ pub async fn run_review_with_evaluator(
                 .await?;
         ensure_review_head_unchanged(head_sha, &source_control.fetch_head_sha().await?)?;
         anyhow::ensure!(
-            serde_json::to_vec(&(&context_store, &prior_feedback, &analysis_report))?
-                == serde_json::to_vec(&(&context, &feedback, &analysis))?,
+            serde_json::to_vec(&(&context_store, &analysis_report))?
+                == serde_json::to_vec(&(&context, &analysis))?,
             "review context or analyzer evidence changed during evaluation"
         );
+        let dropped = crate::prior_feedback::drop_on_newly_resolved(
+            &current_feedback,
+            &feedback,
+            &mut review.findings,
+        );
+        if dropped > 0 {
+            warn!(
+                dropped,
+                "prior review feedback changed during evaluation; findings on threads resolved meanwhile were dropped"
+            );
+        }
     }
     if let Some(report) = &mut evaluation_report {
         evaluation::mark_published(report, &review.findings);
@@ -396,7 +425,10 @@ async fn collect_review_evidence(
         append_auto_context(config, source_control, &mut context, files).await?;
     }
     let feedback = source_control
-        .fetch_prior_review_feedback(config.review.prior_feedback_resolved)
+        .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::for_review(
+            &config.review,
+            files,
+        ))
         .await?;
     let analysis =
         analysis::load_evidence(&config.analysis, files, head_sha, source_control).await?;
@@ -725,16 +757,27 @@ mod tests {
         }
         async fn fetch_prior_review_feedback(
             &self,
-            _resolved_policy: crate::config::PriorFeedbackResolved,
+            _options: &crate::prior_feedback::FeedbackOptions,
         ) -> anyhow::Result<Vec<cururu_core::PriorReviewFeedback>> {
+            // In mode "feedback", a person resolves the thread on a:1 while
+            // the model call runs.
+            let resolved =
+                self.changed.load(std::sync::atomic::Ordering::SeqCst) && self.mode == "feedback";
             Ok(vec![cururu_core::PriorReviewFeedback {
-                location: "fixture".into(),
+                location: "a (line 1)".into(),
                 comments: vec![cururu_core::PriorReviewComment {
                     author: "fixture".into(),
                     body: "untrusted-feedback-fixture".into(),
                 }],
-                resolved: false,
-                decided: None,
+                resolved,
+                summarized: false,
+                decided: resolved.then(|| cururu_core::DecidedFinding {
+                    path: "a".into(),
+                    line: Some(1),
+                    anchor: None,
+                    title: "Earlier finding".into(),
+                    code_changed: false,
+                }),
             }])
         }
         async fn list_finding_annotations(
@@ -856,6 +899,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn hosted_review_publishes_when_only_feedback_changed_during_model_call() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let server = MockServer::start().await;
+        let changed = Arc::new(AtomicBool::new(false));
+        let update = Arc::clone(&changed);
+        Mock::given(method("POST")).and(path("/chat/completions"))
+            .respond_with(move |_: &wiremock::Request| {
+                update.store(true, Ordering::SeqCst);
+                let review = serde_json::json!({"model":"fixture","files_reviewed":1,"summary":"ok","findings":[
+                    {"severity":"high","path":"a","line":1,"title":"Repeated on the resolved thread","message":"m","suggestion":"s","confidence":0.9}
+                ]}).to_string();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"choices":[{"message":{"content":review},"finish_reason":"stop"}]}))
+            }).expect(1).mount(&server).await;
+        let mut config = crate::config::AppConfig::from_local_env().unwrap();
+        config.llm.provider = crate::config::LlmProvider::OpenAI;
+        config.llm.base_url = server.uri();
+        config.llm.api_key = "fixture".into();
+        let result = super::run_review(
+            &config,
+            &MutableEvidenceScm {
+                changed,
+                mode: "feedback",
+            },
+        )
+        .await
+        .expect("a feedback change alone must not discard the paid review");
+        // The finding falls on the thread resolved during the call.
+        assert!(
+            result.review.findings.is_empty(),
+            "{:?}",
+            result.review.findings
+        );
     }
 
     struct MultiChunkScm;
@@ -1152,7 +1237,7 @@ mod tests {
         }
         async fn fetch_prior_review_feedback(
             &self,
-            _resolved_policy: crate::config::PriorFeedbackResolved,
+            _options: &crate::prior_feedback::FeedbackOptions,
         ) -> anyhow::Result<Vec<crate::scm::PriorReviewFeedback>> {
             panic!("unreviewable input must fail before further collection")
         }

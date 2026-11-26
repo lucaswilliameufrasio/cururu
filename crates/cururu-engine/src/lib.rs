@@ -178,6 +178,10 @@ mod tests {
             "do not describe the review as complete in `summary`",
             // Bounded output against truncated JSON.
             "Report at most 10 findings per chunk",
+            // A cap is a bound, not a quota to fill.
+            "This is an upper limit, not a target",
+            // Summarized decisions weigh as much as full ones.
+            "`\"summarized\": true` is a resolved decision",
         ] {
             assert!(DEFAULT_REVIEW_PROMPT.contains(rule), "missing rule: {rule}");
         }

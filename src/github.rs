@@ -962,10 +962,11 @@ impl GitHubClient {
     /// deterministically and never fail the review.
     pub async fn fetch_prior_review_feedback(
         &self,
-        resolved_policy: PriorFeedbackResolved,
+        options: &crate::prior_feedback::FeedbackOptions,
     ) -> anyhow::Result<Vec<PriorReviewFeedback>> {
         use crate::prior_feedback::{FeedbackCuts, InlineThread, Resolution};
 
+        let resolved_policy = options.resolved;
         let comments = self.list_review_comments().await?;
         let own_login = self.current_login().await;
         let mut cuts = FeedbackCuts::default();
@@ -1044,13 +1045,22 @@ impl GitHubClient {
         let conversation = self
             .fetch_issue_comment_feedback(own_login.as_deref())
             .await?;
-        let (feedback, cuts) = crate::prior_feedback::bound_feedback(threads, conversation, cuts);
-        if cuts.resolved_threads > 0 || cuts.resolved_kept > 0 || cuts.dropped_resolved_threads > 0
+        let (feedback, cuts) =
+            crate::prior_feedback::bound_feedback(threads, conversation, cuts, options);
+        if cuts.resolved_threads > 0
+            || cuts.resolved_kept > 0
+            || cuts.resolved_summarized > 0
+            || cuts.dropped_resolved_threads > 0
         {
+            // Root comment ids only: paths and titles come from the diff and
+            // the model and stay out of operational logs.
             tracing::info!(
                 resolved_kept = cuts.resolved_kept,
+                resolved_summarized = cuts.resolved_summarized,
                 resolved_dropped = cuts.dropped_resolved_threads,
                 resolved_skipped = cuts.resolved_threads,
+                summarized_thread_ids = ?cuts.summarized_ids,
+                dropped_thread_ids = ?cuts.dropped_resolved_ids,
                 "resolved review threads in prior feedback"
             );
         }
@@ -1059,7 +1069,7 @@ impl GitHubClient {
             // some commands (for example `api-review`).
             tracing::warn!("{}", cuts.summary());
         }
-        crate::prior_feedback::validate_bounds(&feedback)?;
+        crate::prior_feedback::validate_bounds(&feedback, options.summary_bytes)?;
         Ok(feedback)
     }
 
@@ -1259,6 +1269,7 @@ impl GitHubClient {
             location: "PR conversation after the previous Cururu summary".into(),
             comments: replies,
             resolved: false,
+            summarized: false,
             decided: None,
         }))
     }
@@ -1915,9 +1926,9 @@ impl ScmProvider for GitHubClient {
 
     async fn fetch_prior_review_feedback(
         &self,
-        resolved_policy: PriorFeedbackResolved,
+        options: &crate::prior_feedback::FeedbackOptions,
     ) -> anyhow::Result<Vec<PriorReviewFeedback>> {
-        Self::fetch_prior_review_feedback(self, resolved_policy).await
+        Self::fetch_prior_review_feedback(self, options).await
     }
 
     async fn list_finding_annotations(
@@ -2401,7 +2412,9 @@ mod tests {
         mount_feedback(&server, comments, serde_json::json!([])).await;
         mount_review_threads(&server, &roots, &[]).await;
         let feedback = feedback_client(&server)
-            .fetch_prior_review_feedback(PriorFeedbackResolved::None)
+            .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::new(
+                PriorFeedbackResolved::None,
+            ))
             .await
             .unwrap();
         assert!(feedback.is_empty(), "{feedback:?}");
@@ -2409,23 +2422,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn many_answered_resolved_threads_are_cut_to_the_budget() {
+    async fn many_answered_resolved_threads_are_bounded_without_losing_any() {
         // 18 answered and resolved threads (~15 KB) once failed every review
-        // with "prior feedback exceeds byte limit"; as decisions they are cut,
-        // keeping the newest.
+        // with "prior feedback exceeds byte limit"; then the oldest were cut
+        // and their decisions reopened. Now the newest fit in full and the
+        // rest are summarized.
         let server = MockServer::start().await;
         let comments = review_threads(18, 1, &"x".repeat(800));
         let roots: Vec<u64> = (0..18).map(|thread| 1000 + thread * 100).collect();
         mount_feedback(&server, comments, serde_json::json!([])).await;
         mount_review_threads(&server, &roots, &[]).await;
         let feedback = feedback_client(&server)
-            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
+            .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::new(
+                PriorFeedbackResolved::WithHumanReply,
+            ))
             .await
             .unwrap();
-        assert!(total_bytes(&feedback) <= crate::prior_feedback::MAX_FEEDBACK_BYTES);
-        assert!(!feedback.is_empty() && feedback.len() < 18);
+        let (summaries, full): (Vec<_>, Vec<_>) =
+            feedback.iter().cloned().partition(|entry| entry.summarized);
+        assert!(total_bytes(&full) <= crate::prior_feedback::MAX_FEEDBACK_BYTES);
+        assert!(total_bytes(&summaries) <= crate::prior_feedback::DEFAULT_SUMMARY_BYTES);
+        assert_eq!(feedback.len(), 18);
+        assert!(!summaries.is_empty() && full.len() < 18);
         assert!(feedback.iter().all(|entry| entry.resolved));
-        assert_eq!(feedback.last().unwrap().location, "src/17.rs (line 1)");
+        assert_eq!(full.last().unwrap().location, "src/17.rs (line 1)");
         server.verify().await;
     }
 
@@ -2472,7 +2492,9 @@ mod tests {
         )
         .await;
         let feedback = feedback_client(&server)
-            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
+            .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::new(
+                PriorFeedbackResolved::WithHumanReply,
+            ))
             .await
             .unwrap();
         let locations: Vec<_> = feedback.iter().map(|e| e.location.as_str()).collect();
@@ -2547,7 +2569,9 @@ mod tests {
             };
             pr.mount(&server).await;
             let feedback = feedback_client(&server)
-                .fetch_prior_review_feedback(PriorFeedbackResolved::WithReviewerReply)
+                .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::new(
+                    PriorFeedbackResolved::WithReviewerReply,
+                ))
                 .await
                 .unwrap();
             if author_readable {
@@ -2586,7 +2610,9 @@ mod tests {
             .mount(&server)
             .await;
         let feedback = feedback_client(&server)
-            .fetch_prior_review_feedback(PriorFeedbackResolved::WithReviewerReply)
+            .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::new(
+                PriorFeedbackResolved::WithReviewerReply,
+            ))
             .await
             .unwrap();
         assert!(feedback.is_empty(), "{feedback:?}");
@@ -2605,7 +2631,9 @@ mod tests {
         let open: Vec<u64> = (0..18).map(|thread| 1000 + thread * 100).collect();
         mount_review_threads(&server, &[], &open).await;
         let feedback = feedback_client(&server)
-            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
+            .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::new(
+                PriorFeedbackResolved::WithHumanReply,
+            ))
             .await
             .unwrap();
         assert!(total_bytes(&feedback) <= crate::prior_feedback::MAX_FEEDBACK_BYTES);
@@ -2634,7 +2662,9 @@ mod tests {
             )
             .await;
             let feedback = feedback_client(&server)
-                .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
+                .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::new(
+                    PriorFeedbackResolved::WithHumanReply,
+                ))
                 .await
                 .unwrap_or_else(|error| {
                     panic!("threads={threads} replies={replies} chars={chars}: {error}")
@@ -2683,7 +2713,9 @@ mod tests {
             .mount(&server)
             .await;
         let feedback = feedback_client(&server)
-            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
+            .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::new(
+                PriorFeedbackResolved::WithHumanReply,
+            ))
             .await
             .unwrap();
         // Without resolution data resolved threads are not filtered, so the
@@ -2710,7 +2742,9 @@ mod tests {
             .mount(&server)
             .await;
         let feedback = feedback_client(&server)
-            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
+            .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::new(
+                PriorFeedbackResolved::WithHumanReply,
+            ))
             .await
             .unwrap();
         assert_eq!(feedback, Vec::new());
@@ -3485,7 +3519,9 @@ mod tests {
         .unwrap();
 
         let feedback = client
-            .fetch_prior_review_feedback(PriorFeedbackResolved::WithHumanReply)
+            .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::new(
+                PriorFeedbackResolved::WithHumanReply,
+            ))
             .await
             .unwrap();
         let serialized = serde_json::to_string(&feedback).unwrap();

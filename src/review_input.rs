@@ -628,7 +628,10 @@ pub async fn prepare_agent_pr(
         review::append_auto_context(config, scm, &mut context, &prepared.files).await?;
     }
     let feedback = scm
-        .fetch_prior_review_feedback(config.review.prior_feedback_resolved)
+        .fetch_prior_review_feedback(&crate::prior_feedback::FeedbackOptions::for_review(
+            &config.review,
+            &prepared.files,
+        ))
         .await?;
     anyhow::ensure!(
         feedback.len() <= 1000,
@@ -794,10 +797,10 @@ pub async fn prepare_local_with_context(
     if !context_configured {
         return Ok(prepared);
     }
-    let local = match range {
-        Some(range) => crate::local_git::LocalGit::with_base(root, range.merge_base.clone()),
-        None => crate::local_git::LocalGit::new(root),
-    };
+    let local = range.map_or_else(
+        || crate::local_git::LocalGit::new(root),
+        |range| crate::local_git::LocalGit::with_base(root, range.merge_base.clone()),
+    );
     let mut context = review::fetch_repo_context(config, &local).await?;
     if config.context.auto.enabled {
         review::append_auto_context(config, &local, &mut context, &prepared.files).await?;
@@ -1201,7 +1204,7 @@ mod tests {
         }
         async fn fetch_prior_review_feedback(
             &self,
-            _resolved_policy: crate::config::PriorFeedbackResolved,
+            _options: &crate::prior_feedback::FeedbackOptions,
         ) -> anyhow::Result<Vec<cururu_core::PriorReviewFeedback>> {
             Ok(vec![cururu_core::PriorReviewFeedback {
                 location: "a:1".into(),
@@ -1210,6 +1213,7 @@ mod tests {
                     body: self.0.into(),
                 }],
                 resolved: false,
+                summarized: false,
                 decided: None,
             }])
         }

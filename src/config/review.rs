@@ -57,6 +57,13 @@ pub struct ReviewConfig {
     pub comment_mode: CommentMode,
     pub recommendations: bool,
     pub prior_feedback_resolved: PriorFeedbackResolved,
+    /// Resolved threads with a human reply sent in full compact form, files
+    /// in the current diff and newer threads first.
+    pub prior_feedback_max_resolved: usize,
+    /// Bytes for one-line summaries of the resolved threads beyond
+    /// `prior_feedback_max_resolved` or the prior-feedback byte budget; 0
+    /// drops them instead.
+    pub prior_feedback_summary_bytes: usize,
     pub policy: ReviewPolicy,
 }
 

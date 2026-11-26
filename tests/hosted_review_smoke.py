@@ -179,6 +179,12 @@ with tempfile.TemporaryDirectory() as directory:
             assert not state["posts"]
             assert "trusted shared configuration" in result.stderr, result.stderr
             assert "fixture-shared-token" not in result.stderr
+        elif mode == "feedback":
+            # A reply edited during the model call does not discard the paid
+            # review: it is still prepared for approval.
+            assert state["models"] == 1 and result.returncode == 0, result.stderr
+            assert "prior review feedback changed during the model call" in result.stderr, result.stderr
+            assert not state["posts"], mode
         else:
             assert state["models"] == 1, result.stderr
             assert result.returncode != 0 and "context or analyzer evidence changed" in result.stderr, result.stderr

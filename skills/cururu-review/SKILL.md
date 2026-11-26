@@ -148,6 +148,9 @@ Analysis quality:
   changed after the thread), or there is new evidence in the diff or trusted
   context. When you do raise it, the finding must say why the earlier decision
   no longer holds.
+- An entry with `"summarized": true` is a resolved decision shortened to fit:
+  its title line and the start of the most explanatory reply. It carries the
+  same weight as a full one; do not reopen it because the explanation is short.
 
 How to write each finding:
 - `message`: the concrete scenario in which the problem happens (inputs, state,
