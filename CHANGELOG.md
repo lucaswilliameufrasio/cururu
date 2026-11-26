@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [6.4.0] - 2026-11-26
+
+### Bug Fixes
+
+- *(review)* Keep the strongest findings when max_findings cuts
+- *(review)* Summarize resolved threads instead of dropping them
+
+### Chores
+
+- Pin v6.3.0 OCI digest
+- *(workflows)* Adopt Cururu v6.3.0
+
+### Features
+
+- *(skill)* Distribute the Cururu review workflow to coding agents
+- *(review)* Re-review only files whose patch changed
+
+### Testing
+
+- *(mcp)* Cover repository_path, commit ranges and detailed refusals
+- Add review scenarios for reported failure modes
+
 ## [6.3.0] - 2026-11-23
 
 ### Upgrade notes
