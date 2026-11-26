@@ -2,6 +2,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn stdio_multichunk_requires_one_result_per_index() {
     let dir = tempfile::tempdir().unwrap();
     let git = |args: &[&str]| {
@@ -63,22 +64,70 @@ fn stdio_multichunk_requires_one_result_per_index() {
     assert_eq!(chunks.len(), 2);
     let reviews: Vec<_> = chunks.iter().map(|chunk| serde_json::json!({"chunk_index":chunk["index"],"review":{"model":"fixture","files_reviewed":chunk["files"].as_array().unwrap().len(),"summary":"ok","findings":[]}})).collect();
     let arguments = |items: serde_json::Value| serde_json::json!({"source":"local","snapshot_sha256":input["snapshot_sha256"],"reviews":items});
-    assert_eq!(
-        call(
-            2,
-            "assemble_review",
-            arguments(serde_json::json!([reviews[0]]))
-        )["isError"],
-        true
+    // Every refusal names what failed, so the host can fix that part.
+    let refusal = |result: serde_json::Value| {
+        assert_eq!(result["isError"], true);
+        result["content"][0]["text"].as_str().unwrap().to_owned()
+    };
+    let missing = refusal(call(
+        2,
+        "assemble_review",
+        arguments(serde_json::json!([reviews[0]])),
+    ));
+    assert!(missing.contains("missing chunk_index [1]"), "{missing}");
+    let duplicated = refusal(call(
+        3,
+        "assemble_review",
+        arguments(serde_json::json!([reviews[0], reviews[0]])),
+    ));
+    assert!(
+        duplicated.contains("duplicated chunk_index [0]"),
+        "{duplicated}"
     );
-    assert_eq!(
-        call(
-            3,
-            "assemble_review",
-            arguments(serde_json::json!([reviews[0], reviews[0]]))
-        )["isError"],
-        true
+    let mut invalid = reviews.clone();
+    invalid[1]["review"]["findings"] = serde_json::json!([{"severity":"urgent","path":chunks[1]["files"][0],"line":1,"title":"t","message":"m","suggestion":"s","confidence":0.5}]);
+    let field = refusal(call(
+        5,
+        "assemble_review",
+        arguments(serde_json::json!(invalid)),
+    ));
+    assert!(
+        field.contains("chunk_index 1")
+            && field.contains("findings[0]")
+            && field.contains("severity"),
+        "{field}"
     );
+    let mut wrong_count = reviews.clone();
+    wrong_count[0]["review"]["files_reviewed"] = serde_json::json!(3);
+    let count = refusal(call(
+        6,
+        "assemble_review",
+        arguments(serde_json::json!(wrong_count)),
+    ));
+    assert!(
+        count.contains("chunk_index 0") && count.contains("files_reviewed is 3"),
+        "{count}"
+    );
+    let mut malformed = reviews.clone();
+    malformed[1]["review"]
+        .as_object_mut()
+        .unwrap()
+        .remove("summary");
+    let schema = refusal(call(
+        7,
+        "assemble_review",
+        arguments(serde_json::json!(malformed)),
+    ));
+    assert!(
+        schema.contains("chunk_index 1") && schema.contains("summary"),
+        "{schema}"
+    );
+    let stale = refusal(call(
+        8,
+        "assemble_review",
+        serde_json::json!({"source":"local","snapshot_sha256":"0".repeat(64),"reviews":reviews}),
+    ));
+    assert!(stale.contains("snapshot_sha256 does not match"), "{stale}");
     let complete = call(
         4,
         "assemble_review",
@@ -303,4 +352,104 @@ fn stdio_server_prepares_and_validates_a_codebase_review() {
     assert_eq!(refused["error"]["code"], -32602, "{refused}");
     drop(stdin);
     child.wait().unwrap();
+}
+
+#[test]
+fn stdio_server_outside_the_repository_uses_repository_path_and_a_commit_range() {
+    let repo = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .current_dir(repo.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid"
+                ])
+                .args(args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(repo.path().join("base.txt"), "base\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "base"]);
+    git(&["switch", "-qc", "feature-a"]);
+    std::fs::write(repo.path().join("a.txt"), "a\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "a"]);
+    git(&["switch", "-qc", "feature-b"]);
+    std::fs::write(repo.path().join("b.txt"), "b\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "b"]);
+    // An uncommitted edit, outside any committed range.
+    std::fs::write(repo.path().join("base.txt"), "edited\n").unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cururu"))
+        .arg("mcp")
+        .current_dir(outside.path())
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .env("HOME", outside.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut call = |id: u32, arguments: serde_json::Value| {
+        writeln!(stdin, "{}", serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"prepare_review","arguments":arguments}})).unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let result = response["result"].clone();
+        (
+            result["isError"] == true,
+            result["content"][0]["text"].as_str().unwrap().to_owned(),
+        )
+    };
+    let files = |text: &str| -> Vec<String> {
+        let prepared: serde_json::Value = serde_json::from_str(text).unwrap();
+        prepared["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["path"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (error, text) = call(1, serde_json::json!({"source":"local"}));
+    assert!(error && text.contains("is not a Git repository"), "{text}");
+    let path = repo.path().to_str().unwrap();
+    let (error, text) = call(
+        2,
+        serde_json::json!({"source":"local","repository_path":path}),
+    );
+    assert!(!error, "{text}");
+    assert_eq!(files(&text), ["base.txt"]);
+    let (error, text) = call(
+        3,
+        serde_json::json!({"source":"local","repository_path":path,"base":"feature-a","head":"feature-b"}),
+    );
+    assert!(!error, "{text}");
+    assert_eq!(files(&text), ["b.txt"]);
+    let (error, text) = call(
+        4,
+        serde_json::json!({"source":"local","repository_path":path,"base":"no-such-branch"}),
+    );
+    assert!(error && text.contains("is not a commit"), "{text}");
+    let (error, text) = call(
+        5,
+        serde_json::json!({"source":"local","repository_path":path,"base":"--output=/tmp/x"}),
+    );
+    assert!(error && text.contains("invalid revision"), "{text}");
+    drop(stdin);
+    assert!(child.wait_with_output().unwrap().status.success());
 }

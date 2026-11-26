@@ -514,7 +514,13 @@ async fn main() -> anyhow::Result<()> {
             analysis_manifest,
             ..
         } => {
-            let target = ReviewTarget::from_flags(*local, *codebase, paths, base, head)?;
+            let target = ReviewTarget::from_flags(
+                *local,
+                *codebase,
+                paths,
+                base.as_deref(),
+                head.as_deref(),
+            )?;
             let mut prepared = prepare_review_input(&target).await?;
             if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
                 review_input::attach_local_analysis(&mut prepared, sarif, manifest)?;
@@ -557,9 +563,9 @@ async fn main() -> anyhow::Result<()> {
                 "sending source code requires --confirm-send; inspect prepare-review first"
             );
             let target = if *pr {
-                ReviewTarget::from_flags(false, false, paths, base, head)?
+                ReviewTarget::from_flags(false, false, paths, base.as_deref(), head.as_deref())?
             } else {
-                ReviewTarget::from_flags(true, *codebase, paths, base, head)?
+                ReviewTarget::from_flags(true, *codebase, paths, base.as_deref(), head.as_deref())?
             };
             let (config, mut prepared) = prepare_api_review(&target).await?;
             if let (Some(sarif), Some(manifest)) = (sarif, analysis_manifest) {
@@ -1156,8 +1162,8 @@ impl ReviewTarget {
         local: bool,
         codebase: bool,
         paths: &[String],
-        base: &Option<String>,
-        head: &Option<String>,
+        base: Option<&str>,
+        head: Option<&str>,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             codebase || paths.is_empty(),
@@ -1175,8 +1181,8 @@ impl ReviewTarget {
         } else if local {
             Self::Local(LocalTarget {
                 root: ".".into(),
-                base: base.clone(),
-                head: head.clone(),
+                base: base.map(str::to_owned),
+                head: head.map(str::to_owned),
             })
         } else {
             Self::Pr
